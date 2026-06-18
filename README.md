@@ -22,7 +22,13 @@ workspaces, tabs, panes. mouse-native: click, drag, split. every agent at a glan
 ## install
 
 ```bash
-curl -fsSL https://herdr.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/motionharvest/herdr/main/install.sh | bash
+```
+
+Until this fork publishes its own GitHub release, install the upstream binary with:
+
+```bash
+HERDR_REPO=ogulcancelik/herdr curl -fsSL https://raw.githubusercontent.com/motionharvest/herdr/main/install.sh | bash
 ```
 
 or install with homebrew:

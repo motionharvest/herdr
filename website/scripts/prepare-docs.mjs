@@ -31,7 +31,10 @@ async function preparePublicAssets() {
     '_headers',
     '_redirects',
   ]) {
-    const source = resolve(repoRoot, 'website', file);
+    const source =
+      file === 'install.sh'
+        ? resolve(repoRoot, 'install.sh')
+        : resolve(repoRoot, 'website', file);
     try {
       await cp(source, resolve(publicDir, file));
     } catch (error) {
