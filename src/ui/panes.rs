@@ -524,11 +524,20 @@ fn push_title_name_spans(
     brace_style: Style,
 ) {
     if let Some((name, rest)) = text.split_once(" {") {
-        if let Some(agent) = rest.strip_suffix('}') {
+        // `rest` is the agent label plus a closing brace, optionally followed by
+        // more title text (e.g. a trailing space before the git section). Locate
+        // the closing brace rather than requiring it to be the final character so
+        // the agent label keeps its distinct style in those cases too.
+        if let Some(close_idx) = rest.find('}') {
+            let (agent, after_brace) = rest.split_at(close_idx);
+            let after = &after_brace["}".len()..];
             spans.push(Span::styled(name.to_string(), pane_name_style));
             spans.push(Span::styled(" {".to_string(), brace_style));
             spans.push(Span::styled(agent.to_string(), agent_label_style));
             spans.push(Span::styled("}".to_string(), brace_style));
+            if !after.is_empty() {
+                spans.push(Span::styled(after.to_string(), pane_name_style));
+            }
             return;
         }
     }
@@ -1797,6 +1806,52 @@ mod tests {
             .find(|x| buffer[(*x, 0)].symbol() == "P")
             .expect("agent label should render");
         assert_eq!(buffer[(agent_col, 0)].fg, app.palette.overlay0);
+    }
+
+    #[test]
+    fn pane_chrome_title_styles_agent_label_when_git_section_present() {
+        let app = AppState::test_new();
+        let area = Rect::new(0, 0, 120, 5);
+        let backend = ratatui::backend::TestBackend::new(120, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_code_ui_pane_chrome(
+                    &app,
+                    frame,
+                    area,
+                    PaneChromeTitle {
+                        pane_type: "Pi".to_string(),
+                        folder_name: Some("~/lab/herdr".to_string()),
+                        repo_path: Some("~/lab/herdr".to_string()),
+                        branch: Some("main".to_string()),
+                        worktree_state: crate::workspace::GitWorktreeState::Clean,
+                    },
+                    PaneId::from_raw(1),
+                    true,
+                    false,
+                    false,
+                    ExposedSides::all(),
+                    None,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // The agent label keeps the muted overlay color even though the git
+        // section follows the closing brace (regression: the trailing space
+        // before the git icon used to collapse the whole title to one color).
+        let agent_col = (0..area.width)
+            .find(|x| buffer[(*x, 0)].symbol() == "P")
+            .expect("agent label should render");
+        assert_eq!(buffer[(agent_col, 0)].fg, app.palette.overlay0);
+
+        let name_col = (0..area.width)
+            .find(|x| buffer[(*x, 0)].symbol() == "~")
+            .expect("pane name should render");
+        assert_eq!(buffer[(name_col, 0)].fg, app.palette.focused_pane_border());
+        assert_ne!(buffer[(agent_col, 0)].fg, buffer[(name_col, 0)].fg);
     }
 
     #[test]
