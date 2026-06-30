@@ -615,21 +615,37 @@ fn render_code_ui_pane_chrome(
     } else {
         edge_style
     };
-    let pane_name_style = Style::default()
-        .fg(app.palette.focused_pane_border())
-        .bg(Color::Reset);
-    let agent_label_style = Style::default().fg(app.palette.overlay0).bg(Color::Reset);
-    let repo_path_style = Style::default()
-        .fg(Color::Rgb(0x36, 0xF9, 0xF6))
-        .bg(Color::Reset);
-    let git_style = Style::default()
-        .fg(match title.worktree_state {
-            crate::workspace::GitWorktreeState::Clean => Color::Green,
-            crate::workspace::GitWorktreeState::Staged => Color::Blue,
-            crate::workspace::GitWorktreeState::Unstaged => Color::Red,
-            crate::workspace::GitWorktreeState::Mixed => Color::Rgb(0xBE, 0x9A, 0x4A),
-        })
-        .bg(Color::Reset);
+    // On unfocused panes the whole title (name, braces, agent label, git info)
+    // drops to the muted overlay color, matching the dimmed icon, rule glyphs,
+    // and controls. Only the focused/highlighted pane keeps the distinct colors.
+    let unfocused_style = Style::default().fg(app.palette.overlay0).bg(Color::Reset);
+    let pane_name_style = if chrome_active {
+        Style::default()
+            .fg(app.palette.focused_pane_border())
+            .bg(Color::Reset)
+    } else {
+        unfocused_style
+    };
+    let agent_label_style = unfocused_style;
+    let repo_path_style = if chrome_active {
+        Style::default()
+            .fg(Color::Rgb(0x36, 0xF9, 0xF6))
+            .bg(Color::Reset)
+    } else {
+        unfocused_style
+    };
+    let git_style = if chrome_active {
+        Style::default()
+            .fg(match title.worktree_state {
+                crate::workspace::GitWorktreeState::Clean => Color::Green,
+                crate::workspace::GitWorktreeState::Staged => Color::Blue,
+                crate::workspace::GitWorktreeState::Unstaged => Color::Red,
+                crate::workspace::GitWorktreeState::Mixed => Color::Rgb(0xBE, 0x9A, 0x4A),
+            })
+            .bg(Color::Reset)
+    } else {
+        unfocused_style
+    };
     let text_available = title_width
         .saturating_sub("╭─ ".chars().count() as u16 + PANE_TITLE_ICON.chars().count() as u16 + 1)
         .saturating_sub(controls_width)
@@ -1852,6 +1868,51 @@ mod tests {
             .expect("pane name should render");
         assert_eq!(buffer[(name_col, 0)].fg, app.palette.focused_pane_border());
         assert_ne!(buffer[(agent_col, 0)].fg, buffer[(name_col, 0)].fg);
+    }
+
+    #[test]
+    fn pane_chrome_title_unfocused_uses_muted_color_throughout() {
+        let app = AppState::test_new();
+        let area = Rect::new(0, 0, 120, 5);
+        let backend = ratatui::backend::TestBackend::new(120, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_code_ui_pane_chrome(
+                    &app,
+                    frame,
+                    area,
+                    PaneChromeTitle {
+                        pane_type: "Pi".to_string(),
+                        folder_name: Some("~/lab/herdr".to_string()),
+                        repo_path: Some("~/lab/herdr".to_string()),
+                        branch: Some("main".to_string()),
+                        worktree_state: crate::workspace::GitWorktreeState::Clean,
+                    },
+                    PaneId::from_raw(1),
+                    false, // unfocused
+                    false, // not highlighted
+                    false,
+                    ExposedSides::all(),
+                    None,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // On an unfocused pane the whole title (name, braces, agent label) uses
+        // the muted overlay color rather than the focused/bright colors.
+        for symbol in ["~", "{", "P", "}"] {
+            let col = (0..area.width)
+                .find(|x| buffer[(*x, 0)].symbol() == symbol)
+                .unwrap_or_else(|| panic!("title glyph {symbol:?} should render"));
+            assert_eq!(
+                buffer[(col, 0)].fg,
+                app.palette.overlay0,
+                "glyph {symbol:?} should be muted when unfocused"
+            );
+        }
     }
 
     #[test]
