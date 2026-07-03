@@ -1322,8 +1322,9 @@ mod tests {
 
         assert_eq!(app.state.workspace_drop_index_at_row(0), Some(0));
         assert_eq!(app.state.workspace_drop_index_at_row(1), Some(0));
-        assert_eq!(app.state.workspace_drop_index_at_row(2), Some(0));
+        assert_eq!(app.state.workspace_drop_index_at_row(2), Some(1));
         assert_eq!(app.state.workspace_drop_index_at_row(3), Some(1));
+        assert_eq!(app.state.workspace_drop_index_at_row(6), Some(1));
 
         let _ = fs::remove_dir_all(first_repo);
         let _ = fs::remove_dir_all(second_repo);
@@ -1337,8 +1338,8 @@ mod tests {
             Workspace::test_new("b"),
             Workspace::test_new("c"),
         ];
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 20);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 30);
         app.state.view.workspace_card_areas =
             crate::ui::compute_workspace_card_areas(&app.state, app.state.view.sidebar_rect);
 
@@ -1352,7 +1353,7 @@ mod tests {
 
         let last = cards.last().unwrap().rect;
         assert_eq!(bottom_slot, last.y + last.height);
-        assert!(bottom_slot < app.state.sidebar_footer_rect().y.saturating_sub(1));
+        assert!(bottom_slot < app.state.sidebar_footer_rect().y);
     }
 
     #[test]

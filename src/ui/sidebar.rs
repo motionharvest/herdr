@@ -1,4 +1,10 @@
-use ratatui::layout::Rect;
+use ratatui::{
+    layout::Rect,
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Clear, Paragraph},
+    Frame,
+};
 
 use super::scrollbar::should_show_scrollbar;
 use crate::app::state::AgentPanelScope;
@@ -6,7 +12,7 @@ use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
 
-const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
+const WORKSPACE_SECTION_HEADER_ROWS: u16 = 1;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 
 pub(crate) struct AgentPanelEntry {
@@ -32,7 +38,7 @@ fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
         return (ws_h, total_h.saturating_sub(ws_h));
     }
 
-    let ratio = split_ratio.clamp(0.1, 0.9);
+    let ratio = split_ratio.clamp(0.65, 0.9);
     let ws_h = ((total_h as f32) * ratio).round() as u16;
     let ws_h = ws_h.clamp(3, total_h.saturating_sub(3));
     let detail_h = total_h.saturating_sub(ws_h);
@@ -187,14 +193,9 @@ pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static 
     }
 }
 
-fn workspace_row_height(ws: &crate::workspace::Workspace) -> u16 {
-    if ws.branch().is_some() {
-        2
-    } else {
-        1
-    }
+fn workspace_row_height(_ws: &crate::workspace::Workspace) -> u16 {
+    4
 }
-
 pub(crate) fn workspace_parent_group_state(
     app: &AppState,
     ws_idx: usize,
@@ -222,13 +223,6 @@ pub(crate) fn workspace_parent_group_state(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceListEntry {
     Workspace { ws_idx: usize, indented: bool },
-}
-
-fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], idx: usize) -> bool {
-    matches!(
-        entries.get(idx.saturating_add(1)),
-        Some(WorkspaceListEntry::Workspace { indented: true, .. })
-    )
 }
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
@@ -372,27 +366,19 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
     let mut used_rows = 0u16;
     let mut visible = 0usize;
     let entries = workspace_list_entries(app);
-    for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
-        let needed = match entry {
-            WorkspaceListEntry::Workspace { ws_idx, indented } => {
+    for entry in entries.iter().skip(scroll) {
+        let (row_height, gap) = match entry {
+            WorkspaceListEntry::Workspace { ws_idx, .. } => {
                 let Some(ws) = app.workspaces.get(*ws_idx) else {
                     continue;
                 };
-                let row_height = if *indented {
-                    1
-                } else {
-                    workspace_row_height(ws)
-                };
-                let gap = u16::from(
-                    !(*indented && next_entry_is_indented_workspace(&entries, entry_idx)),
-                );
-                row_height.saturating_add(gap)
+                (workspace_row_height(ws), 0)
             }
         };
-        if used_rows.saturating_add(needed) > body.height {
+        if used_rows.saturating_add(row_height) > body.height {
             break;
         }
-        used_rows = used_rows.saturating_add(needed);
+        used_rows = used_rows.saturating_add(row_height).saturating_add(gap);
         visible += 1;
     }
     visible
@@ -506,21 +492,15 @@ pub(crate) fn compute_workspace_list_areas(
     let headers = Vec::new();
 
     let entries = workspace_list_entries(app);
-    for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
+    for entry in entries.iter().skip(scroll) {
         match entry {
             WorkspaceListEntry::Workspace { ws_idx, indented } => {
                 let Some(ws) = app.workspaces.get(*ws_idx) else {
                     continue;
                 };
-                let row_height = if *indented {
-                    1
-                } else {
-                    workspace_row_height(ws)
-                };
-                let gap = u16::from(
-                    !(*indented && next_entry_is_indented_workspace(&entries, entry_idx)),
-                );
-                if row_y.saturating_add(row_height).saturating_add(gap) > body_bottom {
+                let row_height = workspace_row_height(ws);
+                let gap = 0;
+                if row_y.saturating_add(row_height) > body_bottom {
                     break;
                 }
                 cards.push(crate::app::state::WorkspaceCardArea {
@@ -599,25 +579,391 @@ pub(crate) fn workspace_drop_indicator_row(
 }
 
 pub(crate) fn collapsed_sidebar_toggle_rect(area: Rect) -> Rect {
-    let bottom_y = area.y + area.height.saturating_sub(1);
-    let content_w = area.width.saturating_sub(1);
-    if content_w == 0 || area.height == 0 {
+    if area.width == 0 || area.height == 0 {
         return Rect::default();
     }
-    let x = area.x + content_w / 2;
-    Rect::new(x, bottom_y, 1, 1)
+    Rect::new(area.x, area.y, 1, 1)
 }
 
 pub(crate) fn expanded_sidebar_toggle_rect(area: Rect) -> Rect {
-    if area.width <= 1 || area.height == 0 {
+    if area.width == 0 || area.height == 0 {
         return Rect::default();
     }
-    Rect::new(
-        area.x + area.width.saturating_sub(2),
-        area.y + area.height.saturating_sub(1),
-        1,
-        1,
+    Rect::new(area.x, area.y, 1, 1)
+}
+
+pub(crate) fn render_sidebar(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    if area == Rect::default() || area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    frame.render_widget(Clear, area);
+    fill_sidebar_background(app, frame, area);
+
+    if app.sidebar_collapsed {
+        render_sidebar_line(
+            frame,
+            collapsed_sidebar_toggle_rect(area),
+            Line::from(Span::styled(
+                "›",
+                Style::default()
+                    .fg(app.palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        );
+        return;
+    }
+
+    render_sidebar_line(
+        frame,
+        Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
+        Line::from(vec![
+            Span::styled(
+                "‹",
+                Style::default()
+                    .fg(app.palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" spaces", Style::default().fg(app.palette.overlay0)),
+        ]),
+    );
+
+    render_workspace_rows(app, terminal_runtimes, frame, area);
+    render_agent_panel(app, terminal_runtimes, frame, area);
+}
+
+fn fill_sidebar_background(app: &AppState, frame: &mut Frame, area: Rect) {
+    let divider_style = Style::default().fg(app.palette.surface_dim);
+    let divider_x = area.x + area.width.saturating_sub(1);
+    let buf = frame.buffer_mut();
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            let cell = &mut buf[(x, y)];
+            cell.set_symbol(" ");
+            cell.set_style(Style::default());
+        }
+        if area.width > 1 {
+            let cell = &mut buf[(divider_x, y)];
+            cell.set_symbol("│");
+            cell.set_style(divider_style);
+        }
+    }
+}
+
+fn render_workspace_rows(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    let cards = if app.view.workspace_card_areas.is_empty() {
+        compute_workspace_card_areas(app, area)
+    } else {
+        app.view.workspace_card_areas.clone()
+    };
+
+    for card in cards {
+        let Some(ws) = app.workspaces.get(card.ws_idx) else {
+            continue;
+        };
+        let is_active = Some(card.ws_idx) == app.active;
+        let is_selected = app.mode == Mode::Navigate && card.ws_idx == app.selected;
+        let selected = is_selected || is_active;
+        let (state, seen) = ws.aggregate_state(&app.terminals);
+        let (name, branch) =
+            workspace_card_labels(app, terminal_runtimes, ws, card.indented, state, seen);
+        render_workspace_card(frame, card.rect, &name, &branch, selected, app);
+    }
+
+    let ws_area = workspace_list_rect(area, app.sidebar_section_split);
+    if ws_area != Rect::default() && ws_area.height > 0 {
+        let footer = Rect::new(
+            ws_area.x,
+            ws_area.y + ws_area.height.saturating_sub(1),
+            ws_area.width,
+            1,
+        );
+        render_sidebar_line(
+            frame,
+            footer,
+            Line::from(Span::styled(
+                "+ new",
+                Style::default().fg(app.palette.accent),
+            )),
+        );
+    }
+}
+
+fn workspace_card_labels(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    ws: &crate::workspace::Workspace,
+    indented: bool,
+    state: AgentState,
+    seen: bool,
+) -> (String, String) {
+    let (dot, _) = sidebar_state_dot(state, seen, app);
+    let indent = if indented { "  " } else { "" };
+    let name = ws.display_name_from(&app.terminals, terminal_runtimes);
+    let branch = ws.branch().unwrap_or_else(|| "shell".to_string());
+    (
+        format!("{indent}{dot} {name}"),
+        format!("{indent}  {branch}"),
     )
+}
+
+fn render_workspace_card(
+    frame: &mut Frame,
+    rect: Rect,
+    name: &str,
+    branch: &str,
+    selected: bool,
+    app: &AppState,
+) {
+    if rect.width < 2 || rect.height == 0 {
+        return;
+    }
+
+    let border_color = if selected {
+        app.palette.accent
+    } else {
+        app.palette.surface_dim
+    };
+    let name_color = if selected {
+        app.palette.accent
+    } else {
+        app.palette.text
+    };
+    let border_style = Style::default().fg(border_color);
+    let name_style = Style::default().fg(name_color).add_modifier(Modifier::BOLD);
+    let branch_style = Style::default().fg(app.palette.overlay0);
+    let inner_width = rect.width.saturating_sub(2) as usize;
+    let name = pad_to_width(&truncate_chars(name, inner_width), inner_width);
+    let branch = pad_to_width(&truncate_chars(branch, inner_width), inner_width);
+
+    let buf = frame.buffer_mut();
+    let right = rect.x + rect.width.saturating_sub(1);
+
+    if rect.height < 4 {
+        render_workspace_card_compact(buf, rect, right, &name, border_style, name_style);
+        return;
+    }
+
+    let bottom = rect.y + rect.height.saturating_sub(1);
+
+    buf[(rect.x, rect.y)]
+        .set_symbol("╭")
+        .set_style(border_style);
+    for x in rect.x + 1..right {
+        buf[(x, rect.y)].set_symbol("─").set_style(border_style);
+    }
+    buf[(right, rect.y)].set_symbol("╮").set_style(border_style);
+
+    render_workspace_card_text_row(
+        buf,
+        rect.x,
+        right,
+        rect.y + 1,
+        &name,
+        border_style,
+        name_style,
+    );
+    render_workspace_card_text_row(
+        buf,
+        rect.x,
+        right,
+        rect.y + 2,
+        &branch,
+        border_style,
+        branch_style,
+    );
+
+    buf[(rect.x, bottom)]
+        .set_symbol("╰")
+        .set_style(border_style);
+    for x in rect.x + 1..right {
+        buf[(x, bottom)].set_symbol("─").set_style(border_style);
+    }
+    buf[(right, bottom)].set_symbol("╯").set_style(border_style);
+}
+
+fn render_workspace_card_compact(
+    buf: &mut ratatui::buffer::Buffer,
+    rect: Rect,
+    right: u16,
+    name: &str,
+    border_style: Style,
+    name_style: Style,
+) {
+    buf[(rect.x, rect.y)]
+        .set_symbol("╭")
+        .set_style(border_style);
+    for (idx, ch) in name.chars().enumerate() {
+        let x = rect.x + 1 + idx as u16;
+        if x >= right {
+            break;
+        }
+        buf[(x, rect.y)]
+            .set_symbol(&ch.to_string())
+            .set_style(name_style);
+    }
+    buf[(right, rect.y)].set_symbol("╮").set_style(border_style);
+}
+
+fn render_workspace_card_text_row(
+    buf: &mut ratatui::buffer::Buffer,
+    left: u16,
+    right: u16,
+    y: u16,
+    text: &str,
+    border_style: Style,
+    text_style: Style,
+) {
+    buf[(left, y)].set_symbol("│").set_style(border_style);
+    for (idx, ch) in text.chars().enumerate() {
+        let x = left + 1 + idx as u16;
+        if x >= right {
+            break;
+        }
+        buf[(x, y)]
+            .set_symbol(&ch.to_string())
+            .set_style(text_style);
+    }
+    buf[(right, y)].set_symbol("│").set_style(border_style);
+}
+
+fn pad_to_width(text: &str, width: usize) -> String {
+    format!("{text:<width$}")
+}
+
+fn render_agent_panel(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    let (_, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+    if detail_area.width == 0 || detail_area.height == 0 {
+        return;
+    }
+
+    let divider = sidebar_section_divider_rect(area, app.sidebar_section_split);
+    if divider.width > 0 && divider.height > 0 {
+        let buf = frame.buffer_mut();
+        for x in divider.x..divider.x + divider.width {
+            buf[(x, divider.y)]
+                .set_symbol("─")
+                .set_style(Style::default().fg(app.palette.surface_dim));
+        }
+    }
+
+    render_sidebar_line(
+        frame,
+        Rect::new(detail_area.x, detail_area.y + 1, detail_area.width, 1),
+        Line::from(vec![
+            Span::styled(" agents", Style::default().fg(app.palette.overlay0)),
+            Span::styled(
+                format!(" {}", agent_panel_toggle_label(app.agent_panel_scope)),
+                Style::default().fg(app.palette.accent),
+            ),
+        ]),
+    );
+
+    let entries = agent_panel_entries_from(app, terminal_runtimes);
+    let body = agent_panel_body_rect(detail_area, false);
+    if body.width == 0 || body.height == 0 {
+        return;
+    }
+
+    let mut row = body.y;
+    for entry in entries.into_iter().skip(app.agent_panel_scroll) {
+        if row >= body.y + body.height {
+            break;
+        }
+        let label = agent_entry_label(&entry);
+        let status = agent_panel_status_key(entry.state, entry.seen);
+        let color = match entry.state {
+            AgentState::Working => app.palette.yellow,
+            AgentState::Blocked => app.palette.red,
+            AgentState::Idle if !entry.seen => app.palette.green,
+            AgentState::Idle => app.palette.overlay0,
+            AgentState::Unknown => app.palette.overlay0,
+        };
+        let text_width = body.width.saturating_sub(4) as usize;
+        render_sidebar_line(
+            frame,
+            Rect::new(body.x, row, body.width, 1),
+            Line::from(vec![
+                Span::styled(" ● ", Style::default().fg(color)),
+                Span::styled(
+                    truncate_chars(&label, text_width),
+                    Style::default().fg(app.palette.text),
+                ),
+            ]),
+        );
+        row = row.saturating_add(1);
+        if row >= body.y + body.height {
+            break;
+        }
+        render_sidebar_line(
+            frame,
+            Rect::new(body.x, row, body.width, 1),
+            Line::from(Span::styled(
+                format!("   {}", truncate_chars(status, text_width)),
+                Style::default().fg(app.palette.overlay0),
+            )),
+        );
+        row = row.saturating_add(2);
+    }
+}
+
+fn agent_entry_label(entry: &AgentPanelEntry) -> String {
+    let mut label = entry.primary_label.clone();
+    if let Some(tab) = &entry.primary_tab_label {
+        label.push_str(" · ");
+        label.push_str(tab);
+    }
+    if let Some(agent) = &entry.agent_label {
+        label.push_str(" · ");
+        label.push_str(agent);
+    }
+    label
+}
+
+fn render_sidebar_line(frame: &mut Frame, rect: Rect, line: Line<'_>) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    frame.render_widget(Paragraph::new(line), rect);
+}
+
+fn sidebar_state_dot(state: AgentState, seen: bool, app: &AppState) -> (&'static str, Style) {
+    let color = match state {
+        AgentState::Working => app.palette.yellow,
+        AgentState::Blocked => app.palette.red,
+        AgentState::Idle if !seen => app.palette.green,
+        AgentState::Idle => app.palette.overlay0,
+        AgentState::Unknown => app.palette.overlay0,
+    };
+    ("●", Style::default().fg(color))
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    text.chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>()
+        + "…"
 }
 
 #[cfg(test)]
@@ -626,12 +972,19 @@ mod tests {
     use crate::{detect::Agent, workspace::Workspace};
 
     #[test]
-    fn expanded_sidebar_toggle_sits_inside_sidebar_content() {
-        let area = Rect::new(0, 0, 26, 20);
+    fn expanded_sidebar_toggle_sits_in_upper_left_corner() {
+        let area = Rect::new(2, 3, 26, 20);
         let toggle = expanded_sidebar_toggle_rect(area);
 
-        assert_eq!(toggle.x, area.x + area.width - 2);
-        assert_eq!(toggle.y, area.y + area.height - 1);
+        assert_eq!(toggle, Rect::new(area.x, area.y, 1, 1));
+    }
+
+    #[test]
+    fn collapsed_sidebar_toggle_sits_in_upper_left_corner() {
+        let area = Rect::new(2, 3, 4, 20);
+        let toggle = collapsed_sidebar_toggle_rect(area);
+
+        assert_eq!(toggle, Rect::new(area.x, area.y, 1, 1));
     }
 
     #[test]
@@ -827,7 +1180,7 @@ mod tests {
         assert!(!cards[0].indented);
         assert_eq!(cards[1].ws_idx, 1);
         assert!(cards[1].indented);
-        assert_eq!(cards[1].rect.y, cards[0].rect.y + cards[0].rect.height + 1);
+        assert_eq!(cards[1].rect.y, cards[0].rect.y + cards[0].rect.height);
     }
 
     #[test]
@@ -885,7 +1238,7 @@ mod tests {
         app.active = None;
         app.mode = Mode::Terminal;
 
-        let ws_area = Rect::new(0, 0, 30, 6);
+        let ws_area = Rect::new(0, 0, 30, 7);
         let metrics = workspace_list_scroll_metrics(&app, ws_area);
 
         assert_eq!(metrics.viewport_rows, 1);

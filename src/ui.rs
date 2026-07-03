@@ -67,10 +67,10 @@ pub(crate) use self::{
         agent_panel_body_rect, agent_panel_entries, agent_panel_scroll_metrics,
         agent_panel_scrollbar_rect, agent_panel_toggle_rect, collapsed_sidebar_sections,
         collapsed_sidebar_toggle_rect, compute_workspace_card_areas, expanded_sidebar_sections,
-        expanded_sidebar_toggle_rect, normalized_workspace_scroll, sidebar_section_divider_rect,
-        workspace_drop_indicator_row, workspace_list_entries, workspace_list_rect,
-        workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
-        WorkspaceListEntry,
+        expanded_sidebar_toggle_rect, normalized_workspace_scroll, render_sidebar,
+        sidebar_section_divider_rect, workspace_drop_indicator_row, workspace_list_entries,
+        workspace_list_rect, workspace_list_scroll_metrics, workspace_list_scrollbar_rect,
+        workspace_parent_group_state, WorkspaceListEntry,
     },
 };
 pub(crate) use self::{
@@ -174,13 +174,26 @@ fn compute_view_internal(
         return;
     }
 
+    let sidebar_width = desktop_sidebar_width(app, area.width);
+    let sidebar_rect = if sidebar_width > 0 {
+        Rect::new(area.x, area.y, sidebar_width, area.height)
+    } else {
+        Rect::default()
+    };
+    let main_area = Rect::new(
+        area.x.saturating_add(sidebar_width),
+        area.y,
+        area.width.saturating_sub(sidebar_width),
+        area.height,
+    );
+
     let has_tabs = app.active.and_then(|i| app.workspaces.get(i)).is_some();
-    let (tab_bar_rect, terminal_area) = if has_tabs && area.height > 1 {
+    let (tab_bar_rect, terminal_area) = if has_tabs && main_area.height > 1 {
         let [tab_bar_rect, terminal_area] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(main_area);
         (tab_bar_rect, terminal_area)
     } else {
-        (Rect::default(), area)
+        (Rect::default(), main_area)
     };
     app.workspace_scroll = 0;
     app.agent_panel_scroll = 0;
@@ -230,8 +243,12 @@ fn compute_view_internal(
 
     app.view = crate::app::ViewState {
         layout: ViewLayout::Desktop,
-        sidebar_rect: Rect::default(),
-        workspace_card_areas: Vec::new(),
+        sidebar_rect,
+        workspace_card_areas: if app.sidebar_collapsed {
+            Vec::new()
+        } else {
+            compute_workspace_card_areas(app, sidebar_rect)
+        },
         tab_bar_rect,
         tab_hit_areas: tab_bar_view.tab_hit_areas,
         tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
@@ -248,6 +265,29 @@ fn compute_view_internal(
     };
     app.view.pane_chrome_controls = self::panes::compute_pane_chrome_controls(app);
     app.view.pane_title_hit_areas = self::panes::compute_pane_title_hit_areas(app);
+}
+
+fn desktop_sidebar_width(app: &AppState, total_width: u16) -> u16 {
+    if total_width == 0 {
+        return 0;
+    }
+
+    const MIN_MAIN_WIDTH: u16 = 20;
+
+    let max_width = if total_width > MIN_MAIN_WIDTH {
+        total_width - MIN_MAIN_WIDTH
+    } else if total_width > 1 {
+        1
+    } else {
+        total_width
+    };
+    let desired_width = if app.sidebar_collapsed {
+        1
+    } else {
+        app.sidebar_width
+            .clamp(app.sidebar_min_width, app.sidebar_max_width)
+    };
+    desired_width.min(max_width)
 }
 
 fn compute_mobile_view(
@@ -342,6 +382,7 @@ pub fn render_with_runtime_registry(
         render_mobile_header(app, terminal_runtimes, frame, app.view.mobile_header_rect);
     }
     if app.view.layout != ViewLayout::Mobile {
+        render_sidebar(app, terminal_runtimes, frame, app.view.sidebar_rect);
         render_tab_bar(app, frame, tab_bar_area);
     }
     render_panes(app, terminal_runtimes, frame, terminal_area);
@@ -575,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_layout_uses_full_width_without_sidebar() {
+    fn desktop_layout_reserves_sidebar_space() {
         let mut app = crate::app::state::AppState::test_new();
         app.workspaces = vec![Workspace::test_new("one")];
         app.active = Some(0);
@@ -584,9 +625,44 @@ mod tests {
 
         compute_view(&mut app, Rect::new(0, 0, 100, 20));
 
-        assert_eq!(app.view.sidebar_rect, Rect::default());
-        assert_eq!(app.view.tab_bar_rect, Rect::new(0, 0, 100, 1));
-        assert_eq!(app.view.terminal_area, Rect::new(0, 1, 100, 19));
+        assert_eq!(app.view.sidebar_rect, Rect::new(0, 0, 26, 20));
+        assert_eq!(app.view.tab_bar_rect, Rect::new(26, 0, 74, 1));
+        assert_eq!(app.view.terminal_area, Rect::new(26, 1, 74, 19));
+    }
+
+    #[test]
+    fn expanded_sidebar_renders_upper_left_chevron() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one")];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+
+        compute_view(&mut app, Rect::new(0, 0, 100, 20));
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(&app, frame)).unwrap();
+
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "‹");
+    }
+
+    #[test]
+    fn collapsed_sidebar_renders_upper_left_chevron() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one")];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+        app.sidebar_collapsed = true;
+
+        compute_view(&mut app, Rect::new(0, 0, 100, 20));
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(&app, frame)).unwrap();
+
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "›");
     }
 
     #[test]
@@ -612,7 +688,7 @@ mod tests {
         app.view.workspace_card_areas = compute_workspace_card_areas(&app, app.view.sidebar_rect);
 
         let card = app.view.workspace_card_areas[0].rect;
-        assert_eq!(card.height, 2);
+        assert_eq!(card.height, 4);
         assert_eq!(card.x, 0);
 
         std::fs::remove_dir_all(repo).ok();

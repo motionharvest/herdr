@@ -3388,7 +3388,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_workspace_updates_selection_without_visible_sidebar() {
+    fn switch_workspace_updates_selection_with_visible_sidebar() {
         let mut state = app_with_workspaces(&["a", "b", "c", "d", "e", "f", "g", "h"]);
         crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 80, 14));
 
@@ -3397,7 +3397,7 @@ mod tests {
 
         assert_eq!(state.active, Some(7));
         assert_eq!(state.selected, 7);
-        assert!(state.view.workspace_card_areas.is_empty());
+        assert!(!state.view.workspace_card_areas.is_empty());
     }
 
     #[test]
