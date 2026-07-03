@@ -13,7 +13,7 @@ use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 1;
-const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 1;
+const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 3;
 const WORKSPACE_SECTION_DROP_SLOT_ROWS: u16 = 1;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 
@@ -382,7 +382,7 @@ pub(crate) fn workspace_list_body_rect(area: Rect, has_scrollbar: bool) -> Rect 
     }
 
     let body_y = area.y.saturating_add(WORKSPACE_SECTION_HEADER_ROWS);
-    let footer_y = area.y + area.height.saturating_sub(1);
+    let footer_y = area.y + area.height.saturating_sub(WORKSPACE_SECTION_FOOTER_ROWS);
     let body_height = footer_y.saturating_sub(body_y);
     let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
     Rect::new(area.x, body_y, body_width, body_height)
@@ -712,21 +712,60 @@ fn render_workspace_rows(
     }
 
     let ws_area = workspace_list_rect(app, area);
-    if ws_area != Rect::default() && ws_area.height > 0 {
+    if ws_area != Rect::default() && ws_area.height >= WORKSPACE_SECTION_FOOTER_ROWS {
         let footer = Rect::new(
             ws_area.x,
-            ws_area.y + ws_area.height.saturating_sub(1),
+            ws_area.y + ws_area.height.saturating_sub(WORKSPACE_SECTION_FOOTER_ROWS),
             ws_area.width,
-            1,
+            WORKSPACE_SECTION_FOOTER_ROWS,
         );
-        render_sidebar_line(
-            frame,
-            footer,
-            Line::from(Span::styled(
-                "+ new",
-                Style::default().fg(app.palette.accent),
-            )),
-        );
+        render_new_workspace_button(frame, footer, app);
+    }
+}
+
+fn render_new_workspace_button(frame: &mut Frame, rect: Rect, app: &AppState) {
+    if rect.width < 2 || rect.height < 3 {
+        return;
+    }
+
+    let border_style = Style::default().fg(app.palette.overlay0);
+    let label_style = Style::default().fg(app.palette.overlay0);
+
+    let buf = frame.buffer_mut();
+    let right = rect.x + rect.width.saturating_sub(1);
+    let bottom = rect.y + rect.height.saturating_sub(1);
+
+    buf[(rect.x, rect.y)]
+        .set_symbol("╭")
+        .set_style(border_style);
+    buf[(right, rect.y)].set_symbol("╮").set_style(border_style);
+    buf[(rect.x, bottom)]
+        .set_symbol("╰")
+        .set_style(border_style);
+    buf[(right, bottom)].set_symbol("╯").set_style(border_style);
+    for x in rect.x + 1..right {
+        buf[(x, rect.y)].set_symbol("─").set_style(border_style);
+        buf[(x, bottom)].set_symbol("─").set_style(border_style);
+    }
+    for y in rect.y + 1..bottom {
+        buf[(rect.x, y)].set_symbol("│").set_style(border_style);
+        buf[(right, y)].set_symbol("│").set_style(border_style);
+    }
+
+    let label = "+ new";
+    let inner_width = rect.width.saturating_sub(2) as usize;
+    let label = truncate_chars(label, inner_width);
+    let label_len = label.chars().count() as u16;
+    let mid_y = rect.y + rect.height / 2;
+    let start_x = rect.x + 1 + inner_width.saturating_sub(label_len as usize) as u16 / 2;
+    for (idx, ch) in label.chars().enumerate() {
+        let x = start_x + idx as u16;
+        if x >= right {
+            break;
+        }
+        buf[(x, mid_y)]
+            .set_symbol(&ch.to_string())
+            .set_style(label_style);
     }
 }
 
@@ -1271,7 +1310,7 @@ mod tests {
         app.active = None;
         app.mode = Mode::Terminal;
 
-        let ws_area = Rect::new(0, 0, 30, 7);
+        let ws_area = Rect::new(0, 0, 30, 8);
         let metrics = workspace_list_scroll_metrics(&app, ws_area);
 
         assert_eq!(metrics.viewport_rows, 1);

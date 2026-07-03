@@ -357,7 +357,7 @@ fn pane_chrome_title_for_pane(
         .and_then(|pane| app.terminals.get(&pane.attached_terminal_id));
     let cwd = ws.active_tab().and_then(|tab| {
         tab.terminal_id(pane_id)
-            .and_then(|terminal_id| app.terminals.get(&terminal_id))
+            .and_then(|terminal_id| app.terminals.get(terminal_id))
             .map(|terminal| terminal.cwd.clone())
     });
     let git_status = ws.git_status_for_pane(pane_id);

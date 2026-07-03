@@ -4,6 +4,8 @@ use crate::app::state::{AppState, Mode, ViewLayout};
 
 use super::ScrollbarClickTarget;
 
+const SIDEBAR_FOOTER_ROWS: u16 = 3;
+
 impl AppState {
     pub(super) fn workspace_list_rect(&self) -> Rect {
         let sidebar = self.view.sidebar_rect;
@@ -169,14 +171,13 @@ impl AppState {
         if ws_area == Rect::default() {
             return Rect::default();
         }
-        let y = ws_area.y + ws_area.height.saturating_sub(1);
-        Rect::new(ws_area.x, y, ws_area.width, 1)
+        let height = SIDEBAR_FOOTER_ROWS.min(ws_area.height.max(1));
+        let y = ws_area.y + ws_area.height.saturating_sub(height);
+        Rect::new(ws_area.x, y, ws_area.width, height)
     }
 
     pub(crate) fn sidebar_new_button_rect(&self) -> Rect {
-        let footer = self.sidebar_footer_rect();
-        let width = 5u16.min(footer.width.max(1));
-        Rect::new(footer.x, footer.y, width, footer.height)
+        self.sidebar_footer_rect()
     }
 
     pub(crate) fn global_launcher_rect(&self) -> Rect {
