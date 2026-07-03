@@ -1183,10 +1183,7 @@ impl AppState {
             return;
         }
 
-        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
-            self.view.sidebar_rect,
-            self.sidebar_section_split,
-        );
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(self, self.view.sidebar_rect);
         let metrics = crate::ui::agent_panel_scroll_metrics(self, detail_area);
         let visible = metrics.viewport_rows;
         if visible == 0 {

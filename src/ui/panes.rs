@@ -257,8 +257,7 @@ fn render_pane_internal_right_edge(
     let vertical_end = vertical_bottom.saturating_add(1);
 
     if vertical_top <= vertical_bottom {
-        for (segment_start, segment_end) in
-            y_segments_outside(vertical_top, vertical_end, hidden_y)
+        for (segment_start, segment_end) in y_segments_outside(vertical_top, vertical_end, hidden_y)
         {
             render_vertical_edge_column(frame, x, segment_start, segment_end, edge_style);
         }
@@ -266,13 +265,7 @@ fn render_pane_internal_right_edge(
         let hidden_start = hidden_y.0.max(vertical_top);
         let hidden_end = hidden_y.1.min(vertical_end);
         if hidden_start < hidden_end {
-            render_dashed_vertical_edge_column(
-                frame,
-                x,
-                hidden_start,
-                hidden_end,
-                dim_edge_style,
-            );
+            render_dashed_vertical_edge_column(frame, x, hidden_start, hidden_end, dim_edge_style);
         }
     }
 
@@ -1544,14 +1537,20 @@ mod tests {
             "│",
             "dashed shared left border should start with a vertical rule"
         );
-        assert_eq!(buffer[(left_x, right.y + 1)].fg, app.palette.dim_pane_border());
+        assert_eq!(
+            buffer[(left_x, right.y + 1)].fg,
+            app.palette.dim_pane_border()
+        );
         assert_ne!(
             buffer[(left_x, right.y + 2)].symbol(),
             "│",
             "dashed shared left border should leave every other row blank"
         );
         assert_eq!(buffer[(left_x, right.y + 3)].symbol(), "│");
-        assert_eq!(buffer[(left_x, right.y + 3)].fg, app.palette.dim_pane_border());
+        assert_eq!(
+            buffer[(left_x, right.y + 3)].fg,
+            app.palette.dim_pane_border()
+        );
     }
 
     #[test]

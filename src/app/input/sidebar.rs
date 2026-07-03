@@ -10,7 +10,7 @@ impl AppState {
         if self.sidebar_collapsed || sidebar.width <= 1 || sidebar.height == 0 {
             return Rect::default();
         }
-        crate::ui::workspace_list_rect(sidebar, self.sidebar_section_split)
+        crate::ui::workspace_list_rect(self, sidebar)
     }
 
     pub(super) fn agent_panel_rect(&self) -> Rect {
@@ -18,8 +18,7 @@ impl AppState {
         if self.sidebar_collapsed || sidebar.width <= 1 || sidebar.height == 0 {
             return Rect::default();
         }
-        let (_, detail_area) =
-            crate::ui::expanded_sidebar_sections(sidebar, self.sidebar_section_split);
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(self, sidebar);
         detail_area
     }
 
@@ -283,10 +282,7 @@ impl AppState {
         if self.sidebar_collapsed {
             return false;
         }
-        let rect = crate::ui::sidebar_section_divider_rect(
-            self.view.sidebar_rect,
-            self.sidebar_section_split,
-        );
+        let rect = crate::ui::sidebar_section_divider_rect(self, self.view.sidebar_rect);
         rect.width > 0
             && col >= rect.x
             && col < rect.x + rect.width
@@ -447,10 +443,7 @@ impl AppState {
             return false;
         }
 
-        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
-            self.view.sidebar_rect,
-            self.sidebar_section_split,
-        );
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(self, self.view.sidebar_rect);
         let rect = crate::ui::agent_panel_toggle_rect(detail_area, self.agent_panel_scope);
         rect.width > 0
             && col >= rect.x

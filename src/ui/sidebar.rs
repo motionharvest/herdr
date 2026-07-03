@@ -13,6 +13,8 @@ use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 1;
+const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 1;
+const WORKSPACE_SECTION_DROP_SLOT_ROWS: u16 = 1;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 
 pub(crate) struct AgentPanelEntry {
@@ -28,7 +30,27 @@ pub(crate) struct AgentPanelEntry {
     pub state_labels: std::collections::HashMap<String, String>,
 }
 
-fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
+fn workspace_list_content_height(app: &AppState) -> u16 {
+    let entry_rows = workspace_list_entries(app)
+        .iter()
+        .fold(0u16, |rows, entry| match entry {
+            WorkspaceListEntry::Workspace { ws_idx, .. } => app
+                .workspaces
+                .get(*ws_idx)
+                .map_or(rows, |ws| rows.saturating_add(workspace_row_height(ws))),
+        });
+
+    WORKSPACE_SECTION_HEADER_ROWS
+        .saturating_add(WORKSPACE_SECTION_FOOTER_ROWS)
+        .saturating_add(WORKSPACE_SECTION_DROP_SLOT_ROWS)
+        .saturating_add(entry_rows)
+}
+
+fn sidebar_section_heights(
+    total_h: u16,
+    split_ratio: f32,
+    workspace_required_h: u16,
+) -> (u16, u16) {
     if total_h == 0 {
         return (0, 0);
     }
@@ -39,31 +61,40 @@ fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
     }
 
     let ratio = split_ratio.clamp(0.65, 0.9);
-    let ws_h = ((total_h as f32) * ratio).round() as u16;
-    let ws_h = ws_h.clamp(3, total_h.saturating_sub(3));
+    let ws_h_max = ((total_h as f32) * ratio).round() as u16;
+    let ws_h_max = ws_h_max.clamp(3, total_h.saturating_sub(3));
+    let ws_h = workspace_required_h.clamp(2, ws_h_max);
     let detail_h = total_h.saturating_sub(ws_h);
     (ws_h, detail_h)
 }
 
-pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, Rect) {
+pub(crate) fn expanded_sidebar_sections(app: &AppState, area: Rect) -> (Rect, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.width == 0 || content.height == 0 {
         return (Rect::default(), Rect::default());
     }
 
-    let (ws_h, detail_h) = sidebar_section_heights(content.height, split_ratio);
+    let (ws_h, detail_h) = sidebar_section_heights(
+        content.height,
+        app.sidebar_section_split,
+        workspace_list_content_height(app),
+    );
     let ws_area = Rect::new(content.x, content.y, content.width, ws_h);
     let detail_area = Rect::new(content.x, content.y + ws_h, content.width, detail_h);
     (ws_area, detail_area)
 }
 
-pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect {
+pub(crate) fn sidebar_section_divider_rect(app: &AppState, area: Rect) -> Rect {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.width == 0 || content.height < 6 {
         return Rect::default();
     }
 
-    let (ws_h, _) = sidebar_section_heights(content.height, split_ratio);
+    let (ws_h, _) = sidebar_section_heights(
+        content.height,
+        app.sidebar_section_split,
+        workspace_list_content_height(app),
+    );
     Rect::new(content.x, content.y + ws_h, content.width, 1)
 }
 
@@ -226,7 +257,7 @@ pub(crate) enum WorkspaceListEntry {
 }
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
-    let ws_area = workspace_list_rect(area, app.sidebar_section_split);
+    let ws_area = workspace_list_rect(app, area);
     let body = workspace_list_body_rect(ws_area, false);
     if body.height == 0 {
         return requested;
@@ -340,8 +371,8 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
     entries
 }
 
-pub(crate) fn workspace_list_rect(area: Rect, split_ratio: f32) -> Rect {
-    let (ws_area, _) = expanded_sidebar_sections(area, split_ratio);
+pub(crate) fn workspace_list_rect(app: &AppState, area: Rect) -> Rect {
+    let (ws_area, _) = expanded_sidebar_sections(app, area);
     ws_area
 }
 
@@ -474,7 +505,7 @@ pub(crate) fn compute_workspace_list_areas(
     app: &AppState,
     area: Rect,
 ) -> (Vec<crate::app::state::WorkspaceCardArea>, Vec<()>) {
-    let ws_area = workspace_list_rect(area, app.sidebar_section_split);
+    let ws_area = workspace_list_rect(app, area);
     if ws_area == Rect::default() {
         return (Vec::new(), Vec::new());
     }
@@ -680,7 +711,7 @@ fn render_workspace_rows(
         render_workspace_card(frame, card.rect, &name, &branch, selected, app);
     }
 
-    let ws_area = workspace_list_rect(area, app.sidebar_section_split);
+    let ws_area = workspace_list_rect(app, area);
     if ws_area != Rect::default() && ws_area.height > 0 {
         let footer = Rect::new(
             ws_area.x,
@@ -847,12 +878,12 @@ fn render_agent_panel(
     frame: &mut Frame,
     area: Rect,
 ) {
-    let (_, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+    let (_, detail_area) = expanded_sidebar_sections(app, area);
     if detail_area.width == 0 || detail_area.height == 0 {
         return;
     }
 
-    let divider = sidebar_section_divider_rect(area, app.sidebar_section_split);
+    let divider = sidebar_section_divider_rect(app, area);
     if divider.width > 0 && divider.height > 0 {
         let buf = frame.buffer_mut();
         for x in divider.x..divider.x + divider.width {
@@ -1122,7 +1153,8 @@ mod tests {
 
     #[test]
     fn expanded_sidebar_sections_handle_tiny_heights() {
-        let (ws_area, detail_area) = expanded_sidebar_sections(Rect::new(0, 0, 20, 5), 0.9);
+        let app = AppState::test_new();
+        let (ws_area, detail_area) = expanded_sidebar_sections(&app, Rect::new(0, 0, 20, 5));
 
         assert_eq!(ws_area, Rect::new(0, 0, 19, 3));
         assert_eq!(detail_area, Rect::new(0, 3, 19, 2));
@@ -1130,7 +1162,8 @@ mod tests {
 
     #[test]
     fn sidebar_section_divider_is_hidden_for_tiny_heights() {
-        let divider = sidebar_section_divider_rect(Rect::new(0, 0, 20, 5), 0.5);
+        let app = AppState::test_new();
+        let divider = sidebar_section_divider_rect(&app, Rect::new(0, 0, 20, 5));
 
         assert_eq!(divider, Rect::default());
     }
