@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## [0.6.9] - 2026-07-06
+
+### Added
+- Added tabs on the sidebar for spaces, making it easier to switch between workspaces.
+
+### Changed
+- Redesigned the sidebar workspace layout with more room for agents.
+
+### Fixed
+- Fixed the agent toggle in the sidebar.
+- The entire pane title is now muted on unfocused panes.
+- Agent label color in the pane title stays distinct when git info is shown.
+
 ## [0.6.8] - 2026-06-04
 
 This is a hotfix release for v0.6.7, prioritizing a server-crash fix for panes that print complex Unicode or emoji output.
