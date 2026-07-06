@@ -42,7 +42,9 @@ jobs:
         include:
           - os: ubuntu-latest
             nextest_filter: all()
-          - os: macos-latest
+          # macos-15: Zig 0.15.2 (required by vendored libghostty-vt) cannot
+          # link the macOS 26 SDK shipped on macos-latest (macos-26 image).
+          - os: macos-15
             nextest_filter: not binary(live_handoff)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
