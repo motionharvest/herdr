@@ -550,15 +550,6 @@ impl AppState {
                         }
                     }
 
-                    if let Some(idx) = self.workspace_at_row(mouse.row) {
-                        self.workspace_press = Some(WorkspacePressState {
-                            ws_idx: idx,
-                            start_col: mouse.column,
-                            start_row: mouse.row,
-                        });
-                        return None;
-                    }
-
                     if self.on_agent_panel_scope_toggle(mouse.column, mouse.row) {
                         self.agent_panel_scope = match self.agent_panel_scope {
                             AgentPanelScope::CurrentWorkspace => AgentPanelScope::AllWorkspaces,
@@ -566,6 +557,15 @@ impl AppState {
                         };
                         self.agent_panel_scroll = 0;
                         self.mark_session_dirty();
+                        return None;
+                    }
+
+                    if let Some(idx) = self.workspace_at_row(mouse.row) {
+                        self.workspace_press = Some(WorkspacePressState {
+                            ws_idx: idx,
+                            start_col: mouse.column,
+                            start_row: mouse.row,
+                        });
                         return None;
                     }
 

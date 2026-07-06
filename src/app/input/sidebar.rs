@@ -712,12 +712,58 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
+        app.state.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
         app.state.agent_panel_scroll = 3;
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 20);
+        app.state.view.workspace_card_areas =
+            crate::ui::compute_workspace_card_areas(&app.state, app.state.view.sidebar_rect);
 
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 16));
+        let (_, detail_area) =
+            crate::ui::expanded_sidebar_sections(&app.state, app.state.view.sidebar_rect);
+        let header =
+            crate::ui::agent_panel_toggle_rect(detail_area, AgentPanelScope::CurrentWorkspace);
+        assert_ne!(header, Rect::default());
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            header.x + 2,
+            header.y,
+        ));
 
         assert_eq!(app.state.agent_panel_scope, AgentPanelScope::AllWorkspaces);
-        assert_eq!(app.state.agent_panel_scroll, 3);
+        assert_eq!(app.state.agent_panel_scroll, 0);
+    }
+
+    #[test]
+    fn clicking_agent_panel_toggle_works_with_many_workspaces() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = (0..6)
+            .map(|idx| Workspace::test_new(&format!("workspace-{idx}")))
+            .collect();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 24);
+        app.state.view.workspace_card_areas =
+            crate::ui::compute_workspace_card_areas(&app.state, app.state.view.sidebar_rect);
+
+        let (_, detail_area) =
+            crate::ui::expanded_sidebar_sections(&app.state, app.state.view.sidebar_rect);
+        assert!(
+            detail_area.height >= 2,
+            "agent section should keep room for the header row"
+        );
+
+        let header =
+            crate::ui::agent_panel_toggle_rect(detail_area, AgentPanelScope::CurrentWorkspace);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            header.x + header.width.saturating_sub(2),
+            header.y,
+        ));
+
+        assert_eq!(app.state.agent_panel_scope, AgentPanelScope::AllWorkspaces);
     }
 
     #[test]

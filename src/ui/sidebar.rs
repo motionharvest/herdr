@@ -16,6 +16,8 @@ const WORKSPACE_SECTION_HEADER_ROWS: u16 = 1;
 const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 3;
 const WORKSPACE_SECTION_DROP_SLOT_ROWS: u16 = 1;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
+/// Minimum rows reserved for the agent panel section (divider + header + body).
+const MIN_AGENT_SECTION_ROWS: u16 = AGENT_PANEL_HEADER_ROWS.saturating_add(1);
 
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
@@ -63,6 +65,10 @@ fn sidebar_section_heights(
     let ratio = split_ratio.clamp(0.65, 0.9);
     let ws_h_max = ((total_h as f32) * ratio).round() as u16;
     let ws_h_max = ws_h_max.clamp(3, total_h.saturating_sub(3));
+    let ws_h_cap = total_h
+        .saturating_sub(MIN_AGENT_SECTION_ROWS)
+        .max(2);
+    let ws_h_max = ws_h_max.min(ws_h_cap);
     let ws_h = workspace_required_h.clamp(2, ws_h_max);
     let detail_h = total_h.saturating_sub(ws_h);
     (ws_h, detail_h)
@@ -125,19 +131,16 @@ fn agent_panel_toggle_label(scope: AgentPanelScope) -> &'static str {
     }
 }
 
-pub(crate) fn agent_panel_toggle_rect(area: Rect, scope: AgentPanelScope) -> Rect {
+pub(crate) fn agent_panel_header_rect(area: Rect) -> Rect {
     if area.width == 0 || area.height < 2 {
         return Rect::default();
     }
 
-    let label = agent_panel_toggle_label(scope);
-    let width = label.chars().count() as u16;
-    Rect::new(
-        area.x + area.width.saturating_sub(width),
-        area.y + 1,
-        width,
-        1,
-    )
+    Rect::new(area.x, area.y + 1, area.width, 1)
+}
+
+pub(crate) fn agent_panel_toggle_rect(area: Rect, _scope: AgentPanelScope) -> Rect {
+    agent_panel_header_rect(area)
 }
 
 pub(crate) fn agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
