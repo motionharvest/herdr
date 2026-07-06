@@ -65,9 +65,7 @@ fn sidebar_section_heights(
     let ratio = split_ratio.clamp(0.65, 0.9);
     let ws_h_max = ((total_h as f32) * ratio).round() as u16;
     let ws_h_max = ws_h_max.clamp(3, total_h.saturating_sub(3));
-    let ws_h_cap = total_h
-        .saturating_sub(MIN_AGENT_SECTION_ROWS)
-        .max(2);
+    let ws_h_cap = total_h.saturating_sub(MIN_AGENT_SECTION_ROWS).max(2);
     let ws_h_max = ws_h_max.min(ws_h_cap);
     let ws_h = workspace_required_h.clamp(2, ws_h_max);
     let detail_h = total_h.saturating_sub(ws_h);
