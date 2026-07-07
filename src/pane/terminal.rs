@@ -1,6 +1,7 @@
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use ratatui::style::{Color, Modifier, Style};
@@ -31,6 +32,11 @@ use super::{
 
 const DEFAULT_DETECTION_ROWS: usize = 24;
 const KITTY_GRAPHICS_REDRAW_SETTLE: Duration = Duration::from_millis(20);
+/// Longest a synchronized-output batch (`CSI ?2026h`) may suppress renders.
+/// Legitimate batches are frame-scale; an app that dies mid-batch must not
+/// freeze the pane, so past this deadline renders resume even with the mode
+/// still set (kitty and tmux apply the same cap).
+const SYNCHRONIZED_OUTPUT_RENDER_TIMEOUT: Duration = Duration::from_secs(1);
 const MODE_MOUSE_X10: u16 = 9;
 const MODE_MOUSE_PRESS_RELEASE: u16 = 1000;
 const MODE_MOUSE_BUTTON_MOTION: u16 = 1002;
@@ -108,6 +114,7 @@ pub(crate) struct GhosttyPaneTerminal {
     pub core: Mutex<GhosttyPaneCore>,
     key_encoder: Mutex<crate::ghostty::KeyEncoder>,
     pending_pty_responses: Arc<Mutex<Vec<Bytes>>>,
+    core_poison_logged: AtomicBool,
 }
 
 pub(crate) struct GhosttyPaneCore {
@@ -124,6 +131,9 @@ pub(crate) struct GhosttyPaneCore {
     pub child_default_background_changed: bool,
     pub osc52_forwarder: Osc52Forwarder,
     pub xtgettcap_query_tracker: XtgettcapQueryTracker,
+    /// When the current synchronized-output suppression episode began, if one
+    /// is active. Cleared as soon as the mode is observed off.
+    pub synchronized_output_since: Option<Instant>,
 }
 
 pub(crate) struct PaneTerminal {
@@ -321,9 +331,10 @@ impl GhosttyPaneTerminal {
         let callback_responses = pending_pty_responses.clone();
         terminal
             .set_write_pty_callback(move |bytes| {
-                if let Ok(mut responses) = callback_responses.lock() {
-                    responses.push(Bytes::copy_from_slice(bytes));
-                }
+                callback_responses
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(Bytes::copy_from_slice(bytes));
             })
             .map_err(|e| std::io::Error::other(e.to_string()))?;
 
@@ -353,43 +364,51 @@ impl GhosttyPaneTerminal {
                 child_default_background_changed: false,
                 osc52_forwarder: Osc52Forwarder::default(),
                 xtgettcap_query_tracker: XtgettcapQueryTracker::default(),
+                synchronized_output_since: None,
             }),
             key_encoder: Mutex::new(key_encoder),
             pending_pty_responses,
+            core_poison_logged: AtomicBool::new(false),
+        })
+    }
+
+    /// Lock the ghostty core, recovering from poisoning. A panic on some other
+    /// thread while it held this lock must degrade to at-worst-stale terminal
+    /// state, never a permanently dead pane that silently drops PTY output.
+    fn lock_core(&self) -> MutexGuard<'_, GhosttyPaneCore> {
+        self.core.lock().unwrap_or_else(|poisoned| {
+            if !self.core_poison_logged.swap(true, Ordering::Relaxed) {
+                error!("ghostty core lock poisoned; recovering to keep the pane alive");
+            }
+            poisoned.into_inner()
         })
     }
 
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
-        if let Ok(mut core) = self.core.lock() {
-            core.host_terminal_theme = theme;
-            core.transient_default_color_owner_pgid = None;
-            core.child_default_foreground_changed = false;
-            core.child_default_background_changed = false;
-            write_host_terminal_theme(&mut core.terminal, theme);
-        }
+        let mut core = self.lock_core();
+        core.host_terminal_theme = theme;
+        core.transient_default_color_owner_pgid = None;
+        core.child_default_foreground_changed = false;
+        core.child_default_background_changed = false;
+        write_host_terminal_theme(&mut core.terminal, theme);
     }
 
     pub fn has_transient_default_color_override(&self) -> bool {
-        self.core
-            .lock()
-            .map(|core| core.transient_default_color_owner_pgid.is_some())
-            .unwrap_or(false)
+        self.lock_core()
+            .transient_default_color_owner_pgid
+            .is_some()
     }
 
     pub fn maybe_restore_host_terminal_theme(&self, pane_id: PaneId, shell_pid: u32) -> bool {
         {
-            let Ok(core) = self.core.lock() else {
-                return false;
-            };
+            let core = self.lock_core();
             if !should_probe_host_terminal_theme_restore(&core) {
                 return false;
             }
         }
 
         let foreground_job = crate::detect::foreground_job(shell_pid);
-        let Ok(mut core) = self.core.lock() else {
-            return false;
-        };
+        let mut core = self.lock_core();
 
         let alternate_screen = core
             .terminal
@@ -413,15 +432,7 @@ impl GhosttyPaneTerminal {
         _response_writer: &mpsc::Sender<Bytes>,
     ) -> ProcessBytesResult {
         crate::render_prof::counter("pty.bytes", bytes.len() as u64);
-        let Ok(mut core) = self.core.lock() else {
-            error!(pane = pane_id.raw(), "ghostty core lock poisoned in reader");
-            return ProcessBytesResult {
-                request_render: false,
-                render_delay: None,
-                clipboard_writes: Vec::new(),
-                terminal_responses: Vec::new(),
-            };
-        };
+        let mut core = self.lock_core();
 
         let default_color_observation = core.default_color_tracker.observe(bytes);
         if shell_pid > 0 && default_color_observation {
@@ -484,23 +495,46 @@ impl GhosttyPaneTerminal {
         if has_kitty_graphics_sequence {
             debug!(pane = pane_id.raw(), "processed kitty graphics sequence");
         }
-        if let Ok(mut key_encoder) = self.key_encoder.lock() {
-            key_encoder.set_from_terminal(&core.terminal);
-        }
+        self.key_encoder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_from_terminal(&core.terminal);
         let synchronized_output = core
             .terminal
             .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
             .unwrap_or(false);
-        let request_render = !synchronized_output && !has_kitty_graphics_sequence;
-        let render_delay = (!synchronized_output && has_kitty_graphics_sequence)
-            .then_some(KITTY_GRAPHICS_REDRAW_SETTLE);
+        let (suppress_render, sync_batch_started) = if synchronized_output {
+            let batch_started = core.synchronized_output_since.is_none();
+            let since = *core
+                .synchronized_output_since
+                .get_or_insert_with(Instant::now);
+            if since.elapsed() >= SYNCHRONIZED_OUTPUT_RENDER_TIMEOUT {
+                // Batch overran its budget (app likely died or wedged after
+                // ?2026h): resume rendering until the mode is observed off.
+                (false, false)
+            } else {
+                (true, batch_started)
+            }
+        } else {
+            core.synchronized_output_since = None;
+            (false, false)
+        };
+        let request_render = !suppress_render && !has_kitty_graphics_sequence;
+        let render_delay = if suppress_render {
+            // Schedule one fallback render per batch at the deadline, so the
+            // pane still repaints if the batch never ends and no further
+            // output arrives to re-evaluate the timeout.
+            sync_batch_started.then_some(SYNCHRONIZED_OUTPUT_RENDER_TIMEOUT)
+        } else {
+            has_kitty_graphics_sequence.then_some(KITTY_GRAPHICS_REDRAW_SETTLE)
+        };
         if request_render {
             crate::render_prof::event("pty.request_render");
         }
         if render_delay.is_some() {
             crate::render_prof::event("pty.request_render_delayed");
         }
-        if synchronized_output {
+        if suppress_render {
             crate::render_prof::event("pty.synchronized_output_suppressed");
         }
         ProcessBytesResult {
@@ -557,29 +591,27 @@ impl GhosttyPaneTerminal {
     }
 
     fn drain_pending_pty_responses(&self) -> Vec<Bytes> {
-        self.pending_pty_responses
+        let mut responses = self
+            .pending_pty_responses
             .lock()
-            .map(|mut responses| std::mem::take(&mut *responses))
-            .unwrap_or_default()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *responses)
     }
 
     pub fn seed_history_ansi(&self, ansi: &str) {
         if ansi.is_empty() {
             return;
         }
-        let Ok(mut core) = self.core.lock() else {
-            return;
-        };
+        let mut core = self.lock_core();
         core.terminal.write(ansi.as_bytes());
-        if let Ok(mut key_encoder) = self.key_encoder.lock() {
-            key_encoder.set_from_terminal(&core.terminal);
-        }
+        self.key_encoder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_from_terminal(&core.terminal);
     }
 
     pub fn seed_handoff_input_state(&self, input_state: InputState) {
-        let Ok(mut core) = self.core.lock() else {
-            return;
-        };
+        let mut core = self.lock_core();
 
         if input_state.alternate_screen {
             core.terminal.write(b"\x1b[?1049h");
@@ -642,9 +674,10 @@ impl GhosttyPaneTerminal {
             core.terminal.write(b"\x1b[>4;2m");
         }
 
-        if let Ok(mut key_encoder) = self.key_encoder.lock() {
-            key_encoder.set_from_terminal(&core.terminal);
-        }
+        self.key_encoder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_from_terminal(&core.terminal);
     }
 
     pub fn seed_keyboard_protocol_flags(&self, flags: u16) {
@@ -658,14 +691,13 @@ impl GhosttyPaneTerminal {
         if ansi.is_empty() {
             return;
         }
-        let Ok(mut core) = self.core.lock() else {
-            return;
-        };
+        let mut core = self.lock_core();
         core.kitty_keyboard.observe(ansi.as_bytes());
         core.terminal.write(ansi.as_bytes());
-        if let Ok(mut key_encoder) = self.key_encoder.lock() {
-            key_encoder.set_from_terminal(&core.terminal);
-        }
+        self.key_encoder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_from_terminal(&core.terminal);
     }
 
     pub fn resize(
@@ -675,7 +707,8 @@ impl GhosttyPaneTerminal {
         cell_width_px: u32,
         cell_height_px: u32,
     ) -> Vec<Bytes> {
-        if let Ok(mut core) = self.core.lock() {
+        let mut core = self.lock_core();
+        {
             let offset_from_bottom = core
                 .terminal
                 .scrollbar()
@@ -730,42 +763,34 @@ impl GhosttyPaneTerminal {
                 }
             }
             terminal_responses
-        } else {
-            Vec::new()
         }
     }
 
     pub fn scroll_up(&self, lines: usize) {
-        if let Ok(mut core) = self.core.lock() {
+        let mut core = self.lock_core();
+        core.terminal.scroll_viewport_delta(-(lines as isize));
+    }
+
+    pub fn scroll_down(&self, lines: usize) {
+        let mut core = self.lock_core();
+        core.terminal.scroll_viewport_delta(lines as isize);
+    }
+
+    pub fn scroll_reset(&self) {
+        let mut core = self.lock_core();
+        core.terminal.scroll_viewport_bottom();
+    }
+
+    pub fn set_scroll_offset_from_bottom(&self, lines: usize) {
+        let mut core = self.lock_core();
+        core.terminal.scroll_viewport_bottom();
+        if lines > 0 {
             core.terminal.scroll_viewport_delta(-(lines as isize));
         }
     }
 
-    pub fn scroll_down(&self, lines: usize) {
-        if let Ok(mut core) = self.core.lock() {
-            core.terminal.scroll_viewport_delta(lines as isize);
-        }
-    }
-
-    pub fn scroll_reset(&self) {
-        if let Ok(mut core) = self.core.lock() {
-            core.terminal.scroll_viewport_bottom();
-        }
-    }
-
-    pub fn set_scroll_offset_from_bottom(&self, lines: usize) {
-        if let Ok(mut core) = self.core.lock() {
-            core.terminal.scroll_viewport_bottom();
-            if lines > 0 {
-                core.terminal.scroll_viewport_delta(-(lines as isize));
-            }
-        }
-    }
-
     pub fn scroll_metrics(&self) -> Option<ScrollMetrics> {
-        let Ok(core) = self.core.lock() else {
-            return None;
-        };
+        let core = self.lock_core();
         let scrollbar = core.terminal.scrollbar().ok()?;
         Some(ScrollMetrics {
             offset_from_bottom: scrollbar
@@ -777,23 +802,19 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn keyboard_protocol(&self) -> Option<crate::input::KeyboardProtocol> {
-        let Ok(core) = self.core.lock() else {
-            return None;
-        };
+        let core = self.lock_core();
         Some(crate::input::KeyboardProtocol::from_kitty_flags(
             core.terminal.kitty_keyboard_flags().ok()? as u16,
         ))
     }
 
     pub fn kitty_keyboard_state_ansi(&self) -> Option<String> {
-        let core = self.core.lock().ok()?;
+        let core = self.lock_core();
         core.kitty_keyboard.replay_ansi()
     }
 
     pub fn input_state(&self) -> Option<InputState> {
-        let Ok(core) = self.core.lock() else {
-            return None;
-        };
+        let core = self.lock_core();
         let alternate_screen =
             core.terminal.active_screen().ok()? == crate::ghostty::ActiveScreen::Alternate;
         let application_cursor = core
@@ -855,7 +876,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn cursor_state(&self) -> Option<TerminalCursorState> {
-        let mut core = self.core.lock().ok()?;
+        let mut core = self.lock_core();
         let GhosttyPaneCore {
             terminal,
             render_state,
@@ -890,9 +911,10 @@ impl GhosttyPaneTerminal {
             return crate::input::encode_terminal_key(key, protocol);
         };
 
-        let Ok(mut encoder) = self.key_encoder.lock() else {
-            return crate::input::encode_terminal_key(key, protocol);
-        };
+        let mut encoder = self
+            .key_encoder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match encoder.encode(&event) {
             Ok(bytes) if !bytes.is_empty() => bytes,
             Ok(_) | Err(_) => crate::input::encode_terminal_key(key, protocol),
@@ -906,9 +928,7 @@ impl GhosttyPaneTerminal {
         row: u16,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        let Ok(core) = self.core.lock() else {
-            return None;
-        };
+        let core = self.lock_core();
         let mut encoder = ghostty_mouse_encoder_for_terminal(&core.terminal)?;
         let event = ghostty_mouse_event_from_button_kind(kind, column, row, modifiers)?;
         encoder.encode(&event).ok()
@@ -921,9 +941,7 @@ impl GhosttyPaneTerminal {
         row: u16,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        let Ok(core) = self.core.lock() else {
-            return None;
-        };
+        let core = self.lock_core();
         if !core.terminal.mode_get(MODE_MOUSE_ANY_MOTION).ok()? {
             return None;
         }
@@ -939,82 +957,61 @@ impl GhosttyPaneTerminal {
         row: u16,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        let Ok(core) = self.core.lock() else {
-            return None;
-        };
+        let core = self.lock_core();
         let mut encoder = ghostty_mouse_encoder_for_terminal(&core.terminal)?;
         let event = ghostty_mouse_event_from_wheel_kind(kind, column, row, modifiers)?;
         encoder.encode(&event).ok()
     }
 
     pub fn visible_text(&self) -> String {
-        self.core
-            .lock()
+        ghostty_visible_text(&mut self.lock_core())
             .ok()
-            .and_then(|mut core| ghostty_visible_text(&mut core).ok())
             .unwrap_or_default()
     }
 
     pub fn visible_ansi(&self) -> String {
-        self.core
-            .lock()
+        ghostty_visible_ansi(&self.lock_core())
             .ok()
-            .and_then(|core| ghostty_visible_ansi(&core).ok())
             .unwrap_or_default()
     }
 
     pub fn detection_text(&self) -> String {
-        self.core
-            .lock()
+        ghostty_detection_text(&self.lock_core())
             .ok()
-            .and_then(|core| ghostty_detection_text(&core).ok())
             .unwrap_or_default()
     }
 
     pub fn recent_text(&self, lines: usize) -> String {
-        self.core
-            .lock()
+        ghostty_recent_text(&self.lock_core(), lines)
             .ok()
-            .and_then(|core| ghostty_recent_text(&core, lines).ok())
             .unwrap_or_default()
     }
 
     pub fn recent_ansi(&self, lines: usize) -> String {
-        self.core
-            .lock()
+        ghostty_recent_ansi(&self.lock_core(), lines, false)
             .ok()
-            .and_then(|core| ghostty_recent_ansi(&core, lines, false).ok())
             .unwrap_or_default()
     }
 
     pub fn recent_unwrapped_text(&self, lines: usize) -> String {
-        self.core
-            .lock()
+        ghostty_recent_text_unwrapped(&self.lock_core(), lines)
             .ok()
-            .and_then(|core| ghostty_recent_text_unwrapped(&core, lines).ok())
             .unwrap_or_default()
     }
 
     pub fn recent_unwrapped_ansi(&self, lines: usize) -> String {
-        self.core
-            .lock()
+        ghostty_recent_ansi(&self.lock_core(), lines, true)
             .ok()
-            .and_then(|core| ghostty_recent_ansi(&core, lines, true).ok())
             .unwrap_or_default()
     }
 
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
-        self.core
-            .lock()
-            .ok()
-            .and_then(|mut core| ghostty_extract_selection(&mut core, selection).ok())
+        ghostty_extract_selection(&mut self.lock_core(), selection).ok()
     }
 
     pub fn visible_hyperlinks(&self, area: Rect) -> Vec<((u16, u16), String, String)> {
-        self.core
-            .lock()
+        ghostty_visible_hyperlinks(&mut self.lock_core(), area)
             .ok()
-            .and_then(|mut core| ghostty_visible_hyperlinks(&mut core, area).ok())
             .unwrap_or_default()
     }
 
@@ -1025,21 +1022,15 @@ impl GhosttyPaneTerminal {
     where
         F: FnMut(crate::ghostty::KittyImageDescriptor) -> bool,
     {
-        self.core
-            .lock()
+        self.lock_core()
+            .terminal
+            .kitty_image_placements_with_data_filter(needs_data)
             .ok()
-            .and_then(|core| {
-                core.terminal
-                    .kitty_image_placements_with_data_filter(needs_data)
-                    .ok()
-            })
             .unwrap_or_default()
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {
-        let Ok(mut core) = self.core.lock() else {
-            return;
-        };
+        let mut core = self.lock_core();
         let host_theme = core.host_terminal_theme;
         let initial_default_foreground = core.initial_default_foreground;
         let initial_default_background = core.initial_default_background;
@@ -1145,11 +1136,7 @@ impl GhosttyPaneTerminal {
         area_width: u16,
         area_height: u16,
     ) -> TerminalDirtyPatchOutcome {
-        self.core
-            .lock()
-            .ok()
-            .map(|mut core| ghostty_collect_dirty_patch(&mut core, area_width, area_height))
-            .unwrap_or(TerminalDirtyPatchOutcome::Fallback)
+        ghostty_collect_dirty_patch(&mut self.lock_core(), area_width, area_height)
     }
 }
 
@@ -2739,12 +2726,110 @@ mod tests {
 
         let begin = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026h", &tx);
         assert!(!begin.request_render);
+        assert_eq!(
+            begin.render_delay,
+            Some(SYNCHRONIZED_OUTPUT_RENDER_TIMEOUT),
+            "batch start must schedule the fallback render"
+        );
 
         let body = pane_terminal.process_pty_bytes(pane_id, 0, b"hello", &tx);
         assert!(!body.request_render);
+        assert_eq!(
+            body.render_delay, None,
+            "fallback render is scheduled once per batch, not per chunk"
+        );
 
         let end = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026l", &tx);
         assert!(end.request_render);
+        assert_eq!(end.render_delay, None);
+    }
+
+    #[test]
+    fn synchronized_output_batch_overrunning_timeout_resumes_renders() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        let pane_terminal = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+
+        let begin = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026h", &tx);
+        assert!(!begin.request_render);
+        {
+            let mut core = pane_terminal.core.lock().unwrap();
+            core.synchronized_output_since =
+                Some(Instant::now() - SYNCHRONIZED_OUTPUT_RENDER_TIMEOUT);
+        }
+
+        let overdue = pane_terminal.process_pty_bytes(pane_id, 0, b"stalled batch", &tx);
+        assert!(
+            overdue.request_render,
+            "renders must resume once a batch overruns the timeout"
+        );
+
+        let still_overdue = pane_terminal.process_pty_bytes(pane_id, 0, b"more", &tx);
+        assert!(
+            still_overdue.request_render,
+            "suppression must stay lifted while the overdue mode remains set"
+        );
+    }
+
+    #[test]
+    fn synchronized_output_suppression_rearms_for_the_next_batch() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        let pane_terminal = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+
+        pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026h", &tx);
+        {
+            let mut core = pane_terminal.core.lock().unwrap();
+            core.synchronized_output_since =
+                Some(Instant::now() - SYNCHRONIZED_OUTPUT_RENDER_TIMEOUT);
+        }
+        assert!(
+            pane_terminal
+                .process_pty_bytes(pane_id, 0, b"overdue", &tx)
+                .request_render
+        );
+
+        let end = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026l", &tx);
+        assert!(end.request_render);
+
+        let next_batch = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026h", &tx);
+        assert!(
+            !next_batch.request_render,
+            "a fresh batch after the overdue one must be suppressed again"
+        );
+        assert_eq!(
+            next_batch.render_delay,
+            Some(SYNCHRONIZED_OUTPUT_RENDER_TIMEOUT),
+            "a fresh batch must re-arm the fallback render"
+        );
+    }
+
+    #[test]
+    fn poisoned_core_lock_recovers_and_keeps_processing_output() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        let pane_terminal = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+
+        let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _core = pane_terminal.core.lock().unwrap();
+            panic!("poison the core lock");
+        }));
+        assert!(poison.is_err());
+        assert!(pane_terminal.core.is_poisoned());
+
+        let processed = pane_terminal.process_pty_bytes(pane_id, 0, b"still alive", &tx);
+        assert!(
+            processed.request_render,
+            "a poisoned lock must not silently drop PTY output"
+        );
+        assert_eq!(pane_terminal.visible_text().trim(), "still alive");
+        assert!(
+            pane_terminal.input_state().is_some(),
+            "pane state accessors must keep working after poisoning"
+        );
     }
 
     #[test]
