@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.6.10] - 2026-07-07
+
+### Fixed
+- Fixed a pane freeze where a zero-length PTY write could permanently wedge the input queue, blocking all further keyboard input and terminal query responses for that pane.
+- Applications that enable synchronized output (`CSI ?2026h`) but never disable it no longer freeze the pane's display: render suppression is now capped at 1 second per batch, with a fallback repaint if no further output arrives.
+- A panic inside pane terminal processing no longer permanently kills the pane. Poisoned terminal locks now recover with a logged warning instead of silently dropping all subsequent output, input state, and renders.
+
 ## [0.6.9] - 2026-07-06
 
 ### Added
