@@ -102,6 +102,9 @@ impl PtyIoActorHandle {
         &self,
         bytes: Bytes,
     ) -> Result<(), mpsc::error::SendError<Bytes>> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
         {
             let user_writes = self
                 .user_writes
@@ -133,6 +136,9 @@ impl PtyIoActorHandle {
         &self,
         bytes: Bytes,
     ) -> Result<(), mpsc::error::TrySendError<Bytes>> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
         let user_writes = self
             .user_writes
             .lock()
@@ -514,7 +520,7 @@ impl PtyIoActorRunner {
     fn handle_data_command(&mut self, command: PtyIoDataCommand) -> bool {
         match command {
             PtyIoDataCommand::WriteUserInput(bytes) => {
-                if self.state == ActorState::Running {
+                if self.state == ActorState::Running && !bytes.is_empty() {
                     self.pending_writes.push_back(bytes);
                 }
             }
@@ -591,7 +597,7 @@ impl PtyIoActorRunner {
 
     fn drain_pre_quiesce_commands(&mut self) {
         while let Ok(PtyIoDataCommand::WriteUserInput(bytes)) = self.data_rx.try_recv() {
-            if self.state != ActorState::Released {
+            if self.state != ActorState::Released && !bytes.is_empty() {
                 self.pending_writes.push_back(bytes);
             }
         }
@@ -639,15 +645,29 @@ impl PtyIoActorRunner {
         if self.state == ActorState::Released {
             return;
         }
-        self.pending_writes.extend(terminal_responses);
+        self.pending_writes.extend(
+            terminal_responses
+                .into_iter()
+                .filter(|bytes| !bytes.is_empty()),
+        );
     }
 
     fn flush_pending_writes_once(&mut self) {
         while let Some(bytes) = self.pending_writes.front() {
             let chunk = &bytes[self.current_write_offset..];
+            if chunk.is_empty() {
+                self.pending_writes.pop_front();
+                self.current_write_offset = 0;
+                continue;
+            }
             match self.file.write(chunk) {
                 Ok(0) => {
+                    // A zero-byte write on a non-empty chunk means the fd is
+                    // wedged; drop the chunk so the queue cannot stall forever
+                    // behind it and spin the poll loop.
                     warn!(pane = self.pane_id, "PTY actor write returned zero bytes");
+                    self.pending_writes.pop_front();
+                    self.current_write_offset = 0;
                     return;
                 }
                 Ok(written) => {
@@ -1155,6 +1175,65 @@ mod tests {
             .expect("queued write reaches peer before quiesce ack");
         assert_eq!(&buf, b"queued-before-ack");
         assert_eq!(runner.state, ActorState::Quiesced);
+    }
+
+    #[test]
+    fn flush_skips_empty_entries_without_wedging_the_queue() {
+        let (actor_socket, mut peer) = UnixStream::pair().expect("socket pair");
+        actor_socket
+            .set_nonblocking(true)
+            .expect("actor socket nonblocking");
+        peer.set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("peer timeout");
+        let (_data_tx, data_rx) = mpsc::channel(ACTOR_COMMAND_BUFFER);
+        let (_control_tx, control_rx) = std_mpsc::channel();
+        let mut runner = PtyIoActorRunner {
+            pane_id: 1,
+            file: std::fs::File::from(unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) }),
+            data_rx,
+            control_rx,
+            state: ActorState::Running,
+            pending_writes: VecDeque::from([
+                Bytes::new(),
+                Bytes::from_static(b"after-empty"),
+                Bytes::new(),
+            ]),
+            current_write_offset: 0,
+            wake_read_fd: fd::create_wake_pipe().expect("wake pipe").read_fd,
+            controls: Arc::new(Mutex::new(SharedPtyControls::default())),
+            on_read: Box::new(|_| PtyReadResult::empty()),
+            on_reader_exit: None,
+            poll_observer: None,
+        };
+
+        runner.flush_pending_writes_once();
+
+        let mut buf = [0u8; 11];
+        peer.read_exact(&mut buf)
+            .expect("write behind empty entry reaches peer");
+        assert_eq!(&buf, b"after-empty");
+        assert!(
+            runner.pending_writes.is_empty(),
+            "empty entries must be dropped, not left wedging the queue"
+        );
+    }
+
+    #[test]
+    fn empty_user_input_is_accepted_but_never_queued() {
+        let (handle, mut peer, _read_rx) = actor_with_socket_pair(false);
+
+        handle
+            .try_write_user_input(Bytes::new())
+            .expect("empty write is a no-op, not an error");
+        handle
+            .try_write_user_input(Bytes::from_static(b"real"))
+            .expect("write command accepted");
+
+        let mut buf = [0u8; 4];
+        peer.read_exact(&mut buf)
+            .expect("input after empty write reaches peer");
+        assert_eq!(&buf, b"real");
+        handle.shutdown();
     }
 
     #[test]
