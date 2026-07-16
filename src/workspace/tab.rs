@@ -11,7 +11,7 @@ use crate::layout::{PaneId, SplitPlacement, TileLayout};
 use crate::pane::PaneState;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
 
-pub(crate) type DetachedPane = (PaneId, TerminalId);
+pub(crate) type DetachedPane = (PaneId, PaneState);
 
 pub struct NewPane {
     pub pane_id: PaneId,
@@ -397,12 +397,17 @@ impl Tab {
         }
 
         let pane = self.panes.remove(&pane_id)?;
-        let terminal_id = pane.attached_terminal_id;
         self.zoomed = false;
         if let Some(next_root) = next_root {
             self.root_pane = next_root;
         }
-        Some((pane_id, terminal_id))
+        Some((pane_id, pane))
+    }
+
+    /// Detach a pane from this tab's layout and return its state.
+    /// Does not touch terminal runtimes.
+    pub fn take_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
+        self.detach_pane(pane_id)
     }
 
     fn promoted_root_if_needed(&self, closing: PaneId) -> Option<PaneId> {

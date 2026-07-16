@@ -1411,6 +1411,66 @@ impl AppState {
         true
     }
 
+    /// Move a live pane into a newly created workspace. Keeps PaneId and TerminalId.
+    pub fn promote_pane_to_new_workspace(&mut self, source_pane_id: crate::layout::PaneId) -> bool {
+        let Some(ws_idx) = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.find_tab_index_for_pane(source_pane_id).is_some())
+        else {
+            return false;
+        };
+        let Some(tab_idx) = self.workspaces[ws_idx].find_tab_index_for_pane(source_pane_id) else {
+            return false;
+        };
+        let Some(tab) = self.workspaces[ws_idx].tabs.get(tab_idx) else {
+            return false;
+        };
+        if tab.zoomed || tab.layout.pane_count() <= 1 {
+            return false;
+        }
+
+        let identity_cwd = self.workspaces[ws_idx]
+            .pane_state(source_pane_id)
+            .and_then(|pane| self.terminals.get(&pane.attached_terminal_id))
+            .map(|terminal| terminal.cwd.clone())
+            .unwrap_or_else(|| self.workspaces[ws_idx].identity_cwd.clone());
+
+        let events = tab.events.clone();
+        let render_notify = tab.render_notify.clone();
+        let render_dirty = tab.render_dirty.clone();
+
+        let Some((pane_id, pane_state)) = self.workspaces[ws_idx].take_pane(source_pane_id) else {
+            return false;
+        };
+
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.pane_id == pane_id)
+        {
+            self.selection = None;
+            self.selection_autoscroll = None;
+        }
+
+        let workspace = crate::workspace::Workspace::from_existing_pane(
+            pane_id,
+            pane_state,
+            identity_cwd,
+            events,
+            render_notify,
+            render_dirty,
+        );
+        let workspace_id = workspace.id.clone();
+        self.workspaces.push(workspace);
+        let new_idx = self.workspaces.len() - 1;
+        crate::logging::workspace_created(&workspace_id, pane_id.raw());
+        self.switch_workspace(new_idx);
+        self.mode = Mode::Terminal;
+        self.mark_session_dirty();
+        true
+    }
+
     pub fn cycle_pane(&mut self, reverse: bool) {
         let Some(ws_idx) = self.active else {
             return;
@@ -3245,6 +3305,7 @@ mod tests {
         state.active = Some(0);
         state.selected = 0;
         state.mode = Mode::Terminal;
+        state.sidebar_collapsed = true;
         state.agent_panel_scope = crate::app::state::AgentPanelScope::CurrentWorkspace;
         for tab_idx in 0..state.workspaces[0].tabs.len() {
             let pane_id = state.workspaces[0].tabs[tab_idx].root_pane;
@@ -3258,6 +3319,44 @@ mod tests {
         let last_idx = state.workspaces[0].tabs.len() - 1;
         assert_eq!(state.workspaces[0].active_tab, last_idx);
         assert_eq!(state.agent_panel_scroll, 0);
+    }
+
+    #[test]
+    fn promote_pane_to_new_workspace_keeps_terminal_and_pane_id() {
+        let mut state = app_with_workspaces(&["source"]);
+        let source = state.workspaces[0].tabs[0].root_pane;
+        let _sibling = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        let terminal_id = state.workspaces[0]
+            .pane_state(source)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+
+        assert!(state.promote_pane_to_new_workspace(source));
+
+        assert_eq!(state.workspaces.len(), 2);
+        assert_eq!(state.active, Some(1));
+        assert_eq!(state.workspaces[0].tabs[0].layout.pane_count(), 1);
+        assert!(state.workspaces[0].pane_state(source).is_none());
+        assert_eq!(state.workspaces[1].tabs[0].root_pane, source);
+        assert_eq!(
+            state.workspaces[1]
+                .pane_state(source)
+                .unwrap()
+                .attached_terminal_id,
+            terminal_id
+        );
+        assert!(state.terminals.contains_key(&terminal_id));
+        assert!(!state.terminal_runtime_shutdowns.contains(&terminal_id));
+    }
+
+    #[test]
+    fn promote_pane_to_new_workspace_rejects_last_pane() {
+        let mut state = app_with_workspaces(&["alone"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        assert!(!state.promote_pane_to_new_workspace(root));
+        assert_eq!(state.workspaces.len(), 1);
     }
 
     #[test]

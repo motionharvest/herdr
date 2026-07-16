@@ -1085,6 +1085,7 @@ pub(crate) enum DragTarget {
     PaneSwap {
         source_pane_id: PaneId,
         hovered_pane_id: Option<PaneId>,
+        create_space: bool,
         moved: bool,
     },
     PaneScrollbar {

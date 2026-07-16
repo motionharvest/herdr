@@ -724,13 +724,30 @@ fn render_workspace_rows(
     }
 }
 
+fn pane_swap_create_space_hover(app: &AppState) -> bool {
+    matches!(
+        app.drag.as_ref().map(|drag| &drag.target),
+        Some(crate::app::state::DragTarget::PaneSwap {
+            create_space: true,
+            moved: true,
+            ..
+        })
+    )
+}
+
 fn render_new_workspace_button(frame: &mut Frame, rect: Rect, app: &AppState) {
     if rect.width < 2 || rect.height < 3 {
         return;
     }
 
-    let border_style = Style::default().fg(app.palette.overlay0);
-    let label_style = Style::default().fg(app.palette.overlay0);
+    let create_space_hover = pane_swap_create_space_hover(app);
+    let accent = if create_space_hover {
+        app.palette.accent
+    } else {
+        app.palette.overlay0
+    };
+    let border_style = Style::default().fg(accent);
+    let label_style = Style::default().fg(accent);
 
     let buf = frame.buffer_mut();
     let right = rect.x + rect.width.saturating_sub(1);
@@ -753,7 +770,11 @@ fn render_new_workspace_button(frame: &mut Frame, rect: Rect, app: &AppState) {
         buf[(right, y)].set_symbol("│").set_style(border_style);
     }
 
-    let label = "+ new";
+    let label = if create_space_hover {
+        "Drop to create"
+    } else {
+        "+ new"
+    };
     let inner_width = rect.width.saturating_sub(2) as usize;
     let label = truncate_chars(label, inner_width);
     let label_len = label.chars().count() as u16;

@@ -9,9 +9,7 @@ use ratatui::layout::Direction;
 use tokio::sync::{mpsc, Notify};
 
 use crate::events::AppEvent;
-use crate::layout::PaneId;
-#[cfg(test)]
-use crate::layout::TileLayout;
+use crate::layout::{PaneId, TileLayout};
 use crate::pane::PaneState;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
 
@@ -552,7 +550,7 @@ impl Workspace {
             return tab_count <= 1 || self.close_active_tab_and_report();
         }
 
-        if let Some((removed, _terminal_id)) = self.active_tab_mut().and_then(Tab::close_focused) {
+        if let Some((removed, _pane)) = self.active_tab_mut().and_then(Tab::close_focused) {
             self.unregister_pane(removed);
         }
         false
@@ -581,10 +579,71 @@ impl Workspace {
             return false;
         }
 
-        if let Some((removed, _terminal_id)) = self.tabs[tab_idx].remove_pane(pane_id) {
+        if let Some((removed, _pane)) = self.tabs[tab_idx].remove_pane(pane_id) {
             self.unregister_pane(removed);
         }
         false
+    }
+
+    /// Take a pane out of this workspace for rehoming (keeps the live terminal).
+    /// Returns `None` when the pane is missing, the tab is zoomed, or it is the
+    /// last pane in its tab.
+    pub fn take_pane(&mut self, pane_id: PaneId) -> Option<(PaneId, PaneState)> {
+        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        let tab = self.tabs.get_mut(tab_idx)?;
+        if tab.zoomed || tab.layout.pane_count() <= 1 {
+            return None;
+        }
+        let detached = tab.take_pane(pane_id)?;
+        self.unregister_pane(detached.0);
+        self.pane_git_statuses.remove(&detached.0);
+        Some(detached)
+    }
+
+    /// Build a workspace whose single root pane keeps an existing PaneId/terminal.
+    pub fn from_existing_pane(
+        pane_id: PaneId,
+        pane_state: PaneState,
+        identity_cwd: PathBuf,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<AtomicBool>,
+    ) -> Self {
+        let layout = TileLayout::from_saved(crate::layout::Node::Pane(pane_id), pane_id);
+        let mut panes = HashMap::new();
+        panes.insert(pane_id, pane_state);
+        let tab = Tab {
+            custom_name: None,
+            number: 1,
+            root_pane: pane_id,
+            layout,
+            panes,
+            #[cfg(test)]
+            runtimes: HashMap::new(),
+            zoomed: false,
+            events,
+            render_notify,
+            render_dirty,
+        };
+        let mut public_pane_numbers = HashMap::new();
+        public_pane_numbers.insert(pane_id, 1);
+        Self {
+            id: generate_workspace_id(),
+            custom_name: None,
+            identity_cwd: identity_cwd.clone(),
+            cached_git_branch: git_branch(&identity_cwd),
+            cached_git_ahead_behind: None,
+            cached_git_space: None,
+            cached_git_worktree_state: GitWorktreeState::Clean,
+            pane_git_statuses: HashMap::new(),
+            worktree_space: None,
+            public_pane_numbers,
+            next_public_pane_number: 2,
+            tabs: vec![tab],
+            active_tab: 0,
+            #[cfg(test)]
+            test_runtimes: HashMap::new(),
+        }
     }
 
     pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
@@ -718,7 +777,7 @@ impl Workspace {
             return false;
         }
 
-        if let Some((removed, _terminal_id)) = self.tabs[tab_idx].close_pane(pane_id) {
+        if let Some((removed, _pane)) = self.tabs[tab_idx].close_pane(pane_id) {
             self.unregister_pane(removed);
         }
         false

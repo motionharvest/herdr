@@ -684,6 +684,7 @@ impl AppState {
                                 target: DragTarget::PaneSwap {
                                     source_pane_id: press.pane_id,
                                     hovered_pane_id: None,
+                                    create_space: false,
                                     moved: false,
                                 },
                             });
@@ -700,10 +701,13 @@ impl AppState {
                 if let Some(source_pane_id) = pane_swap_source {
                     let hovered =
                         self.pane_swap_hover_target(mouse.column, mouse.row, source_pane_id);
+                    let create_space = hovered.is_none()
+                        && rect_contains(self.sidebar_new_button_rect(), mouse.column, mouse.row);
                     if let Some(DragState {
                         target:
                             DragTarget::PaneSwap {
                                 hovered_pane_id,
+                                create_space: create_space_hover,
                                 moved,
                                 ..
                             },
@@ -711,6 +715,7 @@ impl AppState {
                     {
                         *moved = true;
                         *hovered_pane_id = hovered;
+                        *create_space_hover = create_space;
                     }
                 }
 
@@ -864,8 +869,21 @@ impl AppState {
                         target:
                             DragTarget::PaneSwap {
                                 source_pane_id,
+                                create_space: true,
+                                moved: true,
+                                ..
+                            },
+                    }) => {
+                        self.promote_pane_to_new_workspace(source_pane_id);
+                        self.mode = Mode::Terminal;
+                    }
+                    Some(DragState {
+                        target:
+                            DragTarget::PaneSwap {
+                                source_pane_id,
                                 hovered_pane_id: Some(target_pane_id),
                                 moved: true,
+                                ..
                             },
                     }) => {
                         self.swap_panes(source_pane_id, target_pane_id);
@@ -2007,7 +2025,8 @@ mod tests {
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
         let info = app.state.view.pane_infos[0].clone();
         assert_eq!(
-            info.inner_rect.x, 1,
+            info.inner_rect.x,
+            info.rect.x + 1,
             "desktop pane input starts inside the rounded panel border"
         );
         assert!(info.inner_rect.y > 0, "tab bar offset should be present");
@@ -2050,7 +2069,8 @@ mod tests {
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
         let info = app.state.view.pane_infos[0].clone();
         assert_eq!(
-            info.inner_rect.x, 1,
+            info.inner_rect.x,
+            info.rect.x + 1,
             "desktop pane input starts inside the rounded panel border"
         );
         assert!(info.inner_rect.y > 0, "tab bar offset should be present");
@@ -2688,6 +2708,159 @@ mod tests {
             .rect;
         assert_eq!(new_left, right_rect);
         assert_eq!(new_right, left_rect);
+    }
+
+    #[test]
+    fn dragging_pane_title_over_new_space_button_sets_create_space_hover() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let left = app.state.workspaces[0].tabs[0].root_pane;
+        let _right = app.state.workspaces[0].test_split(Direction::Horizontal);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let title_hit = app
+            .state
+            .view
+            .pane_title_hit_areas
+            .iter()
+            .find(|hit| hit.pane_id == left)
+            .expect("left pane title hit area");
+        let start_col = title_hit.rect.x + title_hit.rect.width / 2;
+        let start_row = title_hit.rect.y;
+        let new_button = app.state.sidebar_new_button_rect();
+        assert!(new_button.width > 0 && new_button.height > 0);
+        let target_col = new_button.x + new_button.width / 2;
+        let target_row = new_button.y + new_button.height / 2;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            start_col,
+            start_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::PaneSwap {
+                create_space: true,
+                hovered_pane_id: None,
+                moved: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn dropping_pane_on_new_space_button_promotes_terminal() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let left = app.state.workspaces[0].tabs[0].root_pane;
+        let right = app.state.workspaces[0].test_split(Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(left)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let title_hit = app
+            .state
+            .view
+            .pane_title_hit_areas
+            .iter()
+            .find(|hit| hit.pane_id == left)
+            .expect("left pane title hit area");
+        let start_col = title_hit.rect.x + title_hit.rect.width / 2;
+        let start_row = title_hit.rect.y;
+        let new_button = app.state.sidebar_new_button_rect();
+        let target_col = new_button.x + new_button.width / 2;
+        let target_row = new_button.y + new_button.height / 2;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            start_col,
+            start_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(app.state.active, Some(1));
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 1);
+        assert!(app.state.workspaces[0].pane_state(right).is_some());
+        assert!(app.state.workspaces[0].pane_state(left).is_none());
+        assert_eq!(app.state.workspaces[1].tabs[0].root_pane, left);
+        assert_eq!(
+            app.state.workspaces[1]
+                .pane_state(left)
+                .unwrap()
+                .attached_terminal_id,
+            terminal_id
+        );
+        assert!(app.state.terminals.contains_key(&terminal_id));
+        assert!(app.state.drag.is_none());
+    }
+
+    #[test]
+    fn dropping_pane_outside_targets_refocuses_source() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let left = app.state.workspaces[0].tabs[0].root_pane;
+        let _right = app.state.workspaces[0].test_split(Direction::Horizontal);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let title_hit = app
+            .state
+            .view
+            .pane_title_hit_areas
+            .iter()
+            .find(|hit| hit.pane_id == left)
+            .expect("left pane title hit area");
+        let start_col = title_hit.rect.x + title_hit.rect.width / 2;
+        let start_row = title_hit.rect.y;
+        // Drop on the spaces header (not a pane, not + new).
+        let target_col = app.state.view.sidebar_rect.x + 2;
+        let target_row = app.state.view.sidebar_rect.y;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            start_col,
+            start_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 2);
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), left);
+        assert!(app.state.drag.is_none());
     }
 
     #[test]
