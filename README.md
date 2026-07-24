@@ -1,23 +1,35 @@
 # herdr
 
-
 <p align="center">
   <img src="assets/logo.png" alt="herdr" width="100" />
 </p>
 
 <p align="center">
-  <a href="https://herdr.dev">herdr.dev</a> · <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#supported-agents">supported agents</a> · <a href="https://herdr.dev/docs/integrations/">integrations</a> · <a href="https://herdr.dev/docs/configuration/">configuration</a> · <a href="https://herdr.dev/docs/socket-api/">socket api</a>
+  <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#supported-agents">supported agents</a> · <a href="website/src/content/docs/integrations.mdx">integrations</a> · <a href="website/src/content/docs/configuration.mdx">configuration</a> · <a href="website/src/content/docs/socket-api.mdx">socket api</a> · <a href="#documentation">all docs</a>
 </p>
 
 ---
-
-https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 
 **agent multiplexer that lives in your terminal.**
 
 workspaces, tabs, panes. mouse-native: click, drag, split. every agent at a glance: blocked, working, done. detach and reattach, agents keep running. no gui app, no electron, no mac-only native wrapper. you see the agent's own terminal, not someone's interpretation of it.
 
----
+this is the **motionharvest fork** of [ogulcancelik/herdr](https://github.com/ogulcancelik/herdr), with its own sidebar redesign and workspace interactions on top of upstream.
+
+![herdr overview — three workspaces, one agent working, one blocked, one done](assets/screenshots/overview.svg)
+
+*a real session: the `herdr` workspace with claude working next to a terminal pane, while the sidebar tracks a blocked agent in `webapp` and a finished one in `api`.*
+
+## what's different in this fork
+
+- **sidebar tabs for spaces** — the sidebar got a `spaces` tab layout, making it faster to switch between workspaces
+- **redesigned workspace cards** — more room in the sidebar for the agent list
+- **drag a panel to the New workspace button** — drag any pane onto `+ new` in the sidebar to fly it out into its own workspace
+- **fixed agent toggle** — the `agents all` toggle in the sidebar works reliably
+- **calmer pane titles** — the entire pane title is muted on unfocused panes, and the agent label color stays distinct even when git info is shown
+- **fork install script** — `install.sh` installs from this fork's GitHub releases
+
+see the [changelog](CHANGELOG.md) for the full history.
 
 ## install
 
@@ -31,19 +43,16 @@ Until this fork publishes its own GitHub release, install the upstream binary wi
 HERDR_REPO=ogulcancelik/herdr curl -fsSL https://raw.githubusercontent.com/motionharvest/herdr/main/install.sh | bash
 ```
 
-or install with homebrew:
+or build this fork from source (recommended if you want the fork features above):
 
 ```bash
-brew install herdr
+git clone https://github.com/motionharvest/herdr
+cd herdr
+cargo build --release
+./target/release/herdr
 ```
 
-or install with mise:
-
-```bash
-mise use -g herdr
-```
-
-or download the binary from [releases](https://github.com/ogulcancelik/herdr/releases). requires linux or macos.
+requires linux or macos. full install, update, Homebrew, mise, and Nix details live in the [install docs](website/src/content/docs/install.mdx).
 
 ## quick start
 
@@ -56,6 +65,8 @@ herdr
 Herdr starts or attaches to one background session server. Press `ctrl+b`, then `shift+n` to create a workspace. Run an agent in the root pane. Press `ctrl+b`, then `v` or `minus` to split panes, `ctrl+b`, then `c` to create a tab, and `ctrl+b`, then `w` to switch workspaces.
 
 Press `ctrl+b q` to detach the client. The server and pane processes keep running. Open another terminal and run `herdr` again to reattach.
+
+More in the [quick start docs](website/src/content/docs/quick-start.mdx).
 
 ## core concepts
 
@@ -71,31 +82,24 @@ Press `ctrl+b q` to detach the client. The server and pane processes keep runnin
 
 **Agent awareness.** The sidebar shows blocked, working, done, and idle states. Detection works with process names and terminal output by default. Official integrations can add native session identity for restore, semantic state reports, or both.
 
-## update
+The full concept reference lives in [concepts](website/src/content/docs/concepts.mdx) and [how to work with Herdr](website/src/content/docs/how-to-work.mdx).
 
-Herdr notifies you when a new version is available. Run manually:
+## agent awareness
 
-```bash
-herdr update
-```
+the sidebar shows which agents are blocked, working, or done. workspaces roll up to their most urgent state so you can scan the full list at a glance.
 
-`herdr update` is for installs managed by Herdr's own installer. Homebrew, mise, and Nix installs update through `brew upgrade herdr`, `mise upgrade herdr`, or your Nix workflow, then use the same stop-and-run-again flow if a session is still running the old server. Direct installs can opt into development preview builds with `herdr channel set preview` and return to stable with `herdr channel set stable`. See [install docs](https://herdr.dev/docs/install/) and [session state docs](https://herdr.dev/docs/session-state/) for the full update, restart, restore, and handoff matrix.
+states:
 
-Herdr uses the stable update channel by default. To test preview builds from `master` before the next stable release:
+- 🔴 **blocked** — agent needs input or approval
+- 🟡 **working** — agent is actively running
+- 🔵 **done** — work finished, you have not looked at it yet
+- 🟢 **idle** — done and seen
 
-```bash
-herdr channel set preview
-```
+![a blocked agent asking which framework to use, flagged red in the sidebar](assets/screenshots/blocked.svg)
 
-To return to stable:
+*the `webapp` agent hit a question and went red in the sidebar. the `herdr` agent keeps working in the background.*
 
-```bash
-herdr channel set stable
-```
-
-For direct installs, changing channels also checks that channel and installs its latest binary. If that update fails, run `herdr update` to retry from the configured channel.
-
-Preview is only for direct installs managed by Herdr's updater. Homebrew, mise, and Nix stay on stable and update through their package managers.
+detection works by reading foreground process and terminal output. zero config, no hooks required. official claude code, codex, and opencode integrations provide session restore identity; pi, omp, github copilot cli, hermes, qodercli, and custom socket integrations can report their own state. details in the [agents docs](website/src/content/docs/agents.mdx).
 
 ## how it compares
 
@@ -112,6 +116,16 @@ Preview is only for direct installs managed by Herdr's updater. Homebrew, mise, 
 | agents can orchestrate   | ?    | ?            | ✓     |
 
 tmux gives you persistence and panes, but it was built before agents existed. gui managers show agent state, but they make you leave your terminal and use their wrapped view. herdr is persistence and awareness in one tool that stays out of your way.
+
+## update
+
+Herdr notifies you when a new version is available. Run manually:
+
+```bash
+herdr update
+```
+
+`herdr update` is for installs managed by Herdr's own installer. Homebrew, mise, and Nix installs update through their package managers, then use the same stop-and-run-again flow if a session is still running the old server. Direct installs can opt into development preview builds with `herdr channel set preview` and return to stable with `herdr channel set stable`. See the [install docs](website/src/content/docs/install.mdx) and [session state docs](website/src/content/docs/session-state.mdx) for the full update, restart, restore, and handoff matrix.
 
 ## remote and attach
 
@@ -138,20 +152,7 @@ herdr agent attach <target>
 herdr terminal attach <terminal_id>
 ```
 
-See [persistence and remote docs](https://herdr.dev/docs/persistence-remote/) for remote keybinding, named-session, and handoff details.
-
-## agent awareness
-
-the sidebar shows which agents are blocked, working, or done. workspaces roll up to their most urgent state so you can scan the full list at a glance.
-
-states:
-
-- 🔴 **blocked** — agent needs input or approval
-- 🟡 **working** — agent is actively running
-- 🔵 **done** — work finished, you have not looked at it yet
-- 🟢 **idle** — done and seen
-
-detection works by reading foreground process and terminal output. zero config, no hooks required. official claude code, codex, and opencode integrations provide session restore identity; pi, omp, github copilot cli, hermes, qodercli, and custom socket integrations can report their own state.
+See the [persistence and remote docs](website/src/content/docs/persistence-remote.mdx) for remote keybinding, named-session, and handoff details.
 
 ## lives in your terminal
 
@@ -168,7 +169,13 @@ not a gui window, not a web dashboard, not electron. herdr runs inside whatever 
 
 ## agents can use herdr too
 
-The local Unix socket lets agents create workspaces, split panes, spawn helpers, read output, and wait for state changes. Start with the [socket API docs](https://herdr.dev/docs/socket-api/) and [`SKILL.md`](./SKILL.md).
+The local Unix socket lets agents create workspaces, split panes, spawn helpers, read output, and wait for state changes. Every screenshot in this README was staged and captured by an agent running inside herdr, driving the socket API against a nested session.
+
+![the api workspace: a dev server pane below an agent pane in the same workspace](assets/screenshots/api-workspace.svg)
+
+*one workspace, two panes: an agent on top, the dev server it should talk to below — both real terminals.*
+
+Start with the [socket API docs](website/src/content/docs/socket-api.mdx) and [`SKILL.md`](./SKILL.md).
 
 ## supported agents
 
@@ -194,7 +201,7 @@ automatic detection works out of the box. process name matching plus terminal ou
 
 detected but not fully tested: gemini cli, cline.
 
-for agents outside the built-in list, herdr still works as a terminal multiplexer with workspaces, panes, and tiling. custom integrations can report agent labels over the socket api. see the [socket api docs](https://herdr.dev/docs/socket-api/).
+for agents outside the built-in list, herdr still works as a terminal multiplexer with workspaces, panes, and tiling. custom integrations can report agent labels over the socket api. see the [socket api docs](website/src/content/docs/socket-api.mdx).
 
 ### direct integrations
 
@@ -211,7 +218,7 @@ herdr integration install hermes
 herdr integration install qodercli
 ```
 
-see the [integrations docs](https://herdr.dev/docs/integrations/) for setup details.
+see the [integrations docs](website/src/content/docs/integrations.mdx) for setup details.
 
 ## keybindings
 
@@ -236,7 +243,14 @@ Press `ctrl+b` to enter prefix mode. Default actions are prefix-first and tmux-l
 | `prefix+r` | resize mode |
 | `prefix+q` | detach |
 
-Mouse is supported throughout. Resize mode uses `h`/`l` for width, `j`/`k` for height, and `esc` to exit. Full syntax, optional actions, indexed bindings, and custom command bindings live in the [configuration docs](https://herdr.dev/docs/configuration/).
+Some direct shortcuts work without the prefix:
+
+| key | action |
+|-----|--------|
+| `ctrl+left/right/up/down` | focus the pane in that direction |
+| `ctrl+alt+left/right/up/down` | split — add a new pane in that direction |
+
+Mouse is supported throughout — including dragging a pane onto the sidebar's `+ new` button to move it into its own workspace. Resize mode uses `h`/`l` for width, `j`/`k` for height, and `esc` to exit. Full syntax, optional actions, indexed bindings, and custom command bindings live in the [configuration docs](website/src/content/docs/configuration.mdx).
 
 ## configuration
 
@@ -246,17 +260,28 @@ config file: `~/.config/herdr/config.toml`
 herdr --default-config   # print full default config
 ```
 
-In-app settings cover theme, sound, and toast preferences. Herdr writes logs under `~/.config/herdr/`; in persistent session mode, `herdr-client.log` and `herdr-server.log` are usually the useful files. Full configuration and logging details live in the [configuration docs](https://herdr.dev/docs/configuration/).
+In-app settings cover theme, sound, and toast preferences. Herdr writes logs under `~/.config/herdr/`; in persistent session mode, `herdr-client.log` and `herdr-server.log` are usually the useful files. Full configuration and logging details live in the [configuration docs](website/src/content/docs/configuration.mdx).
 
-## docs
+## documentation
 
-- [quick start](https://herdr.dev/docs/quick-start/) — first session, panes, copy, and named sessions
-- [install](https://herdr.dev/docs/install/) — install, update, Homebrew, mise, and Nix
-- [session state](https://herdr.dev/docs/session-state/) — detach, restart restore, agent restore, and live handoff
-- [configuration](https://herdr.dev/docs/configuration/) — keybindings, themes, notifications, environment variables
-- [integrations](https://herdr.dev/docs/integrations/) — pi, omp, claude code, codex, github copilot cli, opencode, hermes, qodercli integrations
-- [`SKILL.md`](./SKILL.md) — reusable agent skill
-- [socket api](https://herdr.dev/docs/socket-api/) — socket protocol and cli reference
+All documentation ships in this repository under [`website/src/content/docs/`](website/src/content/docs/):
+
+- [documentation index](website/src/content/docs/index.mdx) — starting point for all docs
+- [quick start](website/src/content/docs/quick-start.mdx) — first session, panes, copy, and named sessions
+- [install](website/src/content/docs/install.mdx) — install, update, Homebrew, mise, and Nix
+- [concepts](website/src/content/docs/concepts.mdx) — server/client, workspaces, tabs, panes
+- [how to work with Herdr](website/src/content/docs/how-to-work.mdx) — day-to-day workflow patterns
+- [agents](website/src/content/docs/agents.mdx) — agent detection and status states
+- [session state and restore](website/src/content/docs/session-state.mdx) — detach, restart restore, agent restore, and live handoff
+- [persistence and remote access](website/src/content/docs/persistence-remote.mdx) — SSH, remote attach, named sessions
+- [configuration](website/src/content/docs/configuration.mdx) — keybindings, themes, notifications, environment variables
+- [integrations](website/src/content/docs/integrations.mdx) — pi, omp, claude code, codex, github copilot cli, opencode, hermes, qodercli
+- [socket API](website/src/content/docs/socket-api.mdx) — socket protocol and full CLI reference
+- [CLI reference](website/src/content/docs/cli-reference.mdx) — every `herdr` subcommand
+- [agent skill file](website/src/content/docs/agent-skill.mdx) and [`SKILL.md`](./SKILL.md) — reusable skill so agents can drive herdr from inside it
+- [`CHANGELOG.md`](CHANGELOG.md) — release history, including this fork's changes
+
+The docs site itself lives in [`website/`](website/) (Astro; see [its README](website/README.md) to build and deploy it).
 
 ## agent instructions
 
@@ -265,7 +290,7 @@ if you are an ai agent helping with this repository, read [`AGENTS.md`](./AGENTS
 ## development
 
 ```bash
-git clone https://github.com/ogulcancelik/herdr
+git clone https://github.com/motionharvest/herdr
 cd herdr
 cargo build --release
 ./target/release/herdr
@@ -281,14 +306,14 @@ Herdr is dual-licensed:
 1. Open source: GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later).
 2. Commercial: commercial licenses are available for organizations that cannot comply with AGPL.
 
-Contact: hey@herdr.dev
+This fork inherits its license from [upstream herdr](https://github.com/ogulcancelik/herdr) (contact: hey@herdr.dev).
 
 ## mandatory star history
 
-<a href="https://www.star-history.com/?repos=ogulcancelik%2Fherdr&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=motionharvest%2Fherdr&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ogulcancelik/herdr&type=date&theme=dark&legend=top-left&v=2026-05-19" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ogulcancelik/herdr&type=date&legend=top-left&v=2026-05-19" />
-   <img alt="star history chart" src="https://api.star-history.com/chart?repos=ogulcancelik/herdr&type=date&legend=top-left&v=2026-05-19" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=motionharvest/herdr&type=date&theme=dark&legend=top-left&v=2026-07-24" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=motionharvest/herdr&type=date&legend=top-left&v=2026-07-24" />
+   <img alt="star history chart" src="https://api.star-history.com/chart?repos=motionharvest/herdr&type=date&legend=top-left&v=2026-07-24" />
  </picture>
 </a>

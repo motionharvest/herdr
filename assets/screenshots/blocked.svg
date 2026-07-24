@@ -1,0 +1,338 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1601 1048" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono',monospace" font-size="13px">
+<rect width="1601" height="1048" rx="10" fill="#1e1f29"/>
+<rect y="34" width="1601" height="1004" fill="#282a36"/>
+<rect y="1034" width="1601" height="14" rx="10" fill="#282a36"/>
+<circle cx="20" cy="17" r="6" fill="#ff5f57"/>
+<circle cx="40" cy="17" r="6" fill="#febc2e"/>
+<circle cx="60" cy="17" r="6" fill="#28c840"/>
+<text x="800.5" y="21" text-anchor="middle" fill="#8c82c9" font-size="12px">herdr — a blocked agent asking for input</text>
+<rect x="217.5" y="48.0" width="62.6" height="17" fill="#36f9f6"/>
+<text x="14.0" y="61.0" fill="#36f9f6" font-weight="bold" textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">‹</text>
+<text x="21.8" y="61.0" fill="#8c82c9"  textLength="54.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> spaces</text>
+<text x="209.6" y="61.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="61.0" fill="#282a36" opacity="0.55"  textLength="62.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> 1      </text>
+<text x="280.1" y="61.0" fill="#ac9cd9"  textLength="23.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> + </text>
+<text x="1540.1" y="61.0" fill="#8c82c9"  textLength="47.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  menu</text>
+<text x="14.0" y="78.0" fill="#282a36"  textLength="203.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╭───────────────────────╮│</text>
+<text x="217.5" y="78.0" fill="#f445f7"  textLength="23.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╭─ </text>
+<text x="241.0" y="78.0" fill="#ffffff"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◆</text>
+<text x="248.8" y="78.0" fill="#f445f7"  textLength="117.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ~/lab/webapp {</text>
+<text x="366.2" y="78.0" fill="#8c82c9"  textLength="86.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Claude Code</text>
+<text x="452.3" y="78.0" fill="#f445f7"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">} </text>
+<text x="467.9" y="78.0" fill="#ffffff"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◆</text>
+<text x="475.7" y="78.0" fill="#36f9f6"  textLength="101.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ~/lab/webapp</text>
+<text x="577.5" y="78.0" fill="#50fa7b"  textLength="70.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> (main ✓)</text>
+<text x="647.9" y="78.0" fill="#f445f7"  textLength="939.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ══════════════════════════════════════════════════════════════════════════════════════════════════════════ ⛶ FOCUS ✕ ─╮</text>
+<text x="14.0" y="95.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="21.8" y="95.0" fill="#f8f8f2" font-weight="bold" textLength="180.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">● herdr                </text>
+<text x="201.8" y="95.0" fill="#282a36"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">││</text>
+<text x="217.5" y="95.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="95.0" fill="#f8f8f2"  textLength="39.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  6. </text>
+<text x="264.4" y="95.0" fill="#f8f8f2" font-weight="bold" textLength="39.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Exit:</text>
+<text x="303.6" y="95.0" fill="#f8f8f2"  textLength="1275.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> keyboard-only operation works; axe reports no violations                                                                                                          </text>
+<text x="1579.2" y="95.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="112.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="21.8" y="112.0" fill="#8c82c9"  textLength="180.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  main                 </text>
+<text x="201.8" y="112.0" fill="#282a36"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">││</text>
+<text x="217.5" y="112.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="112.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="129.0" fill="#282a36"  textLength="203.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╰───────────────────────╯│</text>
+<text x="217.5" y="129.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="241.0" y="129.0" fill="#f8f8f2" font-weight="bold" textLength="344.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">M5 — Auth &amp; multi-user (optional, ~1–2 days)</text>
+<text x="585.3" y="129.0" fill="#f8f8f2"  textLength="23.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> — </text>
+<text x="608.8" y="129.0" fill="#f8f8f2" font-style="italic" textLength="148.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">skip if single-user</text>
+<text x="1579.2" y="129.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="146.0" fill="#36f9f6"  textLength="195.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╭───────────────────────╮</text>
+<text x="209.6" y="146.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="146.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="146.0" fill="#f8f8f2"  textLength="70.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  1. Add </text>
+<text x="295.7" y="146.0" fill="#b1b9f9"  textLength="39.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">users</text>
+<text x="334.9" y="146.0" fill="#f8f8f2"  textLength="70.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> table + </text>
+<text x="405.3" y="146.0" fill="#b1b9f9"  textLength="93.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">todos.userId</text>
+<text x="499.2" y="146.0" fill="#f8f8f2"  textLength="1080.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> FK; backfill migration                                                                                                                   </text>
+<text x="1579.2" y="146.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="163.0" fill="#36f9f6"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="21.8" y="163.0" fill="#36f9f6" font-weight="bold" textLength="180.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">● webapp               </text>
+<text x="201.8" y="163.0" fill="#36f9f6"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="163.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="163.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="163.0" fill="#f8f8f2"  textLength="1353.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  2. Session-cookie auth (or a hosted provider if you&#x27;d rather not own password storage)                                                                                     </text>
+<text x="1579.2" y="163.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="180.0" fill="#36f9f6"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="21.8" y="180.0" fill="#8c82c9"  textLength="180.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  main                 </text>
+<text x="201.8" y="180.0" fill="#36f9f6"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="180.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="180.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="180.0" fill="#f8f8f2"  textLength="266.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  3. Scope every service query by </text>
+<text x="491.4" y="180.0" fill="#b1b9f9"  textLength="47.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">userId</text>
+<text x="538.3" y="180.0" fill="#f8f8f2"  textLength="1040.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">; add tests proving cross-user reads return 404                                                                                      </text>
+<text x="1579.2" y="180.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="197.0" fill="#36f9f6"  textLength="195.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╰───────────────────────╯</text>
+<text x="209.6" y="197.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="197.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="197.0" fill="#f8f8f2"  textLength="39.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  4. </text>
+<text x="264.4" y="197.0" fill="#f8f8f2" font-weight="bold" textLength="39.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Exit:</text>
+<text x="303.6" y="197.0" fill="#f8f8f2"  textLength="1275.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> two accounts cannot see each other&#x27;s todos                                                                                                                        </text>
+<text x="1579.2" y="197.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="214.0" fill="#282a36"  textLength="203.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╭───────────────────────╮│</text>
+<text x="217.5" y="214.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="214.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="231.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="21.8" y="231.0" fill="#f8f8f2" font-weight="bold" textLength="180.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">● api                  </text>
+<text x="201.8" y="231.0" fill="#282a36"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">││</text>
+<text x="217.5" y="231.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="241.0" y="231.0" fill="#f8f8f2" font-weight="bold" textLength="164.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">M6 — Ship (~half day)</text>
+<text x="1579.2" y="231.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="248.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="21.8" y="248.0" fill="#8c82c9"  textLength="180.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  main                 </text>
+<text x="201.8" y="248.0" fill="#282a36"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">││</text>
+<text x="217.5" y="248.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="248.0" fill="#f8f8f2"  textLength="1353.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  1. Playwright e2e: add → complete → filter → delete → undo, run against the built bundle                                                                                   </text>
+<text x="1579.2" y="248.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="265.0" fill="#282a36"  textLength="203.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╰───────────────────────╯│</text>
+<text x="217.5" y="265.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="265.0" fill="#f8f8f2"  textLength="1353.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  2. GitHub Actions CI: install → typecheck → lint → test → build → e2e                                                                                                      </text>
+<text x="1579.2" y="265.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="282.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="282.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="282.0" fill="#f8f8f2"  textLength="1353.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  3. Production build; serve static assets from Hono so it&#x27;s one deployable process                                                                                          </text>
+<text x="1579.2" y="282.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="299.0" fill="#8c82c9"  textLength="195.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╭───────────────────────╮</text>
+<text x="209.6" y="299.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="299.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="299.0" fill="#f8f8f2"  textLength="195.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  4. Deploy + smoke-test </text>
+<text x="421.0" y="299.0" fill="#b1b9f9"  textLength="86.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">/api/health</text>
+<text x="507.0" y="299.0" fill="#f8f8f2"  textLength="156.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">; document setup in </text>
+<text x="663.6" y="299.0" fill="#b1b9f9"  textLength="70.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">README.md</text>
+<text x="734.0" y="299.0" fill="#f8f8f2"  textLength="845.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> and fill in CLAUDE.md&#x27;s Build/Architecture sections                                                        </text>
+<text x="1579.2" y="299.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="316.0" fill="#8c82c9"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="92.3" y="316.0" fill="#8c82c9"  textLength="39.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">+ new</text>
+<text x="201.8" y="316.0" fill="#8c82c9"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="316.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="316.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="316.0" fill="#f8f8f2"  textLength="39.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  5. </text>
+<text x="264.4" y="316.0" fill="#f8f8f2" font-weight="bold" textLength="39.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Exit:</text>
+<text x="303.6" y="316.0" fill="#f8f8f2"  textLength="101.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> CI green on </text>
+<text x="405.3" y="316.0" fill="#b1b9f9"  textLength="31.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">main</text>
+<text x="436.6" y="316.0" fill="#f8f8f2"  textLength="1142.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">, deployed URL works                                                                                                                              </text>
+<text x="1579.2" y="316.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="333.0" fill="#8c82c9"  textLength="195.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╰───────────────────────╯</text>
+<text x="209.6" y="333.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="333.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="333.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="350.0" fill="#282a36"  textLength="203.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">─────────────────────────│</text>
+<text x="217.5" y="350.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="241.0" y="350.0" fill="#f8f8f2" font-weight="bold" textLength="203.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">6. Cross-cutting practices</text>
+<text x="1579.2" y="350.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="367.0" fill="#8c82c9"  textLength="54.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> agents</text>
+<text x="68.8" y="367.0" fill="#36f9f6"  textLength="31.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> all</text>
+<text x="209.6" y="367.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="367.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="367.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="384.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="384.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="384.0" fill="#f8f8f2"  textLength="31.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  - </text>
+<text x="256.6" y="384.0" fill="#f8f8f2" font-weight="bold" textLength="109.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Task tracking:</text>
+<text x="366.2" y="384.0" fill="#f8f8f2"  textLength="203.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> file each milestone as a </text>
+<text x="569.6" y="384.0" fill="#b1b9f9"  textLength="31.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">what</text>
+<text x="600.9" y="384.0" fill="#f8f8f2"  textLength="125.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> task up front (</text>
+<text x="726.2" y="384.0" fill="#b1b9f9"  textLength="195.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">what add &quot;M1: data layer&quot;</text>
+<text x="921.8" y="384.0" fill="#f8f8f2"  textLength="203.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">), claim before starting, </text>
+<text x="1125.3" y="384.0" fill="#b1b9f9"  textLength="148.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">what move &lt;id&gt; done</text>
+<text x="1274.0" y="384.0" fill="#f8f8f2"  textLength="305.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> on exit criteria — per CLAUDE.md, not </text>
+<text x="1579.2" y="384.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="401.0" fill="#f1fa8c"  textLength="23.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ● </text>
+<text x="37.5" y="401.0" fill="#f8f8f2"  textLength="109.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">herdr · claude</text>
+<text x="209.6" y="401.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="401.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="401.0" fill="#f8f8f2"  textLength="1353.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  TodoWrite.                                                                                                                                                                 </text>
+<text x="1579.2" y="401.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="418.0" fill="#8c82c9"  textLength="78.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   working</text>
+<text x="209.6" y="418.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="418.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="418.0" fill="#f8f8f2"  textLength="31.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  - </text>
+<text x="256.6" y="418.0" fill="#f8f8f2" font-weight="bold" textLength="62.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Commits:</text>
+<text x="319.2" y="418.0" fill="#f8f8f2"  textLength="1260.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> one milestone per branch, conventional commit messages, push at the end of every session.                                                                       </text>
+<text x="1579.2" y="418.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="435.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="435.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="435.0" fill="#f8f8f2"  textLength="31.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  - </text>
+<text x="256.6" y="435.0" fill="#f8f8f2" font-weight="bold" textLength="109.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Testing ratio:</text>
+<text x="366.2" y="435.0" fill="#f8f8f2"  textLength="1213.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> heavy on service-layer unit tests (fast, cheap), a few route integration tests, ~3 e2e paths max. Don&#x27;t over-test presentational components.              </text>
+<text x="1579.2" y="435.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="452.0" fill="#ff5555"  textLength="23.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ● </text>
+<text x="37.5" y="452.0" fill="#f8f8f2"  textLength="117.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">webapp · claude</text>
+<text x="209.6" y="452.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="452.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="452.0" fill="#f8f8f2"  textLength="31.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  - </text>
+<text x="256.6" y="452.0" fill="#f8f8f2" font-weight="bold" textLength="109.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">What to defer:</text>
+<text x="366.2" y="452.0" fill="#f8f8f2"  textLength="242.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> drag-and-drop reordering (the </text>
+<text x="608.8" y="452.0" fill="#b1b9f9"  textLength="62.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">position</text>
+<text x="671.4" y="452.0" fill="#f8f8f2"  textLength="907.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> column is already there for it), tags/projects, recurring todos, offline/PWA, real-time sync. Each is a clean      </text>
+<text x="1579.2" y="452.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="469.0" fill="#8c82c9"  textLength="78.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   blocked</text>
+<text x="209.6" y="469.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="469.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="469.0" fill="#f8f8f2"  textLength="1353.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  follow-on because the API is resource-shaped.                                                                                                                              </text>
+<text x="1579.2" y="469.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="486.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="486.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="486.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="503.0" fill="#50fa7b"  textLength="23.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ● </text>
+<text x="37.5" y="503.0" fill="#f8f8f2"  textLength="93.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">api · claude</text>
+<text x="209.6" y="503.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="503.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="241.0" y="503.0" fill="#f8f8f2" font-weight="bold" textLength="93.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Rough total:</text>
+<text x="334.9" y="503.0" fill="#f8f8f2"  textLength="1244.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> 4–6 days without auth, 6–8 with.                                                                                                                              </text>
+<text x="1579.2" y="503.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="14.0" y="520.0" fill="#8c82c9"  textLength="54.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   done</text>
+<text x="209.6" y="520.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="520.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="520.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="537.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="537.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="537.0" fill="#f8f8f2"  textLength="1353.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  No files were created or modified.                                                                                                                                         </text>
+<text x="1579.2" y="537.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="554.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="554.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="554.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="571.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="571.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="571.0" fill="#999999"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✻</text>
+<text x="241.0" y="571.0" fill="#999999"  textLength="125.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Cooked for 1m 2s</text>
+<text x="1579.2" y="571.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="588.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="588.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="588.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<rect x="225.3" y="592.0" width="15.7" height="17" fill="#373737"/>
+<rect x="241.0" y="592.0" width="594.8" height="17" fill="#373737"/>
+<rect x="835.7" y="592.0" width="735.6" height="17" fill="#373737"/>
+<text x="209.6" y="605.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="605.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="605.0" fill="#505050"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">❯ </text>
+<text x="241.0" y="605.0" fill="#ffffff"  textLength="594.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">good — before you scaffold anything, check with me on which framework to use</text>
+<text x="1579.2" y="605.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="622.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="622.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="622.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="639.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="639.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="639.0" fill="#999999"  textLength="1346.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="1579.2" y="639.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<rect x="241.0" y="643.0" width="101.7" height="17" fill="#b1b9f9"/>
+<text x="209.6" y="656.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="656.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="656.0" fill="#999999"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">← </text>
+<text x="241.0" y="656.0" fill="#000000"  textLength="101.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ☐ Framework </text>
+<text x="342.7" y="656.0" fill="#f8f8f2"  textLength="1236.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ☐ Deploy target  ✔ Submit  →                                                                                                                                 </text>
+<text x="1579.2" y="656.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="673.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="673.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="673.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="690.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="690.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="690.0" fill="#ffffff" font-weight="bold" textLength="477.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Which frontend framework should I scaffold the todo app with?</text>
+<text x="1579.2" y="690.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="707.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="707.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="707.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="724.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="724.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="724.0" fill="#b1b9f9"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">❯</text>
+<text x="233.1" y="724.0" fill="#999999"  textLength="23.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> 1.</text>
+<text x="256.6" y="724.0" fill="#b1b9f9" font-weight="bold" textLength="148.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> Vite + React + TS </text>
+<text x="491.4" y="724.0" fill="#999999"  textLength="461.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">┌─────────────────────────────────────────────────────────┐</text>
+<text x="1579.2" y="724.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="741.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="741.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="256.6" y="741.0" fill="#b1b9f9" font-weight="bold" textLength="101.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">(Recommended)</text>
+<text x="491.4" y="741.0" fill="#999999"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│ </text>
+<text x="507.0" y="741.0" fill="#f8f8f2"  textLength="31.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">src/</text>
+<text x="538.3" y="741.0" fill="#999999"  textLength="414.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                                                    │</text>
+<text x="1579.2" y="741.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="758.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="758.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="233.1" y="758.0" fill="#999999"  textLength="23.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> 2.</text>
+<text x="256.6" y="758.0" fill="#f8f8f2"  textLength="234.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> Next.js (App Router)         </text>
+<text x="491.4" y="758.0" fill="#999999"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│ </text>
+<text x="507.0" y="758.0" fill="#f8f8f2"  textLength="250.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">├── client/   # Vite + React SPA</text>
+<text x="757.5" y="758.0" fill="#999999"  textLength="195.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                        │</text>
+<text x="1579.2" y="758.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="775.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="775.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="233.1" y="775.0" fill="#999999"  textLength="23.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> 3.</text>
+<text x="256.6" y="775.0" fill="#f8f8f2"  textLength="234.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> SvelteKit + TS               </text>
+<text x="491.4" y="775.0" fill="#999999"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│ </text>
+<text x="507.0" y="775.0" fill="#f8f8f2"  textLength="125.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│   ├── main.tsx</text>
+<text x="632.3" y="775.0" fill="#999999"  textLength="320.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                                        │</text>
+<text x="1579.2" y="775.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="792.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="792.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="233.1" y="792.0" fill="#999999"  textLength="23.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> 4.</text>
+<text x="256.6" y="792.0" fill="#f8f8f2"  textLength="234.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> Plain TS, no framework       </text>
+<text x="491.4" y="792.0" fill="#999999"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│ </text>
+<text x="507.0" y="792.0" fill="#f8f8f2"  textLength="148.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│   ├── components/</text>
+<text x="655.7" y="792.0" fill="#999999"  textLength="297.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                                     │</text>
+<text x="1579.2" y="792.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="809.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="809.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="491.4" y="809.0" fill="#999999"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│ </text>
+<text x="507.0" y="809.0" fill="#f8f8f2"  textLength="195.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│   └── hooks/useTodos.ts</text>
+<text x="702.7" y="809.0" fill="#999999"  textLength="250.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                               │</text>
+<text x="1579.2" y="809.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="826.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="826.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="491.4" y="826.0" fill="#999999"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│ </text>
+<text x="507.0" y="826.0" fill="#f8f8f2"  textLength="336.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">├── server/   # Hono API (separate process)</text>
+<text x="843.6" y="826.0" fill="#999999"  textLength="109.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">             │</text>
+<text x="1579.2" y="826.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="843.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="843.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="491.4" y="843.0" fill="#999999"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│ </text>
+<text x="507.0" y="843.0" fill="#f8f8f2"  textLength="211.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">└── shared/   # Zod schemas</text>
+<text x="718.3" y="843.0" fill="#999999"  textLength="234.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                             │</text>
+<text x="1579.2" y="843.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="860.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="860.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="491.4" y="860.0" fill="#999999"  textLength="461.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│                                                         │</text>
+<text x="1579.2" y="860.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="877.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="877.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="491.4" y="877.0" fill="#999999"  textLength="15.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│ </text>
+<text x="507.0" y="877.0" fill="#f8f8f2"  textLength="344.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">pnpm dev  → Vite :5173 + API :3000 (proxied)</text>
+<text x="851.4" y="877.0" fill="#999999"  textLength="101.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">            │</text>
+<text x="1579.2" y="877.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="894.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="894.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="491.4" y="894.0" fill="#999999"  textLength="461.7" lengthAdjust="spacingAndGlyphs" xml:space="preserve">└─────────────────────────────────────────────────────────┘</text>
+<text x="1579.2" y="894.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="911.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="911.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="911.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="928.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="928.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="491.4" y="928.0" fill="#b1b9f9"  textLength="47.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Notes:</text>
+<text x="546.2" y="928.0" fill="#999999" font-style="italic" textLength="156.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">press n to add notes</text>
+<text x="1579.2" y="928.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="945.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="945.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="945.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="962.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="962.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="962.0" fill="#999999"  textLength="1346.1" lengthAdjust="spacingAndGlyphs" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="1579.2" y="962.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="979.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="979.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="979.0" fill="#f8f8f2"  textLength="1353.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  Chat about this                                                                                                                                                            </text>
+<text x="1579.2" y="979.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="996.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="996.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="1579.2" y="996.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="1013.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="1013.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="225.3" y="1013.0" fill="#999999"  textLength="720.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · Esc to cancel</text>
+<text x="1579.2" y="1013.0" fill="#f445f7"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="209.6" y="1030.0" fill="#282a36"  textLength="7.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="217.5" y="1030.0" fill="#f445f7"  textLength="1369.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
+</svg>

@@ -748,6 +748,10 @@ pub(super) fn apply_context_menu_action(
             state.toggle_zoom();
             state.mode = Mode::Terminal;
         }
+        (ContextMenuKind::Pane { pane_id, .. }, Some("Dim" | "Undim")) => {
+            state.toggle_pane_dimmed(pane_id);
+            state.mode = Mode::Terminal;
+        }
         (ContextMenuKind::Pane { .. }, Some("Close pane")) => {
             if !state.close_pane() {
                 state.mode = if state.active.is_some() {
@@ -1303,6 +1307,7 @@ mod tests {
             kind: ContextMenuKind::Pane {
                 pane_id,
                 has_manual_label: false,
+                dimmed: false,
             },
             x: 0,
             y: 0,

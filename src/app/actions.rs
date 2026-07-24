@@ -1515,6 +1515,16 @@ impl AppState {
         }
     }
 
+    pub fn toggle_pane_dimmed(&mut self, pane_id: PaneId) {
+        if let Some(pane) = self
+            .active
+            .and_then(|i| self.workspaces.get_mut(i))
+            .and_then(|ws| ws.pane_state_mut(pane_id))
+        {
+            pane.dimmed = !pane.dimmed;
+        }
+    }
+
     pub fn toggle_zoom(&mut self) {
         if let Some(tab) = self
             .active

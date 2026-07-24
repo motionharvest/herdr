@@ -993,6 +993,18 @@ pub(super) fn render_panes(
                 render_pane_scrollbar(app, frame, info, rt);
             }
 
+            let pane_dimmed = ws.pane_state(info.id).is_some_and(|pane| pane.dimmed);
+            if pane_dimmed && !is_swap_preview {
+                let muted = app.palette.overlay0;
+                let inner = info.inner_rect;
+                let buf = frame.buffer_mut();
+                for y in inner.y..inner.y + inner.height {
+                    for x in inner.x..inner.x + inner.width {
+                        buf[(x, y)].set_fg(muted);
+                    }
+                }
+            }
+
             let should_dim = !info.is_focused && multi_pane && !terminal_active && !is_swap_preview;
             if should_dim {
                 let inner = info.inner_rect;

@@ -1070,10 +1070,12 @@ impl AppState {
             MouseEventKind::Down(MouseButton::Right) if !in_sidebar => {
                 if let Some(info) = self.pane_mouse_target(mouse.column, mouse.row).cloned() {
                     self.focus_pane(info.id);
-                    let has_manual_label = self
+                    let pane = self
                         .active
                         .and_then(|ws_idx| self.workspaces.get(ws_idx))
-                        .and_then(|ws| ws.pane_state(info.id))
+                        .and_then(|ws| ws.pane_state(info.id));
+                    let dimmed = pane.is_some_and(|pane| pane.dimmed);
+                    let has_manual_label = pane
                         .and_then(|pane| self.terminals.get(&pane.attached_terminal_id))
                         .and_then(|terminal| terminal.manual_label.as_ref())
                         .is_some();
@@ -1081,6 +1083,7 @@ impl AppState {
                         kind: ContextMenuKind::Pane {
                             pane_id: info.id,
                             has_manual_label,
+                            dimmed,
                         },
                         x: mouse.column,
                         y: mouse.row,
@@ -2610,6 +2613,7 @@ mod tests {
             kind: ContextMenuKind::Pane {
                 pane_id,
                 has_manual_label: false,
+                dimmed: false,
             },
             x: 2,
             y: 2,

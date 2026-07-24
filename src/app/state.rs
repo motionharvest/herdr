@@ -1147,6 +1147,7 @@ pub enum ContextMenuKind {
     Pane {
         pane_id: PaneId,
         has_manual_label: bool,
+        dimmed: bool,
     },
 }
 
@@ -1198,25 +1199,56 @@ impl ContextMenuState {
             ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
             ContextMenuKind::Pane {
                 has_manual_label: true,
+                dimmed,
                 ..
-            } => &[
-                "Rename pane",
-                "Clear pane name",
-                "Split vertically",
-                "Split horizontally",
-                "Zoom",
-                "Close pane",
-            ],
+            } => {
+                if dimmed {
+                    &[
+                        "Rename pane",
+                        "Clear pane name",
+                        "Split vertically",
+                        "Split horizontally",
+                        "Zoom",
+                        "Undim",
+                        "Close pane",
+                    ]
+                } else {
+                    &[
+                        "Rename pane",
+                        "Clear pane name",
+                        "Split vertically",
+                        "Split horizontally",
+                        "Zoom",
+                        "Dim",
+                        "Close pane",
+                    ]
+                }
+            }
             ContextMenuKind::Pane {
                 has_manual_label: false,
+                dimmed,
                 ..
-            } => &[
-                "Rename pane",
-                "Split vertically",
-                "Split horizontally",
-                "Zoom",
-                "Close pane",
-            ],
+            } => {
+                if dimmed {
+                    &[
+                        "Rename pane",
+                        "Split vertically",
+                        "Split horizontally",
+                        "Zoom",
+                        "Undim",
+                        "Close pane",
+                    ]
+                } else {
+                    &[
+                        "Rename pane",
+                        "Split vertically",
+                        "Split horizontally",
+                        "Zoom",
+                        "Dim",
+                        "Close pane",
+                    ]
+                }
+            }
         }
     }
 }
