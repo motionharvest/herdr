@@ -18,6 +18,8 @@ const WORKSPACE_SECTION_DROP_SLOT_ROWS: u16 = 1;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 /// Minimum rows reserved for the agent panel section (divider + header + body).
 const MIN_AGENT_SECTION_ROWS: u16 = AGENT_PANEL_HEADER_ROWS.saturating_add(1);
+/// Branch glyph prefixed to a workspace card's git branch name.
+const GIT_BRANCH_GLYPH: &str = "\u{f126}";
 
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
@@ -72,17 +74,40 @@ fn sidebar_section_heights(
     (ws_h, detail_h)
 }
 
+/// Whether the spaces section is folded down to the header row plus the
+/// active space card.
+/// Navigate mode temporarily reveals the list so workspace selection stays visible.
+pub(crate) fn spaces_section_collapsed(app: &AppState) -> bool {
+    app.spaces_collapsed && !matches!(app.mode, Mode::Navigate)
+}
+
 pub(crate) fn expanded_sidebar_sections(app: &AppState, area: Rect) -> (Rect, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.width == 0 || content.height == 0 {
         return (Rect::default(), Rect::default());
     }
 
-    let (ws_h, detail_h) = sidebar_section_heights(
-        content.height,
-        app.sidebar_section_split,
-        workspace_list_content_height(app),
-    );
+    let (ws_h, detail_h) = if spaces_section_collapsed(app) {
+        // Header row plus the active space card; no footer or drop slot.
+        let entry_rows = workspace_list_entries(app)
+            .iter()
+            .fold(0u16, |rows, entry| match entry {
+                WorkspaceListEntry::Workspace { ws_idx, .. } => app
+                    .workspaces
+                    .get(*ws_idx)
+                    .map_or(rows, |ws| rows.saturating_add(workspace_row_height(ws))),
+            });
+        let ws_h = WORKSPACE_SECTION_HEADER_ROWS
+            .saturating_add(entry_rows)
+            .min(content.height);
+        (ws_h, content.height.saturating_sub(ws_h))
+    } else {
+        sidebar_section_heights(
+            content.height,
+            app.sidebar_section_split,
+            workspace_list_content_height(app),
+        )
+    };
     let ws_area = Rect::new(content.x, content.y, content.width, ws_h);
     let detail_area = Rect::new(content.x, content.y + ws_h, content.width, detail_h);
     (ws_area, detail_area)
@@ -94,12 +119,8 @@ pub(crate) fn sidebar_section_divider_rect(app: &AppState, area: Rect) -> Rect {
         return Rect::default();
     }
 
-    let (ws_h, _) = sidebar_section_heights(
-        content.height,
-        app.sidebar_section_split,
-        workspace_list_content_height(app),
-    );
-    Rect::new(content.x, content.y + ws_h, content.width, 1)
+    let (ws_area, _) = expanded_sidebar_sections(app, area);
+    Rect::new(content.x, ws_area.y + ws_area.height, content.width, 1)
 }
 
 fn agent_panel_current_workspace_idx(app: &AppState) -> Option<usize> {
@@ -259,7 +280,7 @@ pub(crate) enum WorkspaceListEntry {
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
     let ws_area = workspace_list_rect(app, area);
-    let body = workspace_list_body_rect(ws_area, false);
+    let body = workspace_list_body_rect(app, ws_area, false);
     if body.height == 0 {
         return requested;
     }
@@ -273,6 +294,21 @@ pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested:
 }
 
 pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
+    // A collapsed spaces section keeps only the active space visible under
+    // the header.
+    if spaces_section_collapsed(app) {
+        return app
+            .active
+            .filter(|idx| *idx < app.workspaces.len())
+            .map(|ws_idx| {
+                vec![WorkspaceListEntry::Workspace {
+                    ws_idx,
+                    indented: false,
+                }]
+            })
+            .unwrap_or_default();
+    }
+
     let mut members_by_key = std::collections::HashMap::<String, Vec<usize>>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
         if let Some(space) = ws.worktree_space() {
@@ -377,20 +413,25 @@ pub(crate) fn workspace_list_rect(app: &AppState, area: Rect) -> Rect {
     ws_area
 }
 
-pub(crate) fn workspace_list_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
+pub(crate) fn workspace_list_body_rect(app: &AppState, area: Rect, has_scrollbar: bool) -> Rect {
     if area.width == 0 || area.height <= WORKSPACE_SECTION_HEADER_ROWS {
         return Rect::default();
     }
 
+    let footer_rows = if spaces_section_collapsed(app) {
+        0
+    } else {
+        WORKSPACE_SECTION_FOOTER_ROWS
+    };
     let body_y = area.y.saturating_add(WORKSPACE_SECTION_HEADER_ROWS);
-    let footer_y = area.y + area.height.saturating_sub(WORKSPACE_SECTION_FOOTER_ROWS);
+    let footer_y = area.y + area.height.saturating_sub(footer_rows);
     let body_height = footer_y.saturating_sub(body_y);
     let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
     Rect::new(area.x, body_y, body_width, body_height)
 }
 
 fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
-    let body = workspace_list_body_rect(area, false);
+    let body = workspace_list_body_rect(app, area, false);
     if body.width == 0 || body.height == 0 {
         return 0;
     }
@@ -438,7 +479,7 @@ pub(crate) fn workspace_list_scroll_metrics(
 
 pub(crate) fn workspace_list_scrollbar_rect(app: &AppState, area: Rect) -> Option<Rect> {
     let metrics = workspace_list_scroll_metrics(app, area);
-    let body = workspace_list_body_rect(area, true);
+    let body = workspace_list_body_rect(app, area, true);
     (should_show_scrollbar(metrics) && body.width > 0 && body.height > 0).then_some(Rect::new(
         area.x + area.width.saturating_sub(1),
         body.y,
@@ -512,12 +553,18 @@ pub(crate) fn compute_workspace_list_areas(
     }
 
     let metrics = workspace_list_scroll_metrics(app, ws_area);
-    let body = workspace_list_body_rect(ws_area, should_show_scrollbar(metrics));
+    let body = workspace_list_body_rect(app, ws_area, should_show_scrollbar(metrics));
     if body.width == 0 || body.height == 0 {
         return (Vec::new(), Vec::new());
     }
 
-    let scroll = app.workspace_scroll;
+    // A stale scroll offset from the expanded list must not hide the lone
+    // active card while the section is collapsed.
+    let scroll = if spaces_section_collapsed(app) {
+        0
+    } else {
+        app.workspace_scroll
+    };
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
     let mut cards = Vec::new();
@@ -624,6 +671,15 @@ pub(crate) fn expanded_sidebar_toggle_rect(area: Rect) -> Rect {
     Rect::new(area.x, area.y, 1, 1)
 }
 
+/// Clickable "spaces" header label — everything on the header row between the
+/// sidebar toggle glyph and the right divider column.
+pub(crate) fn spaces_section_header_rect(area: Rect) -> Rect {
+    if area.width <= 2 || area.height == 0 {
+        return Rect::default();
+    }
+    Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1)
+}
+
 pub(crate) fn render_sidebar(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -651,6 +707,11 @@ pub(crate) fn render_sidebar(
         return;
     }
 
+    let spaces_chevron = if spaces_section_collapsed(app) {
+        "▸"
+    } else {
+        "▾"
+    };
     render_sidebar_line(
         frame,
         Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
@@ -661,7 +722,10 @@ pub(crate) fn render_sidebar(
                     .fg(app.palette.accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" spaces", Style::default().fg(app.palette.overlay0)),
+            Span::styled(
+                format!(" spaces {spaces_chevron}"),
+                Style::default().fg(app.palette.overlay0),
+            ),
         ]),
     );
 
@@ -713,7 +777,10 @@ fn render_workspace_rows(
     }
 
     let ws_area = workspace_list_rect(app, area);
-    if ws_area != Rect::default() && ws_area.height >= WORKSPACE_SECTION_FOOTER_ROWS {
+    if !spaces_section_collapsed(app)
+        && ws_area != Rect::default()
+        && ws_area.height >= WORKSPACE_SECTION_FOOTER_ROWS
+    {
         let footer = Rect::new(
             ws_area.x,
             ws_area.y + ws_area.height.saturating_sub(WORKSPACE_SECTION_FOOTER_ROWS),
@@ -802,11 +869,12 @@ fn workspace_card_labels(
     let (dot, _) = sidebar_state_dot(state, seen, app);
     let indent = if indented { "  " } else { "" };
     let name = ws.display_name_from(&app.terminals, terminal_runtimes);
-    let branch = ws.branch().unwrap_or_else(|| "shell".to_string());
-    (
-        format!("{indent}{dot} {name}"),
-        format!("{indent}  {branch}"),
-    )
+    // Git branches lead with a branch glyph; non-repo spaces stay plain.
+    let branch = match ws.branch() {
+        Some(branch) => format!("{indent}  {GIT_BRANCH_GLYPH} {branch}"),
+        None => format!("{indent}  shell"),
+    };
+    (format!("{indent}{dot} {name}"), branch)
 }
 
 fn render_workspace_card(
@@ -1210,6 +1278,70 @@ mod tests {
         let entries = agent_panel_entries(&app);
         assert_eq!(entries[0].primary_label, "bridge");
         assert_eq!(entries[0].agent_label.as_deref(), Some("planner"));
+    }
+
+    #[test]
+    fn collapsed_spaces_section_keeps_only_active_space_at_top() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.mode = Mode::Terminal;
+        app.active = Some(1);
+        app.spaces_collapsed = true;
+        app.workspace_scroll = 1;
+        let area = Rect::new(0, 0, 30, 40);
+
+        let (ws_area, detail_area) = expanded_sidebar_sections(&app, area);
+
+        assert_eq!(ws_area, Rect::new(0, 0, 29, 5));
+        assert_eq!(detail_area, Rect::new(0, 5, 29, 35));
+        assert_eq!(
+            sidebar_section_divider_rect(&app, area),
+            Rect::new(0, 5, 29, 1)
+        );
+
+        let cards = compute_workspace_card_areas(&app, area);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].ws_idx, 1);
+        assert_eq!(cards[0].rect, Rect::new(0, 1, 29, 4));
+    }
+
+    #[test]
+    fn collapsed_spaces_section_without_active_space_leaves_header_row_only() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.mode = Mode::Terminal;
+        app.active = None;
+        app.spaces_collapsed = true;
+        let area = Rect::new(0, 0, 30, 40);
+
+        let (ws_area, detail_area) = expanded_sidebar_sections(&app, area);
+
+        assert_eq!(ws_area, Rect::new(0, 0, 29, 1));
+        assert_eq!(detail_area, Rect::new(0, 1, 29, 39));
+        assert!(compute_workspace_card_areas(&app, area).is_empty());
+    }
+
+    #[test]
+    fn navigate_mode_reveals_collapsed_spaces_section() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.mode = Mode::Navigate;
+        app.selected = 0;
+        app.spaces_collapsed = true;
+        let area = Rect::new(0, 0, 30, 40);
+
+        let (ws_area, _) = expanded_sidebar_sections(&app, area);
+
+        assert!(ws_area.height > 1);
+        assert!(!compute_workspace_card_areas(&app, area).is_empty());
+    }
+
+    #[test]
+    fn spaces_section_header_sits_between_toggle_and_divider() {
+        let area = Rect::new(2, 3, 26, 20);
+        let header = spaces_section_header_rect(area);
+
+        assert_eq!(header, Rect::new(3, 3, 24, 1));
     }
 
     #[test]

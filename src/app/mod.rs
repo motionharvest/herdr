@@ -496,6 +496,7 @@ impl App {
             sidebar_width_source,
             sidebar_width_auto: false,
             sidebar_collapsed: false,
+            spaces_collapsed: false,
             sidebar_section_split,
             agent_panel_scope,
             mouse_capture: config.ui.mouse_capture,

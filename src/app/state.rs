@@ -1405,6 +1405,9 @@ pub struct AppState {
     pub sidebar_width_source: SidebarWidthSource,
     pub sidebar_width_auto: bool,
     pub sidebar_collapsed: bool,
+    /// Fold the spaces section down to its header row plus the active space
+    /// card, leaving the agent panel visible in the remaining sidebar height.
+    pub spaces_collapsed: bool,
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
     pub agent_panel_scope: AgentPanelScope,
@@ -1754,6 +1757,7 @@ impl AppState {
             sidebar_width_source: SidebarWidthSource::ConfigDefault,
             sidebar_width_auto: false,
             sidebar_collapsed: false,
+            spaces_collapsed: false,
             sidebar_section_split: 0.5,
             agent_panel_scope: AgentPanelScope::AllWorkspaces,
             mouse_capture: true,

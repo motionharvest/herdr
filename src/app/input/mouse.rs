@@ -485,6 +485,11 @@ impl AppState {
                         return None;
                     }
 
+                    if self.on_spaces_section_header(mouse.column, mouse.row) {
+                        self.spaces_collapsed = !self.spaces_collapsed;
+                        return None;
+                    }
+
                     if self.sidebar_collapsed {
                         if let Some(idx) = self.collapsed_workspace_at_row(mouse.row) {
                             self.switch_workspace(idx);

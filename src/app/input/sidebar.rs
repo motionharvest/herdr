@@ -167,6 +167,9 @@ impl AppState {
     }
 
     pub(crate) fn sidebar_footer_rect(&self) -> Rect {
+        if crate::ui::spaces_section_collapsed(self) {
+            return Rect::default();
+        }
         let ws_area = self.workspace_list_rect();
         if ws_area == Rect::default() {
             return Rect::default();
@@ -268,6 +271,18 @@ impl AppState {
             && row < rect.y + rect.height
     }
 
+    pub(super) fn on_spaces_section_header(&self, col: u16, row: u16) -> bool {
+        if self.sidebar_collapsed || self.view.sidebar_rect == Rect::default() {
+            return false;
+        }
+        let rect = crate::ui::spaces_section_header_rect(self.view.sidebar_rect);
+        rect.width > 0
+            && col >= rect.x
+            && col < rect.x + rect.width
+            && row >= rect.y
+            && row < rect.y + rect.height
+    }
+
     pub(super) fn set_manual_sidebar_width(&mut self, divider_col: u16) {
         let sidebar = self.view.sidebar_rect;
         if sidebar == Rect::default() {
@@ -280,7 +295,7 @@ impl AppState {
     }
 
     pub(super) fn on_sidebar_section_divider(&self, col: u16, row: u16) -> bool {
-        if self.sidebar_collapsed {
+        if self.sidebar_collapsed || crate::ui::spaces_section_collapsed(self) {
             return false;
         }
         let rect = crate::ui::sidebar_section_divider_rect(self, self.view.sidebar_rect);
@@ -968,6 +983,35 @@ mod tests {
 
         assert!(!app.state.sidebar_collapsed);
         assert!(app.state.drag.is_none());
+    }
+
+    #[test]
+    fn clicking_spaces_header_toggles_spaces_section_not_sidebar() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let sidebar = app.state.view.sidebar_rect;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            sidebar.x + 2,
+            sidebar.y,
+        ));
+
+        assert!(app.state.spaces_collapsed);
+        assert!(!app.state.sidebar_collapsed);
+        assert_eq!(app.state.sidebar_footer_rect(), Rect::default());
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            sidebar.x + 2,
+            sidebar.y,
+        ));
+
+        assert!(!app.state.spaces_collapsed);
     }
 
     #[test]

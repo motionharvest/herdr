@@ -355,11 +355,6 @@ fn pane_chrome_title_for_pane(
     let terminal = ws
         .pane_state(pane_id)
         .and_then(|pane| app.terminals.get(&pane.attached_terminal_id));
-    let cwd = ws.active_tab().and_then(|tab| {
-        tab.terminal_id(pane_id)
-            .and_then(|terminal_id| app.terminals.get(terminal_id))
-            .map(|terminal| terminal.cwd.clone())
-    });
     let git_status = ws.git_status_for_pane(pane_id);
     let repo_path = git_status
         .space
@@ -367,7 +362,7 @@ fn pane_chrome_title_for_pane(
         .map(|space| display_path_with_home(&space.repo_root));
     PaneChromeTitle {
         pane_type: pane_type_label(terminal),
-        folder_name: pane_name_label(terminal, cwd.as_deref()),
+        folder_name: pane_name_label(terminal, ws.public_pane_number(pane_id)),
         repo_path,
         branch: git_status.branch.filter(|branch| !branch.is_empty()),
         worktree_state: git_status.worktree_state,
@@ -711,11 +706,11 @@ fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
 
 fn pane_name_label(
     terminal: Option<&crate::terminal::TerminalState>,
-    cwd: Option<&std::path::Path>,
+    pane_number: Option<usize>,
 ) -> Option<String> {
     terminal
         .and_then(|terminal| terminal.manual_label.clone())
-        .or_else(|| cwd.map(display_path_with_home))
+        .or_else(|| pane_number.map(|number| format!("Pane {number}")))
 }
 
 fn pane_type_label(terminal: Option<&crate::terminal::TerminalState>) -> String {
@@ -952,10 +947,6 @@ pub(super) fn render_panes(
                 let terminal = ws
                     .pane_state(info.id)
                     .and_then(|pane| app.terminals.get(&pane.attached_terminal_id));
-                let cwd = ws
-                    .active_tab()
-                    .and_then(|tab| tab.cwd_for_pane(info.id, &app.terminals, terminal_runtimes));
-
                 let git_status = ws.git_status_for_pane(info.id);
                 let repo_path = git_status
                     .space
@@ -963,7 +954,7 @@ pub(super) fn render_panes(
                     .map(|space| display_path_with_home(&space.repo_root));
                 let title = PaneChromeTitle {
                     pane_type: pane_type_label(terminal),
-                    folder_name: pane_name_label(terminal, cwd.as_deref()),
+                    folder_name: pane_name_label(terminal, ws.public_pane_number(info.id)),
                     repo_path,
                     branch: git_status.branch.filter(|branch| !branch.is_empty()),
                     worktree_state: git_status.worktree_state,
@@ -1927,15 +1918,10 @@ mod tests {
     }
 
     #[test]
-    fn pane_name_label_formats_home_and_absolute_paths() {
-        assert_eq!(
-            pane_name_label(None, Some(std::path::Path::new("/home/aaron/lab/herdr"))).as_deref(),
-            Some("~/lab/herdr")
-        );
-        assert_eq!(
-            pane_name_label(None, Some(std::path::Path::new("/opt/project"))).as_deref(),
-            Some("/opt/project")
-        );
+    fn pane_name_label_defaults_to_pane_number() {
+        assert_eq!(pane_name_label(None, Some(1)).as_deref(), Some("Pane 1"));
+        assert_eq!(pane_name_label(None, Some(12)).as_deref(), Some("Pane 12"));
+        assert_eq!(pane_name_label(None, None), None);
     }
 
     #[test]
@@ -1952,15 +1938,15 @@ mod tests {
         terminal.set_manual_label("review notes".into());
 
         assert_eq!(
-            pane_name_label(Some(&terminal), Some(std::path::Path::new("/tmp/herdr"))).as_deref(),
+            pane_name_label(Some(&terminal), Some(2)).as_deref(),
             Some("review notes")
         );
         assert_eq!(pane_type_label(Some(&terminal)), "Pi");
 
         terminal.clear_manual_label();
         assert_eq!(
-            pane_name_label(Some(&terminal), Some(std::path::Path::new("/tmp/herdr"))).as_deref(),
-            Some("/tmp/herdr")
+            pane_name_label(Some(&terminal), Some(2)).as_deref(),
+            Some("Pane 2")
         );
         assert_eq!(pane_type_label(Some(&terminal)), "Pi");
     }
