@@ -10,36 +10,50 @@ use super::super::{has_confirmation_prompt, has_selection_prompt, AgentState};
 ///   ───────────────────────── (bottom border)
 /// ```
 pub(super) fn detect(content: &str) -> AgentState {
+    detect_with_confidence(content).0
+}
+
+/// True when `detect` fell back to `Idle` without positive evidence for it.
+/// Claude repaints in bursts, so a poll can land on a frame that shows neither
+/// the prompt box nor working chrome while the agent is mid-turn. Reporting
+/// that guess as a real `Idle` is what fires "done" chimes during a turn — the
+/// caller holds the previous state instead.
+pub(super) fn is_ambiguous(content: &str) -> bool {
+    detect_with_confidence(content).1
+}
+
+fn detect_with_confidence(content: &str) -> (AgentState, bool) {
     let lower = content.to_lowercase();
 
-    // Search prompt is always idle
+    // Search overlay covers the prompt box; it says nothing about the turn.
     if content.contains("⌕ Search…") {
-        return AgentState::Idle;
+        return (AgentState::Idle, true);
     }
 
-    // ctrl+r toggle — don't change state
-    // (we return Idle as a safe default since we don't have previous state here)
+    // ctrl+r toggle — the overlay hides live chrome, so Idle is only a default.
     if lower.contains("ctrl+r to toggle") {
-        return AgentState::Idle;
+        return (AgentState::Idle, true);
     }
 
     if has_live_blocked_form(content) {
-        return AgentState::Blocked;
+        return (AgentState::Blocked, false);
     }
 
     if has_working_chrome(content) {
-        return AgentState::Working;
+        return (AgentState::Working, false);
     }
 
     if !has_prompt_box(content) && has_claude_blocked_prompt(content, &lower) {
-        return AgentState::Blocked;
+        return (AgentState::Blocked, false);
     }
 
     if has_prompt_box(content) {
-        return AgentState::Idle;
+        return (AgentState::Idle, false);
     }
 
-    AgentState::Idle
+    // No prompt box, no working chrome, no blocker: a mid-repaint frame or a
+    // full-screen takeover. Idle is a guess, not an observation.
+    (AgentState::Idle, true)
 }
 
 pub(super) fn has_visible_blocker(content: &str) -> bool {
@@ -356,6 +370,37 @@ mod tests {
 
         assert_eq!(detect(&content), AgentState::Idle);
         assert!(!has_working_chrome(&content));
+    }
+
+    #[test]
+    fn frame_without_prompt_box_or_working_chrome_is_ambiguous() {
+        // Mid-repaint: the prompt box has been erased and not yet redrawn.
+        let content = "● Reading src/pane.rs\n  Read 3207 lines\n";
+
+        assert_eq!(detect(content), AgentState::Idle);
+        assert!(is_ambiguous(content));
+    }
+
+    #[test]
+    fn visible_prompt_box_is_an_unambiguous_idle() {
+        let content = prompt_box_below("● Done.");
+
+        assert_eq!(detect(&content), AgentState::Idle);
+        assert!(!is_ambiguous(&content));
+    }
+
+    #[test]
+    fn working_chrome_is_never_ambiguous() {
+        let content = prompt_box_below("✻ Pouncing… (esc to interrupt)");
+
+        assert_eq!(detect(&content), AgentState::Working);
+        assert!(!is_ambiguous(&content));
+    }
+
+    #[test]
+    fn search_and_history_overlays_are_ambiguous() {
+        assert!(is_ambiguous("⌕ Search…"));
+        assert!(is_ambiguous("bck-i-search: cargo\nctrl+r to toggle"));
     }
 
     #[test]

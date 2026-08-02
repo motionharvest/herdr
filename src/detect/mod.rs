@@ -25,6 +25,10 @@ pub struct AgentDetection {
     /// True when the current screen is an agent-owned viewer that shows
     /// transcript/history instead of the live prompt state.
     pub skip_state_update: bool,
+    /// True when `state` is a fallback guess rather than an observation — the
+    /// screen showed no recognizable chrome for any state. Callers hold the
+    /// previous state instead of transitioning.
+    pub ambiguous: bool,
     /// True when the current screen visibly shows live UI chrome that needs
     /// human input. This is stronger than arbitrary prompt-like text in the
     /// scrollback and may override a non-blocked integration state.
@@ -177,6 +181,7 @@ pub fn detect_agent(agent: Option<Agent>, screen_content: &str) -> AgentDetectio
         return AgentDetection {
             state: AgentState::Unknown,
             skip_state_update: false,
+            ambiguous: false,
             visible_blocker: false,
             visible_idle: false,
             visible_working: false,

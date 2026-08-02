@@ -26,6 +26,7 @@ use super::{
         maybe_filter_primary_screen_scrollback_clear, restore_host_terminal_theme_if_needed,
         write_host_terminal_theme, DefaultColorEvent, DefaultColorEventTracker,
         DefaultColorOscTracker, DefaultColorQuery, DefaultColorTrackedEvent, Osc52Forwarder,
+        Osc7Tracker,
     },
     xtgettcap::{XtgettcapQueryTracker, XtgettcapResponse},
 };
@@ -130,6 +131,11 @@ pub(crate) struct GhosttyPaneCore {
     pub child_default_foreground_changed: bool,
     pub child_default_background_changed: bool,
     pub osc52_forwarder: Osc52Forwarder,
+    pub osc7_tracker: Osc7Tracker,
+    /// Process group that owned the pane when it last reported a directory with
+    /// OSC 7. The report only describes that process group, so it is discarded
+    /// once a different one takes the foreground.
+    pub reported_cwd_owner_pgid: Option<u32>,
     pub xtgettcap_query_tracker: XtgettcapQueryTracker,
     /// When the current synchronized-output suppression episode began, if one
     /// is active. Cleared as soon as the mode is observed off.
@@ -165,6 +171,10 @@ impl PaneTerminal {
     ) -> Vec<Bytes> {
         self.ghostty
             .resize(rows, cols, cell_width_px, cell_height_px)
+    }
+
+    pub fn reported_cwd(&self) -> Option<(String, u32)> {
+        self.ghostty.reported_cwd()
     }
 
     pub fn scroll_up(&self, lines: usize) {
@@ -363,6 +373,8 @@ impl GhosttyPaneTerminal {
                 child_default_foreground_changed: false,
                 child_default_background_changed: false,
                 osc52_forwarder: Osc52Forwarder::default(),
+                osc7_tracker: Osc7Tracker::default(),
+                reported_cwd_owner_pgid: None,
                 xtgettcap_query_tracker: XtgettcapQueryTracker::default(),
                 synchronized_output_since: None,
             }),
@@ -397,6 +409,14 @@ impl GhosttyPaneTerminal {
         self.lock_core()
             .transient_default_color_owner_pgid
             .is_some()
+    }
+
+    /// The directory last reported with OSC 7, paired with the process group
+    /// that reported it.
+    pub fn reported_cwd(&self) -> Option<(String, u32)> {
+        let core = self.lock_core();
+        let path = core.osc7_tracker.reported()?.to_string();
+        Some((path, core.reported_cwd_owner_pgid?))
     }
 
     pub fn maybe_restore_host_terminal_theme(&self, pane_id: PaneId, shell_pid: u32) -> bool {
@@ -447,6 +467,13 @@ impl GhosttyPaneTerminal {
 
         core.osc52_forwarder.observe(bytes);
         let clipboard_writes = core.osc52_forwarder.drain_pending();
+
+        if core.osc7_tracker.observe(bytes) && shell_pid > 0 {
+            // Bind the report to whoever is in the foreground now, so it is not
+            // reused after that process exits and the pane returns to a shell
+            // that reports nothing.
+            core.reported_cwd_owner_pgid = crate::platform::foreground_process_group_id(shell_pid);
+        }
 
         let alternate_screen = core
             .terminal

@@ -375,6 +375,165 @@ fn parse_osc52_clipboard_write(body: &[u8]) -> Option<Vec<u8>> {
     base64::engine::general_purpose::STANDARD.decode(data).ok()
 }
 
+/// OSC 7 payloads are file URLs for a directory; anything longer than this is
+/// stream garbage, not a path.
+const OSC7_MAX_PAYLOAD_BYTES: usize = 4096;
+
+/// Tracks the working directory a shell reports with OSC 7
+/// (`ESC ] 7 ; file://<host>/<path> BEL`).
+///
+/// `libghostty-vt` parses OSC 7 but treats it as having no terminal-modifying
+/// effect, so the reported directory never reaches herdr unless we scan for it
+/// ourselves. This is the only way to learn the location of a shell whose
+/// `/proc/<pid>/cwd` does not track it — notably Windows shells run through WSL
+/// interop, where the Linux-side process is a relay stub frozen at its launch
+/// directory.
+#[derive(Debug, Default)]
+pub(super) struct Osc7Tracker {
+    state: Osc52ForwarderState,
+    body: Vec<u8>,
+    reported: Option<String>,
+    updated: bool,
+}
+
+impl Osc7Tracker {
+    /// Returns true when this chunk carried a new directory report.
+    pub(super) fn observe(&mut self, bytes: &[u8]) -> bool {
+        self.updated = false;
+        for &byte in bytes {
+            match self.state {
+                Osc52ForwarderState::Ground => {
+                    if byte == 0x1b {
+                        self.state = Osc52ForwarderState::Escape;
+                    }
+                }
+                Osc52ForwarderState::Escape => {
+                    if byte == b']' {
+                        self.body.clear();
+                        self.state = Osc52ForwarderState::OscBody;
+                    } else if byte == 0x1b {
+                        self.state = Osc52ForwarderState::Escape;
+                    } else {
+                        self.state = Osc52ForwarderState::Ground;
+                    }
+                }
+                Osc52ForwarderState::OscBody => match byte {
+                    0x07 => {
+                        self.finalize();
+                        self.state = Osc52ForwarderState::Ground;
+                    }
+                    0x1b => self.state = Osc52ForwarderState::OscEscape,
+                    _ => self.body.push(byte),
+                },
+                Osc52ForwarderState::OscEscape => {
+                    if byte == b'\\' {
+                        self.finalize();
+                        self.state = Osc52ForwarderState::Ground;
+                    } else {
+                        self.body.push(0x1b);
+                        self.body.push(byte);
+                        self.state = Osc52ForwarderState::OscBody;
+                    }
+                }
+            }
+
+            if self.body.len() > OSC7_MAX_PAYLOAD_BYTES {
+                self.body.clear();
+                self.state = Osc52ForwarderState::Ground;
+            }
+        }
+        self.updated
+    }
+
+    fn finalize(&mut self) {
+        if let Some(path) = parse_osc7_report(&self.body) {
+            self.reported = Some(path);
+            self.updated = true;
+        }
+        self.body.clear();
+    }
+
+    pub(super) fn reported(&self) -> Option<&str> {
+        self.reported.as_deref()
+    }
+}
+
+/// Accepts `7;file://<host>/<path>` and the bare `7;<path>` form some shells
+/// emit.
+///
+/// The host is normally the machine name and names a local path. The exception
+/// is a WSL share host (`file://wsl.localhost/<distro>/...`), which is how a
+/// Windows shell reports a UNC path into a Linux filesystem — that one is
+/// rebuilt as a UNC path so the translation step can recognize it.
+///
+/// The returned string is the reported path, still Windows-shaped when a
+/// Windows shell sent it. Translation to a Linux path happens separately.
+fn parse_osc7_report(body: &[u8]) -> Option<String> {
+    let rest = body.strip_prefix(b"7;")?;
+    if rest.is_empty() {
+        return None;
+    }
+
+    let reported = std::str::from_utf8(rest).ok()?.trim();
+    let (share_host, path) = match reported.strip_prefix("file://") {
+        Some(after_scheme) => {
+            // Everything up to the first `/` is the host.
+            let index = after_scheme.find('/')?;
+            let (url_host, path) = after_scheme.split_at(index);
+            let url_host = percent_decode(url_host)?;
+            let share_host = is_wsl_share_host(&url_host).then_some(url_host);
+            (share_host, path)
+        }
+        None => (None, reported),
+    };
+
+    let decoded = percent_decode(path)?;
+    let decoded = match share_host {
+        Some(share_host) => format!("//{share_host}{decoded}"),
+        // A Windows path arrives as `/C:/Users/me`; the URL's leading slash is
+        // part of the encoding, not the path.
+        None => match decoded.strip_prefix('/') {
+            Some(rest) if is_windows_drive_prefixed(rest) => rest.to_string(),
+            _ => decoded,
+        },
+    };
+    (!decoded.trim().is_empty()).then_some(decoded)
+}
+
+fn is_wsl_share_host(url_host: &str) -> bool {
+    url_host.eq_ignore_ascii_case("wsl.localhost") || url_host.eq_ignore_ascii_case("wsl$")
+}
+
+fn is_windows_drive_prefixed(path: &str) -> bool {
+    let mut chars = path.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && chars.next() == Some(':')
+}
+
+fn percent_decode(value: &str) -> Option<String> {
+    if !value.contains('%') {
+        return Some(value.to_string());
+    }
+
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes.get(index + 1..index + 3)?;
+            let hex = std::str::from_utf8(hex).ok()?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
 fn foreground_job_is_shell(job: &crate::platform::ForegroundJob, shell_pid: u32) -> bool {
     job.processes.iter().any(|process| process.pid == shell_pid)
 }
@@ -539,6 +698,77 @@ mod tests {
 
     use super::*;
     use crate::layout::PaneId;
+
+    #[test]
+    fn osc7_tracker_reads_file_urls() {
+        let mut tracker = Osc7Tracker::default();
+        assert!(tracker.observe(b"\x1b]7;file://desktop/home/aaron/lab\x07"));
+        assert_eq!(tracker.reported(), Some("/home/aaron/lab"));
+
+        assert!(tracker.observe(b"\x1b]7;file://desktop/tmp\x1b\\"));
+        assert_eq!(tracker.reported(), Some("/tmp"));
+    }
+
+    #[test]
+    fn osc7_tracker_reads_windows_paths_reported_by_interop_shells() {
+        let mut tracker = Osc7Tracker::default();
+        assert!(tracker.observe(b"\x1b]7;file://DESKTOP/C:/Users/aaron\x07"));
+        assert_eq!(tracker.reported(), Some("C:/Users/aaron"));
+
+        assert!(tracker.observe(b"\x1b]7;file://wsl.localhost/Ubuntu/home/aaron/lab%20notes\x07"));
+        assert_eq!(
+            tracker.reported(),
+            Some("//wsl.localhost/Ubuntu/home/aaron/lab notes")
+        );
+
+        assert!(tracker.observe(b"\x1b]7;file://WSL%24/Ubuntu/home/aaron\x07"));
+        assert_eq!(tracker.reported(), Some("//WSL$/Ubuntu/home/aaron"));
+    }
+
+    /// Byte-for-byte payloads captured from Windows PowerShell 5.1 running the
+    /// snippet `herdr shell-init powershell` prints.
+    #[test]
+    fn osc7_tracker_reads_real_powershell_reports() {
+        let mut tracker = Osc7Tracker::default();
+        assert!(tracker.observe(b"\x1b]7;file://wsl.localhost/Ubuntu/home/aaron/lab/herdr\x07"));
+        assert_eq!(
+            tracker.reported(),
+            Some("//wsl.localhost/Ubuntu/home/aaron/lab/herdr")
+        );
+
+        assert!(tracker.observe(b"\x1b]7;file://OBERON24/C%3A/Program%20Files\x07"));
+        assert_eq!(tracker.reported(), Some("C:/Program Files"));
+    }
+
+    #[test]
+    fn osc7_tracker_handles_split_sequences_and_ignores_other_osc() {
+        let mut tracker = Osc7Tracker::default();
+        assert!(!tracker.observe(b"\x1b]7;file://host/home/aa"));
+        assert!(tracker.observe(b"ron\x07"));
+        assert_eq!(tracker.reported(), Some("/home/aaron"));
+
+        assert!(!tracker.observe(b"\x1b]0;a title\x07plain text"));
+        assert_eq!(tracker.reported(), Some("/home/aaron"));
+    }
+
+    #[test]
+    fn osc7_tracker_rejects_payloads_that_name_no_directory() {
+        let mut tracker = Osc7Tracker::default();
+        assert!(!tracker.observe(b"\x1b]7;\x07"));
+        assert!(!tracker.observe(b"\x1b]7;file://host\x07"));
+        assert!(!tracker.observe(b"\x1b]7;file://host/%zz\x07"));
+        assert_eq!(tracker.reported(), None);
+    }
+
+    #[test]
+    fn osc7_tracker_drops_oversized_payloads() {
+        let mut tracker = Osc7Tracker::default();
+        let mut garbage = b"\x1b]7;file://host/".to_vec();
+        garbage.extend(std::iter::repeat_n(b'a', OSC7_MAX_PAYLOAD_BYTES + 1));
+        garbage.push(0x07);
+        assert!(!tracker.observe(&garbage));
+        assert_eq!(tracker.reported(), None);
+    }
 
     fn pane_default_theme(
         pane: &super::super::GhosttyPaneTerminal,

@@ -229,6 +229,14 @@ herdr integration uninstall qodercli
 herdr integration status [--outdated-only]
 ```
 
+## Shell integration
+
+```bash
+herdr shell-init powershell
+```
+
+Prints the profile snippet PowerShell needs to report its working directory to Herdr over OSC 7. Required for `powershell.exe` started from WSL, where `/proc` cannot see the shell's location. See [PowerShell on WSL](/docs/configuration/#powershell-on-wsl).
+
 ## Read sources
 
 | Source | Meaning |

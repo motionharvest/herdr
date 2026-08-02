@@ -81,6 +81,8 @@ Your local Herdr acts as a thin client. It connects over SSH, starts or attaches
 
 Use this path when you want the remote session to feel local. The client runs on your machine, so local desktop features such as image clipboard paste can be bridged to the remote server. If you SSH first and run `herdr` on the server, Herdr runs entirely on that server and cannot read your local desktop clipboard.
 
+On Linux clients, image clipboard paste bridging depends on system clipboard tools: install `wl-clipboard` for Wayland (`wl-paste`) or `xclip` for X11.
+
 For repeat targets, put the host in your SSH config:
 
 ```text

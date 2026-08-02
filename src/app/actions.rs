@@ -16,9 +16,12 @@ use super::state::{
     PaneFocusTarget, ToastKind, ToastNotification, ToastTarget, ViewLayout,
 };
 
+/// Only `Working -> Idle` is a completion. `Blocked -> Idle` is a dialog being
+/// dismissed: Claude tears down the permission form and repaints the bare
+/// prompt box a frame or two before the spinner returns, so treating it as
+/// completion chimes "done" in the middle of a turn.
 fn is_background_completion_transition(prev_state: AgentState, new_state: AgentState) -> bool {
-    matches!(new_state, AgentState::Idle)
-        && matches!(prev_state, AgentState::Working | AgentState::Blocked)
+    matches!(new_state, AgentState::Idle) && matches!(prev_state, AgentState::Working)
 }
 
 pub fn active_tab_suppresses_notifications(
@@ -3846,6 +3849,20 @@ mod tests {
         );
         assert_eq!(
             notification_sound_for_state_change(false, AgentState::Unknown, AgentState::Idle),
+            None
+        );
+    }
+
+    #[test]
+    fn dismissing_a_blocking_prompt_is_not_a_completion() {
+        // Claude tears down the permission form and repaints the bare prompt
+        // box before the spinner returns. That frame must not chime "done".
+        assert_eq!(
+            notification_sound_for_state_change(false, AgentState::Blocked, AgentState::Idle),
+            None
+        );
+        assert_eq!(
+            notification_toast_for_state_change(false, AgentState::Blocked, AgentState::Idle),
             None
         );
     }

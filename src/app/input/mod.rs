@@ -480,6 +480,14 @@ impl AppState {
         let new_rows = (rows / 2).max(4);
         let new_cols = (cols / 2).max(10);
 
+        let focused_runtime = self
+            .active
+            .and_then(|i| self.workspaces.get(i))
+            .and_then(|ws| {
+                let tab = ws.active_tab()?;
+                let terminal_id = tab.terminal_id(tab.layout.focused())?;
+                terminal_runtimes.get(terminal_id)
+            });
         let follow_cwd = self
             .active
             .and_then(|i| self.workspaces.get(i))
@@ -487,6 +495,10 @@ impl AppState {
                 let tab = ws.active_tab()?;
                 tab.cwd_for_pane(tab.layout.focused(), &self.terminals, terminal_runtimes)
             });
+        // Splitting a pane that is sitting in a Windows shell should land in
+        // that same shell, not drop back to the Linux one.
+        let inherited_shell =
+            focused_runtime.and_then(|runtime| runtime.foreground_interop_shell());
         let cwd = Some(super::creation::resolve_new_terminal_cwd(
             &self.new_terminal_cwd,
             follow_cwd,
@@ -505,7 +517,8 @@ impl AppState {
                 cwd,
                 self.pane_scrollback_limit_bytes,
                 self.host_terminal_theme,
-                crate::pane::PaneShellConfig::new(&self.default_shell, self.shell_mode),
+                crate::pane::PaneShellConfig::new(&self.default_shell, self.shell_mode)
+                    .with_program_override(inherited_shell.as_deref()),
             ) {
                 let new_id = new_pane.pane_id;
                 terminal_runtimes.insert(new_pane.terminal.id.clone(), new_pane.runtime);

@@ -85,6 +85,24 @@ new_cwd = "follow"
 
 `new_cwd = "follow"` keeps the default behavior and inherits the source pane or workspace. When there is no source workspace, Herdr starts in `$HOME`. Use `"home"` to always start in `$HOME`, `"current"` to use Herdr's process directory, or a fixed path such as `"~/Projects"`. Explicit `--cwd` values from the CLI or socket API still take precedence.
 
+## PowerShell on WSL
+
+Herdr normally reads a pane's working directory from `/proc`. That does not work for Windows shells started from WSL: `powershell.exe` runs as a real Windows process behind a relay stub whose `/proc` entry stays at the directory it was launched from, so a `Set-Location` inside PowerShell is invisible and a new pane opens in the old directory.
+
+PowerShell can report its own location with OSC 7 instead. Print the profile snippet and add it to your PowerShell profile:
+
+```bash
+herdr shell-init powershell | clip.exe
+```
+
+Then run `notepad $PROFILE` in PowerShell and paste it in. Start a fresh PowerShell in a Herdr pane afterwards.
+
+With the snippet in place, Herdr follows PowerShell's location and translates it back to a Linux path: `\\wsl.localhost\<distro>\...` becomes the matching path in this distro, and drive paths such as `C:\Users\you` become `/mnt/c/Users/you` (or your `[automount] root` from `/etc/wsl.conf`). Locations with no Linux equivalent — another distro, a network share, or a non-filesystem provider such as `HKLM:\` — are ignored, and the pane keeps its previous directory.
+
+Splitting a pane that is sitting in `powershell.exe`, `pwsh.exe`, or `cmd.exe` opens the new pane in that same Windows shell rather than your configured Linux shell. The directory still follows `new_cwd`.
+
+The snippet only activates inside Herdr panes, where `HERDR_ENV=1` is forwarded across the interop boundary through `WSLENV`. Remove that condition from the snippet if you want every PowerShell session to report its location.
+
 ## Worktrees
 
 Set the root directory Herdr uses for Git worktree checkouts created from the sidebar:
@@ -156,10 +174,10 @@ switch_tab = "prefix+1..9"
 rename_tab = "prefix+shift+t"
 close_tab = "prefix+shift+x"
 copy_mode = "prefix+["
-focus_pane_left = "prefix+h"
-focus_pane_down = "prefix+j"
-focus_pane_up = "prefix+k"
-focus_pane_right = "prefix+l"
+focus_pane_left = "ctrl+left"
+focus_pane_down = "ctrl+down"
+focus_pane_up = "ctrl+up"
+focus_pane_right = "ctrl+right"
 cycle_pane_next = "prefix+tab"
 cycle_pane_previous = "prefix+shift+tab"
 last_pane = ""

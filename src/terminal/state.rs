@@ -821,6 +821,13 @@ pub(crate) fn stabilize_agent_detection(
         return detection.state;
     }
 
+    // The screen showed nothing recognizable. Hold rather than guess: an
+    // ambiguous frame is the common case mid-repaint, and letting it read as
+    // Idle is what produces "done" notifications during a turn.
+    if detection.ambiguous {
+        return previous;
+    }
+
     stabilize_agent_state(
         agent,
         previous,
@@ -879,6 +886,55 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_frame_holds_the_previous_state() {
+        let now = std::time::Instant::now();
+        let mut last_working = None;
+
+        let state = stabilize_agent_detection(
+            Some(Agent::Claude),
+            AgentState::Working,
+            AgentDetection {
+                state: AgentState::Idle,
+                skip_state_update: false,
+                ambiguous: true,
+                visible_blocker: false,
+                visible_idle: false,
+                visible_working: false,
+            },
+            false,
+            // Well past the working hold: ambiguity must not expire into Idle.
+            now + CLAUDE_WORKING_HOLD + Duration::from_secs(30),
+            &mut last_working,
+        );
+
+        assert_eq!(state, AgentState::Working);
+    }
+
+    #[test]
+    fn ambiguous_frame_does_not_hold_a_real_process_exit() {
+        let now = std::time::Instant::now();
+        let mut last_working = None;
+
+        let state = stabilize_agent_detection(
+            Some(Agent::Claude),
+            AgentState::Working,
+            AgentDetection {
+                state: AgentState::Idle,
+                skip_state_update: false,
+                ambiguous: true,
+                visible_blocker: false,
+                visible_idle: false,
+                visible_working: false,
+            },
+            true,
+            now,
+            &mut last_working,
+        );
+
+        assert_eq!(state, AgentState::Idle);
+    }
+
+    #[test]
     fn process_exit_idle_bypasses_claude_working_hold() {
         let now = std::time::Instant::now();
         let mut last_working = Some(now);
@@ -889,6 +945,7 @@ mod tests {
             AgentDetection {
                 state: AgentState::Idle,
                 skip_state_update: false,
+                ambiguous: false,
                 visible_blocker: false,
                 visible_idle: false,
                 visible_working: false,
@@ -912,6 +969,7 @@ mod tests {
             AgentDetection {
                 state: AgentState::Idle,
                 skip_state_update: false,
+                ambiguous: false,
                 visible_blocker: false,
                 visible_idle: true,
                 visible_working: false,

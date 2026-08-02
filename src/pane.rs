@@ -47,6 +47,20 @@ fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
     // when the remote side lacks matching terminfo entries.
     cmd.env("TERM", PANE_TERM);
     cmd.env("COLORTERM", PANE_COLORTERM);
+    apply_wsl_interop_env(cmd);
+}
+
+/// Windows processes launched through WSL interop only receive the Linux
+/// environment variables named in `WSLENV`. Forward the herdr marker so a
+/// Windows shell's profile can tell it is running inside a herdr pane.
+fn apply_wsl_interop_env(cmd: &mut CommandBuilder) {
+    if !crate::wsl::is_wsl() {
+        return;
+    }
+    let existing = std::env::var("WSLENV").ok();
+    if let Some(updated) = crate::wsl::wslenv_with(existing.as_deref(), crate::HERDR_ENV_VAR) {
+        cmd.env("WSLENV", updated);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +126,11 @@ async fn publish_state_changed_event(
 }
 
 const AGENT_MISS_CONFIRMATION_ATTEMPTS: u8 = 6;
+/// Confirming foreground-shell probe misses required *after* the first one
+/// before publishing a process-exit idle. Confirmation probes are forced onto
+/// the next detection tick, so a real exit is reported ~600ms later while
+/// single-probe `/proc` races are filtered out entirely.
+const FOREGROUND_SHELL_EXIT_CONFIRMATIONS: u8 = 2;
 const PROCESS_RECHECK_IDENTIFIED: std::time::Duration = std::time::Duration::from_secs(5);
 const PROCESS_RECHECK_MISSING_FOREGROUND_GROUP: std::time::Duration =
     std::time::Duration::from_secs(30);
@@ -162,6 +181,7 @@ fn foreground_member_cwd_different_from_shell(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForegroundShellAgentAction {
     ObserveProbe,
+    AwaitProcessExitConfirmation,
     ReportProcessExit,
     ClearAgent,
 }
@@ -170,11 +190,21 @@ fn foreground_shell_agent_action(
     previous_agent: Option<Agent>,
     new_agent: Option<Agent>,
     foreground_is_pane_shell: bool,
+    foreground_shell_misses: u8,
     process_exit_reported: bool,
 ) -> ForegroundShellAgentAction {
     if !should_clear_agent_for_foreground_shell(previous_agent, new_agent, foreground_is_pane_shell)
     {
         return ForegroundShellAgentAction::ObserveProbe;
+    }
+
+    // A process-exit report forces a synthetic idle that bypasses the state
+    // stabilizer, so a single probe miss must not trigger it. `/proc` races and
+    // short-lived tool children routinely produce one foreground job that shows
+    // the pane shell without the agent. Require consecutive misses; the caller
+    // re-probes on the next tick, so a real exit is still reported promptly.
+    if foreground_shell_misses < FOREGROUND_SHELL_EXIT_CONFIRMATIONS {
+        return ForegroundShellAgentAction::AwaitProcessExitConfirmation;
     }
 
     // Do not clear identity immediately. First publish an idle process-exit
@@ -196,6 +226,7 @@ struct ProcessProbeInput {
     has_process_probe: bool,
     acquisition_age: Option<std::time::Duration>,
     pending_foreground_shell_clear: bool,
+    pending_foreground_shell_confirm: bool,
     pending_restore_probe: bool,
     elapsed_since_process_check: std::time::Duration,
 }
@@ -209,7 +240,10 @@ fn foreground_group_changed(
 }
 
 fn should_probe_foreground_job(input: ProcessProbeInput) -> bool {
-    if input.pending_foreground_shell_clear || input.pending_restore_probe {
+    if input.pending_foreground_shell_clear
+        || input.pending_foreground_shell_confirm
+        || input.pending_restore_probe
+    {
         return true;
     }
 
@@ -381,6 +415,7 @@ fn detection_update_for_publish(
         return Some(crate::detect::AgentDetection {
             state: AgentState::Idle,
             skip_state_update: false,
+            ambiguous: false,
             visible_blocker: false,
             visible_idle: false,
             visible_working: false,
@@ -483,6 +518,7 @@ fn spawn_basic_detection_task(
                     acquisition_age: acquisition_started_at
                         .map(|started| now.duration_since(started)),
                     pending_foreground_shell_clear: false,
+                    pending_foreground_shell_confirm: false,
                     pending_restore_probe: false,
                     elapsed_since_process_check: now.duration_since(last_process_check),
                 });
@@ -932,6 +968,9 @@ fn pane_shell_from(configured_shell: &str, env_shell: Option<String>) -> String 
 pub(crate) struct PaneShellConfig<'a> {
     pub(crate) default_shell: &'a str,
     pub(crate) mode: crate::config::ShellModeConfig,
+    /// Launch this program instead of the configured shell. Used when a split
+    /// inherits the Windows shell its source pane was running.
+    pub(crate) program_override: Option<&'a str>,
 }
 
 impl<'a> PaneShellConfig<'a> {
@@ -939,7 +978,13 @@ impl<'a> PaneShellConfig<'a> {
         Self {
             default_shell,
             mode,
+            program_override: None,
         }
+    }
+
+    pub(crate) fn with_program_override(mut self, program: Option<&'a str>) -> Self {
+        self.program_override = program.filter(|program| !program.is_empty());
+        self
     }
 }
 
@@ -1004,6 +1049,12 @@ fn pane_shell_command_builder_for_target(
     shell_config: PaneShellConfig<'_>,
     target_is_macos: bool,
 ) -> io::Result<CommandBuilder> {
+    // An inherited program is launched verbatim: login-shell wrapping applies
+    // to the configured shell, not to a Windows shell we are re-entering.
+    if let Some(program) = shell_config.program_override {
+        return Ok(CommandBuilder::new(program));
+    }
+
     let shell = pane_shell(shell_config.default_shell);
     if shell_mode_uses_login_shell(shell_config.mode, target_is_macos) {
         let mut cmd = CommandBuilder::new_default_prog();
@@ -1526,6 +1577,7 @@ impl PaneRuntime {
                 let mut acquisition_started_at = None;
                 let mut last_content_change_at = None;
                 let mut pending_foreground_shell_clear = false;
+                let mut foreground_shell_misses = 0u8;
                 let mut foreground_shell_exit_reported = false;
                 let mut release_was_active = false;
                 let mut pending_restore_probe = initial_state.detected_agent.is_some();
@@ -1559,6 +1611,7 @@ impl PaneRuntime {
                             acquisition_started_at = None;
                             last_content_change_at = None;
                             pending_foreground_shell_clear = false;
+                            foreground_shell_misses = 0;
                             foreground_shell_exit_reported = false;
                             release_was_active = false;
                             pending_restore_probe = false;
@@ -1610,6 +1663,7 @@ impl PaneRuntime {
                             acquisition_age: acquisition_started_at
                                 .map(|started| now.duration_since(started)),
                             pending_foreground_shell_clear,
+                            pending_foreground_shell_confirm: foreground_shell_misses > 0,
                             pending_restore_probe,
                             elapsed_since_process_check: now.duration_since(last_process_check),
                         });
@@ -1642,18 +1696,27 @@ impl PaneRuntime {
                                 previous_agent,
                                 new_agent,
                                 foreground_is_pane_shell,
+                                foreground_shell_misses,
                                 foreground_shell_exit_reported,
                             ) {
+                                ForegroundShellAgentAction::AwaitProcessExitConfirmation => {
+                                    foreground_shell_misses =
+                                        foreground_shell_misses.saturating_add(1);
+                                    pending_foreground_shell_clear = false;
+                                    false
+                                }
                                 ForegroundShellAgentAction::ReportProcessExit => {
                                     pending_foreground_shell_clear = true;
                                     false
                                 }
                                 ForegroundShellAgentAction::ClearAgent => {
+                                    foreground_shell_misses = 0;
                                     pending_foreground_shell_clear = false;
                                     foreground_shell_exit_reported = false;
                                     agent_presence.clear_current_agent()
                                 }
                                 ForegroundShellAgentAction::ObserveProbe => {
+                                    foreground_shell_misses = 0;
                                     pending_foreground_shell_clear = false;
                                     foreground_shell_exit_reported = false;
                                     agent_presence.observe_process_probe(new_agent)
@@ -2077,14 +2140,70 @@ impl PaneRuntime {
 
     /// Get the current working directory of the child shell process.
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
+        if let Some(reported) = self.reported_cwd() {
+            return Some(reported);
+        }
         let pid = self.child_pid.load(Ordering::Relaxed);
         crate::platform::process_cwd(pid)
+    }
+
+    /// The directory the pane reported with OSC 7, if the process group that
+    /// reported it still holds the foreground.
+    ///
+    /// This is what makes a Windows shell running through WSL interop track:
+    /// its Linux-side relay stub keeps the launch directory in `/proc` forever,
+    /// so the report is the only truth available.
+    fn reported_cwd(&self) -> Option<std::path::PathBuf> {
+        let (reported, owner_pgid) = self.terminal.reported_cwd()?;
+        let pid = self.child_pid.load(Ordering::Acquire);
+        let current_pgid = self.foreground_pgid(pid)?;
+        if current_pgid != owner_pgid {
+            return None;
+        }
+        let path = if crate::wsl::is_wsl() {
+            crate::wsl::translate_reported_path(&reported)?
+        } else {
+            std::path::PathBuf::from(reported)
+        };
+        (path.is_absolute() && path.is_dir()).then_some(path)
+    }
+
+    fn foreground_pgid(&self, shell_pid: u32) -> Option<u32> {
+        #[cfg(unix)]
+        {
+            self.io
+                .foreground_process_group_id()
+                .or_else(|| crate::platform::foreground_process_group_id(shell_pid))
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = shell_pid;
+            None
+        }
+    }
+
+    /// The program a split should launch to stay in the same shell, when the
+    /// pane's foreground process is a Windows shell reached through WSL
+    /// interop. `None` means the configured shell is the right choice.
+    pub fn foreground_interop_shell(&self) -> Option<String> {
+        if !crate::wsl::is_wsl() {
+            return None;
+        }
+        let pid = self.child_pid.load(Ordering::Acquire);
+        let job = crate::detect::foreground_job(pid)?;
+        job.processes.iter().find_map(|process| {
+            crate::wsl::interop_shell_program(&process.name, process.argv.as_deref())
+        })
     }
 
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
         #[cfg(unix)]
         {
+            if let Some(reported) = self.reported_cwd() {
+                return Some(reported);
+            }
             let pid = self.child_pid.load(Ordering::Acquire);
             let shell_cwd = usable_process_cwd(pid);
             let foreground_pgid = self
@@ -2546,12 +2665,49 @@ mod tests {
     #[test]
     fn foreground_shell_reports_process_exit_before_clearing_agent() {
         assert_eq!(
-            foreground_shell_agent_action(Some(Agent::Codex), None, true, false),
+            foreground_shell_agent_action(
+                Some(Agent::Codex),
+                None,
+                true,
+                FOREGROUND_SHELL_EXIT_CONFIRMATIONS,
+                false
+            ),
             ForegroundShellAgentAction::ReportProcessExit
         );
         assert_eq!(
-            foreground_shell_agent_action(Some(Agent::Codex), None, true, true),
+            foreground_shell_agent_action(
+                Some(Agent::Codex),
+                None,
+                true,
+                FOREGROUND_SHELL_EXIT_CONFIRMATIONS,
+                true
+            ),
             ForegroundShellAgentAction::ClearAgent
+        );
+    }
+
+    #[test]
+    fn single_foreground_shell_probe_miss_does_not_report_process_exit() {
+        for misses in 0..FOREGROUND_SHELL_EXIT_CONFIRMATIONS {
+            assert_eq!(
+                foreground_shell_agent_action(Some(Agent::Codex), None, true, misses, false),
+                ForegroundShellAgentAction::AwaitProcessExitConfirmation,
+                "{misses} misses must not report a process exit"
+            );
+        }
+    }
+
+    #[test]
+    fn foreground_shell_probe_hit_stays_on_the_observe_path() {
+        assert_eq!(
+            foreground_shell_agent_action(
+                Some(Agent::Codex),
+                Some(Agent::Codex),
+                true,
+                FOREGROUND_SHELL_EXIT_CONFIRMATIONS,
+                false
+            ),
+            ForegroundShellAgentAction::ObserveProbe
         );
     }
 
@@ -2706,9 +2862,20 @@ mod tests {
             has_process_probe: true,
             acquisition_age: None,
             pending_foreground_shell_clear: false,
+            pending_foreground_shell_confirm: false,
             pending_restore_probe: false,
             elapsed_since_process_check: std::time::Duration::from_secs(1),
         }
+    }
+
+    #[test]
+    fn pending_foreground_shell_confirmation_forces_a_fast_reprobe() {
+        assert!(should_probe_foreground_job(ProcessProbeInput {
+            current_agent: Some(Agent::Claude),
+            pending_foreground_shell_confirm: true,
+            elapsed_since_process_check: std::time::Duration::from_millis(1),
+            ..process_probe_input()
+        }));
     }
 
     #[test]

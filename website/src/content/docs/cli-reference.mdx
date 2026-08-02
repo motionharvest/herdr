@@ -211,6 +211,8 @@ herdr integration install omp
 herdr integration install claude
 herdr integration install codex
 herdr integration install copilot
+herdr integration install droid
+herdr integration install kimi
 herdr integration install opencode
 herdr integration install hermes
 herdr integration install qodercli
@@ -219,11 +221,21 @@ herdr integration uninstall omp
 herdr integration uninstall claude
 herdr integration uninstall codex
 herdr integration uninstall copilot
+herdr integration uninstall droid
+herdr integration uninstall kimi
 herdr integration uninstall opencode
 herdr integration uninstall hermes
 herdr integration uninstall qodercli
 herdr integration status [--outdated-only]
 ```
+
+## Shell integration
+
+```bash
+herdr shell-init powershell
+```
+
+Prints the profile snippet PowerShell needs to report its working directory to Herdr over OSC 7. Required for `powershell.exe` started from WSL, where `/proc` cannot see the shell's location. See [PowerShell on WSL](/docs/configuration/#powershell-on-wsl).
 
 ## Read sources
 

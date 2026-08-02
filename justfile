@@ -86,7 +86,7 @@ release-prepare version:
         echo "error: commit your changes first"; \
         exit 1; \
     fi
-    @git fetch origin master --tags
+    @git fetch origin main --tags
     @if git rev-parse "v{{version}}" >/dev/null 2>&1; then \
         echo "error: tag v{{version}} already exists"; \
         exit 1; \
@@ -112,11 +112,11 @@ release-publish version:
         exit 1; \
     fi
     @branch="$(git branch --show-current)"; \
-    if [ "$branch" != "master" ]; then \
-        echo "error: release-publish must run from master, got $branch"; \
+    if [ "$branch" != "main" ]; then \
+        echo "error: release-publish must run from main, got $branch"; \
         exit 1; \
     fi
-    @git fetch origin master --tags
+    @git fetch origin main --tags
     @if git rev-parse "v{{version}}" >/dev/null 2>&1; then \
         echo "error: tag v{{version}} already exists"; \
         exit 1; \
@@ -130,14 +130,14 @@ release-publish version:
     python3 scripts/changelog.py extract --version {{version}} --output /tmp/herdr-release-notes-check.md
     rm -f /tmp/herdr-release-notes-check.md
     @local_head="$(git rev-parse HEAD)"; \
-    remote_head="$(git rev-parse origin/master)"; \
+    remote_head="$(git rev-parse origin/main)"; \
     if ! git merge-base --is-ancestor "$remote_head" "$local_head"; then \
-        echo "error: origin/master is not an ancestor of HEAD; pull or rebase before publishing"; \
+        echo "error: origin/main is not an ancestor of HEAD; pull or rebase before publishing"; \
         exit 1; \
     fi; \
     if [ "$local_head" != "$remote_head" ]; then \
-        echo "pushing release commit to origin/master"; \
-        git push origin HEAD:master; \
+        echo "pushing release commit to origin/main"; \
+        git push origin HEAD:main; \
     fi
     git tag -a v{{version}} -m "v{{version}}"
     git push origin v{{version}}

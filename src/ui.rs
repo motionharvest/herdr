@@ -1052,16 +1052,16 @@ mod tests {
             .any(|(key, label)| key == "unset" && label.as_ref() == "switch workspace 1-9"));
         assert!(panes
             .iter()
-            .any(|(key, label)| key == "prefix+h" && label.as_ref() == "focus pane left"));
+            .any(|(key, label)| key == "ctrl+left" && label.as_ref() == "focus pane left"));
         assert!(panes
             .iter()
-            .any(|(key, label)| key == "prefix+j" && label.as_ref() == "focus pane down"));
+            .any(|(key, label)| key == "ctrl+down" && label.as_ref() == "focus pane down"));
         assert!(panes
             .iter()
-            .any(|(key, label)| key == "prefix+k" && label.as_ref() == "focus pane up"));
+            .any(|(key, label)| key == "ctrl+up" && label.as_ref() == "focus pane up"));
         assert!(panes
             .iter()
-            .any(|(key, label)| key == "prefix+l" && label.as_ref() == "focus pane right"));
+            .any(|(key, label)| key == "ctrl+right" && label.as_ref() == "focus pane right"));
     }
 
     #[test]

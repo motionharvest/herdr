@@ -57,6 +57,7 @@ mod ui;
 mod update;
 mod workspace;
 mod worktree;
+mod wsl;
 
 fn init_logging() {
     crate::logging::init_file_logging("herdr.log");
@@ -435,6 +436,7 @@ fn main() -> io::Result<()> {
         println!("       herdr pane <subcommand> ...");
         println!("       herdr wait <subcommand> ...");
         println!("       herdr session <subcommand> ...");
+        println!("       herdr shell-init <shell>");
         println!("       herdr integration <subcommand> ...");
         println!();
         println!("Common commands:");

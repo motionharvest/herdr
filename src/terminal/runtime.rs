@@ -368,6 +368,10 @@ impl TerminalRuntime {
         self.0.foreground_cwd()
     }
 
+    pub(crate) fn foreground_interop_shell(&self) -> Option<String> {
+        self.0.foreground_interop_shell()
+    }
+
     pub(crate) fn current_size(&self) -> (u16, u16) {
         self.0.current_size()
     }

@@ -595,6 +595,105 @@ fn tab_methods_round_trip_over_socket() {
     cleanup_spawned_herdr(child, base);
 }
 
+/// A shell whose directory `/proc` cannot see — the case that matters is a
+/// Windows shell behind a WSL interop stub — reports it with OSC 7 instead.
+/// The report only describes the process group that sent it, so it must be
+/// dropped once that process group is gone.
+#[cfg(target_os = "linux")]
+#[test]
+fn pane_cwd_follows_osc7_reports_only_while_the_reporter_holds_the_foreground() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let reported = base.join("reported-elsewhere");
+    let exited_marker = base.join("exited-ready");
+    let running_marker = base.join("running-ready");
+    let script = base.join("report-cwd.sh");
+    fs::create_dir_all(&reported).unwrap();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    fs::write(
+        &script,
+        "#!/bin/sh\nprintf '\\033]7;file://host%s\\007' \"$1\"\ntouch \"$2\"\nif [ -n \"$3\" ]; then sleep 30; fi\n",
+    )
+    .unwrap();
+
+    let child = spawn_herdr_with_shell(&config_home, &runtime_dir, &socket_path, "/bin/bash");
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"osc7_ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    let pane_id = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let run = |id: &str, marker: &Path, keep_running: &str| {
+        let send_text = send_request(
+            &socket_path,
+            &serde_json::json!({
+                "id": format!("{id}_text"),
+                "method": "pane.send_text",
+                "params": {
+                    "pane_id": pane_id,
+                    "text": format!(
+                        "/bin/sh {} {} {} {keep_running}",
+                        script.display(),
+                        reported.display(),
+                        marker.display()
+                    ),
+                },
+            })
+            .to_string(),
+        );
+        assert_eq!(send_text["result"]["type"], "ok");
+        let send_enter = send_request(
+            &socket_path,
+            &format!(
+                r#"{{"id":"{id}_enter","method":"pane.send_keys","params":{{"pane_id":"{pane_id}","keys":["Enter"]}}}}"#
+            ),
+        );
+        assert_eq!(send_enter["result"]["type"], "ok");
+        wait_for_path(marker, Duration::from_secs(5));
+    };
+
+    let pane_cwd = || {
+        send_request(
+            &socket_path,
+            &format!(
+                r#"{{"id":"osc7_get","method":"pane.get","params":{{"pane_id":"{pane_id}"}}}}"#
+            ),
+        )["result"]["pane"]["cwd"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // Reporter exits immediately: the pane is back in a shell that reports
+    // nothing, so the stale report must not be used.
+    run("osc7_exited", &exited_marker, "");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut cwd_after_exit = pane_cwd();
+    while cwd_after_exit != base.display().to_string() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+        cwd_after_exit = pane_cwd();
+    }
+    assert_eq!(cwd_after_exit, base.display().to_string());
+
+    // Reporter stays in the foreground: its report is the pane's directory,
+    // even though no process there ever chdir'd.
+    run("osc7_running", &running_marker, "keep");
+    assert_eq!(pane_cwd(), reported.display().to_string());
+
+    cleanup_spawned_herdr(child, base);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn pane_info_reports_foreground_cwd_without_changing_pane_cwd() {

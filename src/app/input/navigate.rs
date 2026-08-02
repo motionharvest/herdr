@@ -1704,7 +1704,7 @@ last_pane = "prefix+tab"
     }
 
     #[tokio::test]
-    async fn prefix_focus_pane_is_one_shot_and_returns_to_terminal() {
+    async fn direct_focus_pane_is_one_shot_and_returns_to_terminal() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -1726,12 +1726,9 @@ last_pane = "prefix+tab"
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 80, 24));
 
-        app.handle_key(TerminalKey::new(
-            app.state.prefix_code,
-            app.state.prefix_mods,
-        ))
-        .await;
-        app.handle_key(TerminalKey::new(KeyCode::Char('h'), KeyModifiers::empty()))
+        // `focus_pane_left` defaults to the direct binding `ctrl+left`, so the
+        // key is intercepted straight from terminal mode with no prefix.
+        app.handle_key(TerminalKey::new(KeyCode::Left, KeyModifiers::CONTROL))
             .await;
 
         assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));

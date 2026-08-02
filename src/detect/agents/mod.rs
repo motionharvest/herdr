@@ -44,6 +44,7 @@ pub(super) fn detect(agent: Agent, screen_content: &str) -> AgentDetection {
         return AgentDetection {
             state,
             skip_state_update: true,
+            ambiguous: false,
             visible_blocker: false,
             visible_idle: false,
             visible_working: false,
@@ -53,9 +54,19 @@ pub(super) fn detect(agent: Agent, screen_content: &str) -> AgentDetection {
     AgentDetection {
         state,
         skip_state_update: false,
+        ambiguous: is_ambiguous(agent, screen_content),
         visible_blocker: has_visible_blocker(agent, screen_content, state),
         visible_idle: has_visible_idle(agent, screen_content, state),
         visible_working: has_visible_working(agent, screen_content, state),
+    }
+}
+
+/// Ambiguity is opt-in per agent, like the `visible_*` flags: a detector must
+/// be able to tell "I saw an idle prompt" apart from "I saw nothing I know".
+fn is_ambiguous(agent: Agent, content: &str) -> bool {
+    match agent {
+        Agent::Claude => claude_code::is_ambiguous(content),
+        _ => false,
     }
 }
 
