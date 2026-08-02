@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## [0.7.0] - 2026-08-02
+
+### Fixed
+- The documented default pane-focus keybindings now match what Herdr actually ships. The configuration reference listed `focus_pane_left/down/up/right` as `prefix+h/j/k/l`; the real defaults are `ctrl+left/down/up/right`. No behavior changed — only the documentation and its tests were wrong.
+- Background panes no longer play the "agent done" sound while the agent is still working. Dismissing a permission prompt, a single foreground-process probe race, and mid-repaint frames that showed neither the prompt box nor working chrome could each be read as completion.
+- Pane output now renders flag emoji and other multi-codepoint grapheme clusters as complete symbols instead of blank cells. (#243)
+- Starting Herdr with no restored workspaces, or closing the last workspace, now opens a default workspace instead of leaving the client on an empty screen where direct keybindings such as `cmd+n` were shown but ignored. (#366)
+- Resizing restored panes no longer aborts the server when libghostty-vt reflows a terminal whose pre-resize cursor row is past the new height. (#465)
+- Full-screen TUIs such as Neovim now receive resize-generated terminal responses after Herdr internal pane resizes, so grown panes redraw without waiting for extra input. (#471)
+
+### Added
+- Added `herdr integration install droid` for Factory Droid hooks that report session ids through Herdr's socket API. When native agent session restore is enabled, Herdr can resume Droid panes with `droid --resume <id>`.
+- Panes now follow the working directory a shell reports with OSC 7. This is what makes PowerShell on WSL work: `powershell.exe` runs behind a relay stub whose `/proc` directory never moves, so new panes used to open where the pane started rather than where PowerShell is. Run `herdr shell-init powershell` for the profile snippet, and see [PowerShell on WSL](https://herdr.dev/docs/configuration/) for the setup.
+- Splitting a pane that is running `powershell.exe`, `pwsh.exe`, or `cmd.exe` through WSL interop now opens the new pane in that same Windows shell instead of falling back to the configured Linux shell.
+
 ## [0.6.10] - 2026-07-07
 
 ### Fixed
