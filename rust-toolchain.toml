@@ -1,0 +1,7 @@
+# Pinned so `just lint` locally and `just ci` in GitHub Actions run the same
+# clippy. CI installs `dtolnay/rust-toolchain@stable`, so before this pin the
+# two drifted apart on every stable release and new lints failed CI only after
+# a push. Bump this deliberately, then run `just lint` before committing.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

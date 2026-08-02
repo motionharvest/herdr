@@ -61,12 +61,14 @@ pub fn osc_set_default_color_sequence(kind: DefaultColorKind, color: RgbColor) -
 fn parse_rgb_color(value: &str) -> Option<RgbColor> {
     if let Some(rgb) = value.strip_prefix("rgb:") {
         let mut parts = rgb.split('/');
-        return Some(RgbColor {
+        // Build the color first: the three `parts.next()?` calls must consume
+        // their components before the trailing-component check runs.
+        let color = RgbColor {
             r: parse_hex_component(parts.next()?)?,
             g: parse_hex_component(parts.next()?)?,
             b: parse_hex_component(parts.next()?)?,
-        })
-        .filter(|_| parts.next().is_none());
+        };
+        return parts.next().is_none().then_some(color);
     }
 
     if let Some(hex) = value.strip_prefix('#') {
@@ -114,6 +116,32 @@ mod tests {
                 },
             ))
         );
+    }
+
+    #[test]
+    fn rejects_rgb_response_with_a_trailing_component() {
+        // The component reads must happen before this check. Rewriting the
+        // parser as `parts.next().is_none().then_some(..)` — which is what
+        // clippy::some_filter suggests — evaluates the check first and accepts
+        // this input.
+        assert_eq!(parse_rgb_color("rgb:cccc/dddd/eeee/ffff"), None);
+    }
+
+    #[test]
+    fn parses_rgb_color_with_exactly_three_components() {
+        assert_eq!(
+            parse_rgb_color("rgb:cccc/dddd/eeee"),
+            Some(RgbColor {
+                r: 0xcc,
+                g: 0xdd,
+                b: 0xee,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_rgb_response_with_too_few_components() {
+        assert_eq!(parse_rgb_color("rgb:cccc/dddd"), None);
     }
 
     #[test]
