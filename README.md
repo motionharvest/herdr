@@ -37,13 +37,13 @@ see the [changelog](CHANGELOG.md) for the full history.
 curl -fsSL https://raw.githubusercontent.com/motionharvest/herdr/main/install.sh | bash
 ```
 
-Until this fork publishes its own GitHub release, install the upstream binary with:
+this installs the latest fork release. to install the upstream binary instead:
 
 ```bash
 HERDR_REPO=ogulcancelik/herdr curl -fsSL https://raw.githubusercontent.com/motionharvest/herdr/main/install.sh | bash
 ```
 
-or build this fork from source (recommended if you want the fork features above):
+or build from source:
 
 ```bash
 git clone https://github.com/motionharvest/herdr
