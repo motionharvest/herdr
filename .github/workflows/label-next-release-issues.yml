@@ -2,7 +2,7 @@ name: Close pending-release issues
 
 on:
   push:
-    branches: [master]
+    branches: [main]
 
 permissions:
   contents: read
@@ -57,13 +57,13 @@ jobs:
             gh api -X POST "repos/${GITHUB_REPOSITORY}/labels" \
               -f name="$NEXT_RELEASE_LABEL" \
               -f color="5319E7" \
-              -f description="Implemented on master and pending a published release." \
+              -f description="Implemented on main and pending a published release." \
               >/dev/null \
               || gh api "repos/${GITHUB_REPOSITORY}/labels/${NEXT_RELEASE_LABEL}" >/dev/null
           fi
 
           PENDING_COMMENT_MARKER="<!-- herdr:pending-release -->"
-          PENDING_COMMENT="${PENDING_COMMENT_MARKER}"$'\n'"Implemented on master and queued for the next release. This is not available in a published Herdr release yet."
+          PENDING_COMMENT="${PENDING_COMMENT_MARKER}"$'\n'"Implemented on main and queued for the next release. This is not available in a published Herdr release yet."
 
           issue_has_comment_marker() {
             local issue="$1"

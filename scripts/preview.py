@@ -111,7 +111,7 @@ def build_notes(previous: str, commit: str, build_id: str, base_version: str, re
     lines = [
         f"Preview build {build_id}",
         "",
-        f"Built from `{short}` on `master`.",
+        f"Built from `{short}` on `main`.",
         f"Base stable: v{normalize_version(base_version)}",
         f"Compare: {compare}",
         "",
@@ -133,7 +133,7 @@ def build_notes(previous: str, commit: str, build_id: str, base_version: str, re
         lines.append("")
 
     if not wrote:
-        lines.extend(["### Changed", "- Rebuilt preview from the current master branch.", ""])
+        lines.extend(["### Changed", "- Rebuilt preview from the current main branch.", ""])
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -287,7 +287,7 @@ def main() -> int:
     current.set_defaults(func=cmd_current_commit)
 
     select = sub.add_parser("select-commit")
-    select.add_argument("--ref", default="origin/master")
+    select.add_argument("--ref", default="origin/main")
     select.set_defaults(func=cmd_select_commit)
 
     args = parser.parse_args()
