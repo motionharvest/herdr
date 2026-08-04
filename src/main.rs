@@ -18,6 +18,7 @@ const NESTED_HERDR_MESSAGES: [&str; 6] = [
     "recursion detected. base case not found. aborting.",
 ];
 
+mod agent_model;
 mod agent_resume;
 mod api;
 mod app;
@@ -37,6 +38,7 @@ mod kitty_graphics;
 mod layout;
 mod logging;
 mod pane;
+mod pane_names;
 mod persist;
 mod platform;
 mod product_announcements;

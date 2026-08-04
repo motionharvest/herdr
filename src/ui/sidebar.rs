@@ -14,10 +14,13 @@ use crate::terminal::TerminalRuntimeRegistry;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 1;
 const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 3;
-const WORKSPACE_SECTION_DROP_SLOT_ROWS: u16 = 1;
-const AGENT_PANEL_HEADER_ROWS: u16 = 3;
-/// Minimum rows reserved for the agent panel section (divider + header + body).
-const MIN_AGENT_SECTION_ROWS: u16 = AGENT_PANEL_HEADER_ROWS.saturating_add(1);
+/// Content rows per agent list entry: name, location, status.
+pub(crate) const AGENT_PANEL_ENTRY_CONTENT_ROWS: u16 = 3;
+/// Rows an agent entry occupies in the sidebar list: a gap row separating it
+/// from the card or agent above, then its content rows.
+const AGENT_ENTRY_ROWS: u16 = AGENT_PANEL_ENTRY_CONTENT_ROWS + 1;
+/// Status glyph drawn down the left edge of an agent entry.
+const AGENT_STATUS_BAR_GLYPH: &str = "▎";
 /// Branch glyph prefixed to a workspace card's git branch name.
 const GIT_BRANCH_GLYPH: &str = "\u{f126}";
 
@@ -25,53 +28,16 @@ pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
     pub tab_idx: usize,
     pub pane_id: crate::layout::PaneId,
-    pub primary_label: String,
-    pub primary_tab_label: Option<String>,
+    /// Human name for the pane (manual label, else the assigned pane name).
+    pub name: String,
     pub agent_label: Option<String>,
+    pub model_info: Option<crate::agent_model::AgentModelInfo>,
+    /// Where the agent is working: cwd plus git branch/dirty marker.
+    pub location: Option<String>,
     pub state: AgentState,
     pub seen: bool,
     pub custom_status: Option<String>,
     pub state_labels: std::collections::HashMap<String, String>,
-}
-
-fn workspace_list_content_height(app: &AppState) -> u16 {
-    let entry_rows = workspace_list_entries(app)
-        .iter()
-        .fold(0u16, |rows, entry| match entry {
-            WorkspaceListEntry::Workspace { ws_idx, .. } => app
-                .workspaces
-                .get(*ws_idx)
-                .map_or(rows, |ws| rows.saturating_add(workspace_row_height(ws))),
-        });
-
-    WORKSPACE_SECTION_HEADER_ROWS
-        .saturating_add(WORKSPACE_SECTION_FOOTER_ROWS)
-        .saturating_add(WORKSPACE_SECTION_DROP_SLOT_ROWS)
-        .saturating_add(entry_rows)
-}
-
-fn sidebar_section_heights(
-    total_h: u16,
-    split_ratio: f32,
-    workspace_required_h: u16,
-) -> (u16, u16) {
-    if total_h == 0 {
-        return (0, 0);
-    }
-
-    if total_h < 6 {
-        let ws_h = total_h.div_ceil(2);
-        return (ws_h, total_h.saturating_sub(ws_h));
-    }
-
-    let ratio = split_ratio.clamp(0.65, 0.9);
-    let ws_h_max = ((total_h as f32) * ratio).round() as u16;
-    let ws_h_max = ws_h_max.clamp(3, total_h.saturating_sub(3));
-    let ws_h_cap = total_h.saturating_sub(MIN_AGENT_SECTION_ROWS).max(2);
-    let ws_h_max = ws_h_max.min(ws_h_cap);
-    let ws_h = workspace_required_h.clamp(2, ws_h_max);
-    let detail_h = total_h.saturating_sub(ws_h);
-    (ws_h, detail_h)
 }
 
 /// Whether the spaces section is folded down to the header row plus the
@@ -79,48 +45,6 @@ fn sidebar_section_heights(
 /// Navigate mode temporarily reveals the list so workspace selection stays visible.
 pub(crate) fn spaces_section_collapsed(app: &AppState) -> bool {
     app.spaces_collapsed && !matches!(app.mode, Mode::Navigate)
-}
-
-pub(crate) fn expanded_sidebar_sections(app: &AppState, area: Rect) -> (Rect, Rect) {
-    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
-    if content.width == 0 || content.height == 0 {
-        return (Rect::default(), Rect::default());
-    }
-
-    let (ws_h, detail_h) = if spaces_section_collapsed(app) {
-        // Header row plus the active space card; no footer or drop slot.
-        let entry_rows = workspace_list_entries(app)
-            .iter()
-            .fold(0u16, |rows, entry| match entry {
-                WorkspaceListEntry::Workspace { ws_idx, .. } => app
-                    .workspaces
-                    .get(*ws_idx)
-                    .map_or(rows, |ws| rows.saturating_add(workspace_row_height(ws))),
-            });
-        let ws_h = WORKSPACE_SECTION_HEADER_ROWS
-            .saturating_add(entry_rows)
-            .min(content.height);
-        (ws_h, content.height.saturating_sub(ws_h))
-    } else {
-        sidebar_section_heights(
-            content.height,
-            app.sidebar_section_split,
-            workspace_list_content_height(app),
-        )
-    };
-    let ws_area = Rect::new(content.x, content.y, content.width, ws_h);
-    let detail_area = Rect::new(content.x, content.y + ws_h, content.width, detail_h);
-    (ws_area, detail_area)
-}
-
-pub(crate) fn sidebar_section_divider_rect(app: &AppState, area: Rect) -> Rect {
-    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
-    if content.width == 0 || content.height < 6 {
-        return Rect::default();
-    }
-
-    let (ws_area, _) = expanded_sidebar_sections(app, area);
-    Rect::new(content.x, ws_area.y + ws_area.height, content.width, 1)
 }
 
 fn agent_panel_current_workspace_idx(app: &AppState) -> Option<usize> {
@@ -150,16 +74,21 @@ fn agent_panel_toggle_label(scope: AgentPanelScope) -> &'static str {
     }
 }
 
-pub(crate) fn agent_panel_header_rect(area: Rect) -> Rect {
-    if area.width == 0 || area.height < 2 {
+/// Right-aligned `agents all|current` scope toggle on the sidebar header row.
+pub(crate) fn agent_scope_toggle_rect(app: &AppState, area: Rect) -> Rect {
+    if area.width <= 2 || area.height == 0 {
         return Rect::default();
     }
 
-    Rect::new(area.x, area.y + 1, area.width, 1)
-}
-
-pub(crate) fn agent_panel_toggle_rect(area: Rect, _scope: AgentPanelScope) -> Rect {
-    agent_panel_header_rect(area)
+    let label_len = "agents ".len() + agent_panel_toggle_label(app.agent_panel_scope).len();
+    let content_width = area.width.saturating_sub(1);
+    let width = (label_len as u16).min(content_width);
+    Rect::new(
+        area.x + content_width.saturating_sub(width),
+        area.y,
+        width,
+        1,
+    )
 }
 
 pub(crate) fn agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
@@ -186,54 +115,66 @@ fn agent_panel_entries_with_runtimes(
         }
     };
 
-    match app.agent_panel_scope {
+    let names = crate::pane_names::assigned_names(&app.terminals);
+    let ws_indices: Vec<usize> = match app.agent_panel_scope {
         AgentPanelScope::CurrentWorkspace => {
-            let Some(ws_idx) = agent_panel_current_workspace_idx(app) else {
-                return Vec::new();
-            };
-            let Some(ws) = app.workspaces.get(ws_idx) else {
-                return Vec::new();
-            };
-            ws.pane_details(&app.terminals)
-                .into_iter()
-                .map(|detail| AgentPanelEntry {
-                    ws_idx,
-                    tab_idx: detail.tab_idx,
-                    pane_id: detail.pane_id,
-                    primary_label: detail.label,
-                    primary_tab_label: None,
-                    agent_label: None,
-                    state: detail.state,
-                    seen: detail.seen,
-                    custom_status: detail.custom_status,
-                    state_labels: detail.state_labels,
-                })
-                .collect()
+            agent_panel_current_workspace_idx(app).into_iter().collect()
         }
-        AgentPanelScope::AllWorkspaces => app
-            .workspaces
-            .iter()
-            .enumerate()
-            .flat_map(|(ws_idx, ws)| {
-                let multi_tab = ws.tabs.len() > 1;
-                let workspace_label = ws.display_name_from(&app.terminals, terminal_runtimes);
-                ws.pane_details(&app.terminals)
-                    .into_iter()
-                    .map(move |detail| AgentPanelEntry {
-                        ws_idx,
-                        tab_idx: detail.tab_idx,
-                        pane_id: detail.pane_id,
-                        primary_label: workspace_label.clone(),
-                        primary_tab_label: multi_tab.then_some(detail.tab_label),
-                        agent_label: Some(detail.agent_label),
-                        state: detail.state,
-                        seen: detail.seen,
-                        custom_status: detail.custom_status,
-                        state_labels: detail.state_labels,
-                    })
-            })
-            .collect(),
+        AgentPanelScope::AllWorkspaces => (0..app.workspaces.len()).collect(),
+    };
+
+    let mut entries = Vec::new();
+    for ws_idx in ws_indices {
+        let Some(ws) = app.workspaces.get(ws_idx) else {
+            continue;
+        };
+        for detail in ws.pane_details(&app.terminals) {
+            let name = app
+                .terminals
+                .get(&detail.terminal_id)
+                .and_then(|terminal| terminal.manual_label.clone())
+                .or_else(|| names.get(&detail.terminal_id).cloned())
+                .unwrap_or_else(|| detail.agent_label.clone());
+            let location =
+                agent_location_label(app, ws, detail.tab_idx, detail.pane_id, terminal_runtimes);
+            entries.push(AgentPanelEntry {
+                ws_idx,
+                tab_idx: detail.tab_idx,
+                pane_id: detail.pane_id,
+                name,
+                agent_label: Some(detail.agent_label),
+                model_info: detail.model_info,
+                location,
+                state: detail.state,
+                seen: detail.seen,
+                custom_status: detail.custom_status,
+                state_labels: detail.state_labels,
+            });
+        }
     }
+    entries
+}
+
+/// `~/lab/herdr (feat/space-done !)` — the pane's cwd with its git branch and
+/// dirty marker when the pane is in a repository.
+fn agent_location_label(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    tab_idx: usize,
+    pane_id: crate::layout::PaneId,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+) -> Option<String> {
+    let tab = ws.tabs.get(tab_idx)?;
+    let cwd = tab.cwd_for_pane(pane_id, &app.terminals, terminal_runtimes)?;
+    let mut label = super::panes::display_path_with_home(&cwd);
+    let git_status = ws.git_status_for_pane(pane_id);
+    if let Some(branch) = git_status.branch.filter(|branch| !branch.is_empty()) {
+        label.push_str(&format!(
+            " ({branch} {})",
+            super::panes::worktree_state_marker(git_status.worktree_state)
+        ));
+    }
+    Some(label)
 }
 
 pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static str {
@@ -275,7 +216,64 @@ pub(crate) fn workspace_parent_group_state(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceListEntry {
-    Workspace { ws_idx: usize, indented: bool },
+    Workspace {
+        ws_idx: usize,
+        indented: bool,
+    },
+    /// Agent pane listed under its space's card.
+    Agent {
+        ws_idx: usize,
+        tab_idx: usize,
+        pane_id: crate::layout::PaneId,
+    },
+}
+
+fn entry_row_height(
+    app: &AppState,
+    entry: &WorkspaceListEntry,
+    next: Option<&WorkspaceListEntry>,
+) -> Option<u16> {
+    match entry {
+        WorkspaceListEntry::Workspace { ws_idx, .. } => {
+            app.workspaces.get(*ws_idx).map(workspace_row_height)
+        }
+        // A space's last agent keeps a gap row before the next space card.
+        WorkspaceListEntry::Agent { .. } => Some(
+            AGENT_ENTRY_ROWS
+                + u16::from(matches!(next, Some(WorkspaceListEntry::Workspace { .. }))),
+        ),
+    }
+}
+
+/// Whether a workspace's agents are listed under its card given the scope
+/// toggle: `all` lists every space's agents, `current` only the active one's.
+fn workspace_agents_visible(app: &AppState, ws_idx: usize) -> bool {
+    match app.agent_panel_scope {
+        AgentPanelScope::AllWorkspaces => true,
+        AgentPanelScope::CurrentWorkspace => agent_panel_current_workspace_idx(app) == Some(ws_idx),
+    }
+}
+
+fn push_workspace_with_agents(
+    app: &AppState,
+    ws_idx: usize,
+    indented: bool,
+    entries: &mut Vec<WorkspaceListEntry>,
+) {
+    entries.push(WorkspaceListEntry::Workspace { ws_idx, indented });
+    if !workspace_agents_visible(app, ws_idx) {
+        return;
+    }
+    let Some(ws) = app.workspaces.get(ws_idx) else {
+        return;
+    };
+    for detail in ws.pane_details(&app.terminals) {
+        entries.push(WorkspaceListEntry::Agent {
+            ws_idx,
+            tab_idx: detail.tab_idx,
+            pane_id: detail.pane_id,
+        });
+    }
 }
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
@@ -294,19 +292,14 @@ pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested:
 }
 
 pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
-    // A collapsed spaces section keeps only the active space visible under
-    // the header.
+    // A collapsed spaces section keeps only the active space (and its agents)
+    // visible under the header.
     if spaces_section_collapsed(app) {
-        return app
-            .active
-            .filter(|idx| *idx < app.workspaces.len())
-            .map(|ws_idx| {
-                vec![WorkspaceListEntry::Workspace {
-                    ws_idx,
-                    indented: false,
-                }]
-            })
-            .unwrap_or_default();
+        let mut entries = Vec::new();
+        if let Some(ws_idx) = app.active.filter(|idx| *idx < app.workspaces.len()) {
+            push_workspace_with_agents(app, ws_idx, false, &mut entries);
+        }
+        return entries;
     }
 
     let mut members_by_key = std::collections::HashMap::<String, Vec<usize>>::new();
@@ -351,10 +344,7 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
             .worktree_space()
             .filter(|space| grouped_keys.contains(&space.key))
         else {
-            entries.push(WorkspaceListEntry::Workspace {
-                ws_idx,
-                indented: false,
-            });
+            push_workspace_with_agents(app, ws_idx, false, &mut entries);
             continue;
         };
 
@@ -371,46 +361,39 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
                 .and_then(|member| member.worktree_space())
                 .is_some_and(|member_space| !member_space.is_linked_worktree)
         }) else {
-            entries.push(WorkspaceListEntry::Workspace {
-                ws_idx,
-                indented: false,
-            });
+            push_workspace_with_agents(app, ws_idx, false, &mut entries);
             continue;
         };
         let collapsed = app.collapsed_space_keys.contains(&space.key);
-        entries.push(WorkspaceListEntry::Workspace {
-            ws_idx: parent_idx,
-            indented: false,
-        });
+        push_workspace_with_agents(app, parent_idx, false, &mut entries);
 
         if collapsed {
             if let Some(active_idx) = visible_group_idx
                 .filter(|idx| *idx != parent_idx)
                 .filter(|_| active_group.as_deref() == Some(space.key.as_str()))
             {
-                entries.push(WorkspaceListEntry::Workspace {
-                    ws_idx: active_idx,
-                    indented: true,
-                });
+                push_workspace_with_agents(app, active_idx, true, &mut entries);
             }
         } else {
             for member_idx in members {
                 if *member_idx == parent_idx {
                     continue;
                 }
-                entries.push(WorkspaceListEntry::Workspace {
-                    ws_idx: *member_idx,
-                    indented: true,
-                });
+                push_workspace_with_agents(app, *member_idx, true, &mut entries);
             }
         }
     }
     entries
 }
 
-pub(crate) fn workspace_list_rect(app: &AppState, area: Rect) -> Rect {
-    let (ws_area, _) = expanded_sidebar_sections(app, area);
-    ws_area
+/// The merged spaces+agents list fills the whole sidebar next to the divider
+/// column.
+pub(crate) fn workspace_list_rect(_app: &AppState, area: Rect) -> Rect {
+    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
+    if content.width == 0 || content.height == 0 {
+        return Rect::default();
+    }
+    content
 }
 
 pub(crate) fn workspace_list_body_rect(app: &AppState, area: Rect, has_scrollbar: bool) -> Rect {
@@ -439,19 +422,14 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
     let mut used_rows = 0u16;
     let mut visible = 0usize;
     let entries = workspace_list_entries(app);
-    for entry in entries.iter().skip(scroll) {
-        let (row_height, gap) = match entry {
-            WorkspaceListEntry::Workspace { ws_idx, .. } => {
-                let Some(ws) = app.workspaces.get(*ws_idx) else {
-                    continue;
-                };
-                (workspace_row_height(ws), 0)
-            }
+    for (idx, entry) in entries.iter().enumerate().skip(scroll) {
+        let Some(row_height) = entry_row_height(app, entry, entries.get(idx + 1)) else {
+            continue;
         };
         if used_rows.saturating_add(row_height) > body.height {
             break;
         }
-        used_rows = used_rows.saturating_add(row_height).saturating_add(gap);
+        used_rows = used_rows.saturating_add(row_height);
         visible += 1;
     }
     visible
@@ -488,65 +466,13 @@ pub(crate) fn workspace_list_scrollbar_rect(app: &AppState, area: Rect) -> Optio
     ))
 }
 
-pub(crate) fn agent_panel_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
-    if area.width == 0 || area.height <= AGENT_PANEL_HEADER_ROWS {
-        return Rect::default();
-    }
-
-    let body_y = area.y.saturating_add(AGENT_PANEL_HEADER_ROWS);
-    let body_height = (area.y + area.height).saturating_sub(body_y);
-    let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
-    Rect::new(area.x, body_y, body_width, body_height)
-}
-
-fn agent_panel_visible_count(area: Rect) -> usize {
-    let body = agent_panel_body_rect(area, false);
-    if body.width == 0 || body.height < 2 {
-        return 0;
-    }
-
-    let mut used_rows = 0u16;
-    let mut visible = 0usize;
-    while used_rows.saturating_add(2) <= body.height {
-        used_rows = used_rows.saturating_add(2);
-        visible += 1;
-        if used_rows < body.height {
-            used_rows = used_rows.saturating_add(1);
-        }
-    }
-    visible
-}
-
-pub(crate) fn agent_panel_scroll_metrics(app: &AppState, area: Rect) -> crate::pane::ScrollMetrics {
-    let viewport_rows = agent_panel_visible_count(area);
-    let total_rows = agent_panel_entries(app).len();
-    let max_offset_from_bottom = total_rows.saturating_sub(viewport_rows);
-    let offset_from_bottom = total_rows
-        .saturating_sub(app.agent_panel_scroll)
-        .saturating_sub(viewport_rows);
-
-    crate::pane::ScrollMetrics {
-        offset_from_bottom,
-        max_offset_from_bottom,
-        viewport_rows,
-    }
-}
-
-pub(crate) fn agent_panel_scrollbar_rect(app: &AppState, area: Rect) -> Option<Rect> {
-    let metrics = agent_panel_scroll_metrics(app, area);
-    let body = agent_panel_body_rect(area, true);
-    (should_show_scrollbar(metrics) && body.width > 0 && body.height > 0).then_some(Rect::new(
-        area.x + area.width.saturating_sub(1),
-        body.y,
-        1,
-        body.height,
-    ))
-}
-
 pub(crate) fn compute_workspace_list_areas(
     app: &AppState,
     area: Rect,
-) -> (Vec<crate::app::state::WorkspaceCardArea>, Vec<()>) {
+) -> (
+    Vec<crate::app::state::WorkspaceCardArea>,
+    Vec<crate::app::state::AgentRowArea>,
+) {
     let ws_area = workspace_list_rect(app, area);
     if ws_area == Rect::default() {
         return (Vec::new(), Vec::new());
@@ -568,31 +494,46 @@ pub(crate) fn compute_workspace_list_areas(
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
     let mut cards = Vec::new();
-    let headers = Vec::new();
+    let mut agent_rows = Vec::new();
 
     let entries = workspace_list_entries(app);
-    for entry in entries.iter().skip(scroll) {
+    for (idx, entry) in entries.iter().enumerate().skip(scroll) {
+        let Some(row_height) = entry_row_height(app, entry, entries.get(idx + 1)) else {
+            continue;
+        };
+        if row_y.saturating_add(row_height) > body_bottom {
+            break;
+        }
         match entry {
             WorkspaceListEntry::Workspace { ws_idx, indented } => {
-                let Some(ws) = app.workspaces.get(*ws_idx) else {
-                    continue;
-                };
-                let row_height = workspace_row_height(ws);
-                let gap = 0;
-                if row_y.saturating_add(row_height) > body_bottom {
-                    break;
-                }
                 cards.push(crate::app::state::WorkspaceCardArea {
                     ws_idx: *ws_idx,
                     rect: Rect::new(body.x, row_y, body.width, row_height),
                     indented: *indented,
                 });
-                row_y = row_y.saturating_add(row_height + gap);
+            }
+            WorkspaceListEntry::Agent {
+                ws_idx,
+                tab_idx,
+                pane_id,
+            } => {
+                agent_rows.push(crate::app::state::AgentRowArea {
+                    ws_idx: *ws_idx,
+                    tab_idx: *tab_idx,
+                    pane_id: *pane_id,
+                    rect: Rect::new(
+                        body.x,
+                        row_y + 1,
+                        body.width,
+                        AGENT_PANEL_ENTRY_CONTENT_ROWS,
+                    ),
+                });
             }
         }
+        row_y = row_y.saturating_add(row_height);
     }
 
-    (cards, headers)
+    (cards, agent_rows)
 }
 
 pub(crate) fn compute_workspace_card_areas(
@@ -728,9 +669,19 @@ pub(crate) fn render_sidebar(
             ),
         ]),
     );
+    render_sidebar_line(
+        frame,
+        agent_scope_toggle_rect(app, area),
+        Line::from(vec![
+            Span::styled("agents ", Style::default().fg(app.palette.overlay0)),
+            Span::styled(
+                agent_panel_toggle_label(app.agent_panel_scope),
+                Style::default().fg(app.palette.accent),
+            ),
+        ]),
+    );
 
     render_workspace_rows(app, terminal_runtimes, frame, area);
-    render_agent_panel(app, terminal_runtimes, frame, area);
 }
 
 fn fill_sidebar_background(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -757,11 +708,16 @@ fn render_workspace_rows(
     frame: &mut Frame,
     area: Rect,
 ) {
-    let cards = if app.view.workspace_card_areas.is_empty() {
-        compute_workspace_card_areas(app, area)
+    let (cards, agent_rows) = if app.view.workspace_card_areas.is_empty() {
+        compute_workspace_list_areas(app, area)
     } else {
-        app.view.workspace_card_areas.clone()
+        (
+            app.view.workspace_card_areas.clone(),
+            app.view.agent_row_areas.clone(),
+        )
     };
+
+    render_agent_rows(app, terminal_runtimes, frame, &agent_rows);
 
     for card in cards {
         let Some(ws) = app.workspaces.get(card.ws_idx) else {
@@ -1001,52 +957,40 @@ fn pad_to_width(text: &str, width: usize) -> String {
     format!("{text:<width$}")
 }
 
-fn render_agent_panel(
+fn render_agent_rows(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     frame: &mut Frame,
-    area: Rect,
+    agent_rows: &[crate::app::state::AgentRowArea],
 ) {
-    let (_, detail_area) = expanded_sidebar_sections(app, area);
-    if detail_area.width == 0 || detail_area.height == 0 {
+    if agent_rows.is_empty() {
         return;
     }
-
-    let divider = sidebar_section_divider_rect(app, area);
-    if divider.width > 0 && divider.height > 0 {
-        let buf = frame.buffer_mut();
-        for x in divider.x..divider.x + divider.width {
-            buf[(x, divider.y)]
-                .set_symbol("─")
-                .set_style(Style::default().fg(app.palette.surface_dim));
-        }
-    }
-
-    render_sidebar_line(
-        frame,
-        Rect::new(detail_area.x, detail_area.y + 1, detail_area.width, 1),
-        Line::from(vec![
-            Span::styled(" agents", Style::default().fg(app.palette.overlay0)),
-            Span::styled(
-                format!(" {}", agent_panel_toggle_label(app.agent_panel_scope)),
-                Style::default().fg(app.palette.accent),
-            ),
-        ]),
-    );
 
     let entries = agent_panel_entries_from(app, terminal_runtimes);
-    let body = agent_panel_body_rect(detail_area, false);
-    if body.width == 0 || body.height == 0 {
-        return;
-    }
+    let focused_agent = app.active.and_then(|ws_idx| {
+        let ws = app.workspaces.get(ws_idx)?;
+        ws.focused_pane_id()
+            .map(|pane_id| (ws_idx, ws.active_tab, pane_id))
+    });
 
-    let mut row = body.y;
-    for entry in entries.into_iter().skip(app.agent_panel_scroll) {
-        if row >= body.y + body.height {
-            break;
+    for row in agent_rows {
+        let Some(entry) = entries.iter().find(|entry| {
+            entry.ws_idx == row.ws_idx
+                && entry.tab_idx == row.tab_idx
+                && entry.pane_id == row.pane_id
+        }) else {
+            continue;
+        };
+        let rect = row.rect;
+        if rect.width < 4 || rect.height < AGENT_PANEL_ENTRY_CONTENT_ROWS {
+            continue;
         }
-        let label = agent_entry_label(&entry);
-        let status = agent_panel_status_key(entry.state, entry.seen);
+        let is_focused_pane = focused_agent.is_some_and(|(ws_idx, tab_idx, pane_id)| {
+            entry.ws_idx == ws_idx && entry.tab_idx == tab_idx && entry.pane_id == pane_id
+        });
+        let title = agent_entry_title(entry);
+        let status_line = agent_status_line(entry);
         let color = match entry.state {
             AgentState::Working => app.palette.yellow,
             AgentState::Blocked => app.palette.red,
@@ -1054,45 +998,84 @@ fn render_agent_panel(
             AgentState::Idle => app.palette.overlay0,
             AgentState::Unknown => app.palette.overlay0,
         };
-        let text_width = body.width.saturating_sub(4) as usize;
+        // Status is shown as a vertical bar running down the entry's left edge
+        // instead of a bullet.
+        let bar = Span::styled(
+            format!(" {AGENT_STATUS_BAR_GLYPH} "),
+            Style::default().fg(color),
+        );
+        let text_width = rect.width.saturating_sub(4) as usize;
+        // The focused pane's entry mirrors the selected workspace card:
+        // accent-colored bold name.
+        let name_style = if is_focused_pane {
+            Style::default()
+                .fg(app.palette.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.palette.text)
+        };
+        let mut title_spans = vec![bar.clone()];
+        super::panes::push_title_name_spans(
+            &mut title_spans,
+            &truncate_chars(&title, text_width),
+            name_style,
+            Style::default().fg(app.palette.overlay1),
+            Style::default().fg(app.palette.overlay1),
+        );
         render_sidebar_line(
             frame,
-            Rect::new(body.x, row, body.width, 1),
+            Rect::new(rect.x, rect.y, rect.width, 1),
+            Line::from(title_spans),
+        );
+        render_sidebar_line(
+            frame,
+            Rect::new(rect.x, rect.y + 1, rect.width, 1),
             Line::from(vec![
-                Span::styled(" ● ", Style::default().fg(color)),
+                bar.clone(),
                 Span::styled(
-                    truncate_chars(&label, text_width),
-                    Style::default().fg(app.palette.text),
+                    truncate_chars(entry.location.as_deref().unwrap_or_default(), text_width),
+                    Style::default().fg(app.palette.overlay1),
                 ),
             ]),
         );
-        row = row.saturating_add(1);
-        if row >= body.y + body.height {
-            break;
-        }
         render_sidebar_line(
             frame,
-            Rect::new(body.x, row, body.width, 1),
-            Line::from(Span::styled(
-                format!("   {}", truncate_chars(status, text_width)),
-                Style::default().fg(app.palette.overlay0),
-            )),
+            Rect::new(rect.x, rect.y + 2, rect.width, 1),
+            Line::from(vec![
+                bar,
+                Span::styled(
+                    truncate_chars(&status_line, text_width),
+                    Style::default().fg(app.palette.overlay0),
+                ),
+            ]),
         );
-        row = row.saturating_add(2);
     }
 }
 
-fn agent_entry_label(entry: &AgentPanelEntry) -> String {
-    let mut label = entry.primary_label.clone();
-    if let Some(tab) = &entry.primary_tab_label {
-        label.push_str(" · ");
-        label.push_str(tab);
+/// First entry row: the pane's human name plus the harness, e.g.
+/// `Olivia {Claude}`.
+pub(crate) fn agent_entry_title(entry: &AgentPanelEntry) -> String {
+    match entry.agent_label.as_deref().map(harness_display_name) {
+        Some(harness) => format!("{} {{{harness}}}", entry.name),
+        None => entry.name.clone(),
     }
-    if let Some(agent) = &entry.agent_label {
-        label.push_str(" · ");
-        label.push_str(agent);
+}
+
+/// Third entry row: model + effort with the pane state, e.g.
+/// `Fable 5 high · idle`, or just the state when no model is known.
+pub(crate) fn agent_status_line(entry: &AgentPanelEntry) -> String {
+    let status = agent_panel_status_key(entry.state, entry.seen);
+    match &entry.model_info {
+        Some(info) => format!("{} · {status}", info.display_label()),
+        None => status.to_string(),
     }
-    label
+}
+
+fn harness_display_name(label: &str) -> String {
+    match crate::detect::parse_agent_label(label) {
+        Some(agent) => crate::detect::agent_display_name(agent).to_string(),
+        None => label.to_string(),
+    }
 }
 
 fn render_sidebar_line(frame: &mut Frame, rect: Rect, line: Line<'_>) {
@@ -1148,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn all_workspaces_agent_panel_entries_use_workspace_and_optional_tab_labels() {
+    fn all_workspaces_agent_panel_entries_use_pane_names_and_agent_labels() {
         let mut app = crate::app::state::AppState::test_new();
         let first = Workspace::test_new("one");
         let first_pane = first.tabs[0].root_pane;
@@ -1176,17 +1159,38 @@ mod tests {
         app.selected = 0;
         app.agent_panel_scope = AgentPanelScope::AllWorkspaces;
 
+        let names = crate::pane_names::assigned_names(&app.terminals);
         let entries = agent_panel_entries(&app);
-        assert_eq!(entries[0].primary_label, "one");
-        assert!(entries[0].primary_tab_label.is_none());
+        assert_eq!(Some(&entries[0].name), names.get(&first_terminal_id));
         assert_eq!(entries[0].agent_label.as_deref(), Some("pi"));
-        assert_eq!(entries[1].primary_label, "two");
-        assert_eq!(entries[1].primary_tab_label.as_deref(), Some("logs"));
+        assert_eq!(Some(&entries[1].name), names.get(&second_terminal_id));
         assert_eq!(entries[1].agent_label.as_deref(), Some("claude"));
     }
 
+    #[test]
+    fn agent_panel_entry_name_prefers_manual_label() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("bridge");
+        let pane = workspace.tabs[0].root_pane;
+
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+        terminal.detected_agent = Some(Agent::Claude);
+        terminal.set_manual_label("reviewer".into());
+        app.active = Some(0);
+        app.selected = 0;
+        app.agent_panel_scope = AgentPanelScope::AllWorkspaces;
+
+        let entries = agent_panel_entries(&app);
+        assert_eq!(entries[0].name, "reviewer");
+    }
+
     #[tokio::test]
-    async fn all_workspaces_agent_panel_entries_use_live_root_runtime_cwd_for_workspace_label() {
+    async fn all_workspaces_agent_panel_entries_use_live_runtime_cwd_for_location() {
         let unique = format!(
             "herdr-agent-panel-runtime-cwd-{}-{}",
             std::process::id(),
@@ -1242,14 +1246,83 @@ mod tests {
         let mut runtime_registry = TerminalRuntimeRegistry::new();
         runtime_registry.insert(terminal_id, runtime);
         let entries = agent_panel_entries_from(&app, &runtime_registry);
-        let primary_label = entries[0].primary_label.clone();
+        let location = entries[0].location.clone();
 
         for (_, runtime) in runtime_registry.drain() {
             runtime.shutdown();
         }
         let _ = std::fs::remove_dir_all(root);
 
-        assert_eq!(primary_label, "herdr");
+        let location = location.expect("live runtime cwd should produce a location");
+        assert!(
+            location.starts_with(&live_cwd.display().to_string()),
+            "location {location:?} should start with live cwd {live_cwd:?}"
+        );
+    }
+
+    #[test]
+    fn current_workspace_agent_panel_entries_use_pane_names_and_agent_labels() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("bridge");
+        let pane = workspace.tabs[0].root_pane;
+
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        app.active = Some(0);
+        app.selected = 0;
+        app.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
+
+        let names = crate::pane_names::assigned_names(&app.terminals);
+        let entries = agent_panel_entries(&app);
+        assert_eq!(Some(&entries[0].name), names.get(&terminal_id));
+        assert_eq!(entries[0].agent_label.as_deref(), Some("claude"));
+    }
+
+    fn test_entry() -> AgentPanelEntry {
+        AgentPanelEntry {
+            ws_idx: 0,
+            tab_idx: 0,
+            pane_id: crate::layout::PaneId::from_raw(1),
+            name: "Olivia".into(),
+            agent_label: Some("claude".into()),
+            model_info: Some(crate::agent_model::AgentModelInfo {
+                model: "claude-fable-5".into(),
+                effort: Some("high".into()),
+            }),
+            location: Some("~/lab/herdr (feat/space-done !)".into()),
+            state: AgentState::Idle,
+            seen: true,
+            custom_status: None,
+            state_labels: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn agent_entry_title_shows_name_with_braced_harness() {
+        let mut entry = test_entry();
+        assert_eq!(agent_entry_title(&entry), "Olivia {Claude}");
+
+        entry.agent_label = Some("planner".into());
+        assert_eq!(agent_entry_title(&entry), "Olivia {planner}");
+
+        entry.agent_label = None;
+        assert_eq!(agent_entry_title(&entry), "Olivia");
+    }
+
+    #[test]
+    fn agent_status_line_combines_model_effort_and_state() {
+        let mut entry = test_entry();
+        assert_eq!(agent_status_line(&entry), "Fable 5 high · idle");
+
+        entry.model_info = None;
+        assert_eq!(agent_status_line(&entry), "idle");
+
+        entry.seen = false;
+        assert_eq!(agent_status_line(&entry), "done");
     }
 
     #[test]
@@ -1276,7 +1349,6 @@ mod tests {
         app.agent_panel_scope = AgentPanelScope::AllWorkspaces;
 
         let entries = agent_panel_entries(&app);
-        assert_eq!(entries[0].primary_label, "bridge");
         assert_eq!(entries[0].agent_label.as_deref(), Some("planner"));
     }
 
@@ -1289,15 +1361,6 @@ mod tests {
         app.spaces_collapsed = true;
         app.workspace_scroll = 1;
         let area = Rect::new(0, 0, 30, 40);
-
-        let (ws_area, detail_area) = expanded_sidebar_sections(&app, area);
-
-        assert_eq!(ws_area, Rect::new(0, 0, 29, 5));
-        assert_eq!(detail_area, Rect::new(0, 5, 29, 35));
-        assert_eq!(
-            sidebar_section_divider_rect(&app, area),
-            Rect::new(0, 5, 29, 1)
-        );
 
         let cards = compute_workspace_card_areas(&app, area);
         assert_eq!(cards.len(), 1);
@@ -1314,10 +1377,7 @@ mod tests {
         app.spaces_collapsed = true;
         let area = Rect::new(0, 0, 30, 40);
 
-        let (ws_area, detail_area) = expanded_sidebar_sections(&app, area);
-
-        assert_eq!(ws_area, Rect::new(0, 0, 29, 1));
-        assert_eq!(detail_area, Rect::new(0, 1, 29, 39));
+        assert!(workspace_list_entries(&app).is_empty());
         assert!(compute_workspace_card_areas(&app, area).is_empty());
     }
 
@@ -1330,10 +1390,7 @@ mod tests {
         app.spaces_collapsed = true;
         let area = Rect::new(0, 0, 30, 40);
 
-        let (ws_area, _) = expanded_sidebar_sections(&app, area);
-
-        assert!(ws_area.height > 1);
-        assert!(!compute_workspace_card_areas(&app, area).is_empty());
+        assert_eq!(compute_workspace_card_areas(&app, area).len(), 2);
     }
 
     #[test]
@@ -1345,20 +1402,17 @@ mod tests {
     }
 
     #[test]
-    fn expanded_sidebar_sections_handle_tiny_heights() {
+    fn workspace_list_rect_spans_sidebar_next_to_divider_column() {
         let app = AppState::test_new();
-        let (ws_area, detail_area) = expanded_sidebar_sections(&app, Rect::new(0, 0, 20, 5));
 
-        assert_eq!(ws_area, Rect::new(0, 0, 19, 3));
-        assert_eq!(detail_area, Rect::new(0, 3, 19, 2));
-    }
-
-    #[test]
-    fn sidebar_section_divider_is_hidden_for_tiny_heights() {
-        let app = AppState::test_new();
-        let divider = sidebar_section_divider_rect(&app, Rect::new(0, 0, 20, 5));
-
-        assert_eq!(divider, Rect::default());
+        assert_eq!(
+            workspace_list_rect(&app, Rect::new(0, 0, 20, 5)),
+            Rect::new(0, 0, 19, 5)
+        );
+        assert_eq!(
+            workspace_list_rect(&app, Rect::new(0, 0, 1, 5)),
+            Rect::default()
+        );
     }
 
     fn workspace_with_worktree_space(

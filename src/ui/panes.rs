@@ -355,6 +355,9 @@ fn pane_chrome_title_for_pane(
     let terminal = ws
         .pane_state(pane_id)
         .and_then(|pane| app.terminals.get(&pane.attached_terminal_id));
+    let assigned_name = terminal.and_then(|terminal| {
+        crate::pane_names::assigned_names(&app.terminals).remove(&terminal.id)
+    });
     let git_status = ws.git_status_for_pane(pane_id);
     let repo_path = git_status
         .space
@@ -362,7 +365,7 @@ fn pane_chrome_title_for_pane(
         .map(|space| display_path_with_home(&space.repo_root));
     PaneChromeTitle {
         pane_type: pane_type_label(terminal),
-        folder_name: pane_name_label(terminal, ws.public_pane_number(pane_id)),
+        folder_name: pane_name_label(terminal, assigned_name, ws.public_pane_number(pane_id)),
         repo_path,
         branch: git_status.branch.filter(|branch| !branch.is_empty()),
         worktree_state: git_status.worktree_state,
@@ -487,12 +490,7 @@ impl PaneChromeTitle {
 
         if let (Some(repo_path), Some(branch)) = (&self.repo_path, &self.branch) {
             let git_icon = "\u{f418}"; //  git repo icon
-            let status = match self.worktree_state {
-                crate::workspace::GitWorktreeState::Clean => "✓",
-                crate::workspace::GitWorktreeState::Staged => "+",
-                crate::workspace::GitWorktreeState::Unstaged => "!",
-                crate::workspace::GitWorktreeState::Mixed => "±",
-            };
+            let status = worktree_state_marker(self.worktree_state);
             // Format: "  ~/lab/code-ui (feat/git-status ✓)"
             result.push_str(&format!(
                 " {} {} ({} {})",
@@ -504,7 +502,7 @@ impl PaneChromeTitle {
     }
 }
 
-fn push_title_name_spans(
+pub(super) fn push_title_name_spans(
     spans: &mut Vec<Span<'static>>,
     text: &str,
     pane_name_style: Style,
@@ -706,10 +704,12 @@ fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
 
 fn pane_name_label(
     terminal: Option<&crate::terminal::TerminalState>,
+    assigned_name: Option<String>,
     pane_number: Option<usize>,
 ) -> Option<String> {
     terminal
         .and_then(|terminal| terminal.manual_label.clone())
+        .or(assigned_name)
         .or_else(|| pane_number.map(|number| format!("Pane {number}")))
 }
 
@@ -745,15 +745,27 @@ fn format_agent_label(label: &str) -> String {
     }
 }
 
-fn display_path_with_home(path: &std::path::Path) -> String {
-    let home = std::path::Path::new("/home/aaron");
-    if let Ok(stripped) = path.strip_prefix(home) {
-        if stripped.as_os_str().is_empty() {
-            return "~".to_string();
+pub(super) fn display_path_with_home(path: &std::path::Path) -> String {
+    if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+        if let Ok(stripped) = path.strip_prefix(std::path::Path::new(&home)) {
+            if stripped.as_os_str().is_empty() {
+                return "~".to_string();
+            }
+            return format!("~/{}", stripped.display());
         }
-        return format!("~/{}", stripped.display());
     }
     path.display().to_string()
+}
+
+/// Single-glyph dirty marker for a worktree state, shared by pane chrome and
+/// the agent panel.
+pub(super) fn worktree_state_marker(state: crate::workspace::GitWorktreeState) -> &'static str {
+    match state {
+        crate::workspace::GitWorktreeState::Clean => "✓",
+        crate::workspace::GitWorktreeState::Staged => "+",
+        crate::workspace::GitWorktreeState::Unstaged => "!",
+        crate::workspace::GitWorktreeState::Mixed => "±",
+    }
 }
 
 fn pane_inner_rect(area: Rect, framed: bool) -> Rect {
@@ -947,6 +959,9 @@ pub(super) fn render_panes(
                 let terminal = ws
                     .pane_state(info.id)
                     .and_then(|pane| app.terminals.get(&pane.attached_terminal_id));
+                let assigned_name = terminal.and_then(|terminal| {
+                    crate::pane_names::assigned_names(&app.terminals).remove(&terminal.id)
+                });
                 let git_status = ws.git_status_for_pane(info.id);
                 let repo_path = git_status
                     .space
@@ -954,7 +969,11 @@ pub(super) fn render_panes(
                     .map(|space| display_path_with_home(&space.repo_root));
                 let title = PaneChromeTitle {
                     pane_type: pane_type_label(terminal),
-                    folder_name: pane_name_label(terminal, ws.public_pane_number(info.id)),
+                    folder_name: pane_name_label(
+                        terminal,
+                        assigned_name,
+                        ws.public_pane_number(info.id),
+                    ),
                     repo_path,
                     branch: git_status.branch.filter(|branch| !branch.is_empty()),
                     worktree_state: git_status.worktree_state,
@@ -1918,10 +1937,16 @@ mod tests {
     }
 
     #[test]
-    fn pane_name_label_defaults_to_pane_number() {
-        assert_eq!(pane_name_label(None, Some(1)).as_deref(), Some("Pane 1"));
-        assert_eq!(pane_name_label(None, Some(12)).as_deref(), Some("Pane 12"));
-        assert_eq!(pane_name_label(None, None), None);
+    fn pane_name_label_prefers_assigned_name_then_pane_number() {
+        assert_eq!(
+            pane_name_label(None, Some("Olivia".into()), Some(1)).as_deref(),
+            Some("Olivia")
+        );
+        assert_eq!(
+            pane_name_label(None, None, Some(12)).as_deref(),
+            Some("Pane 12")
+        );
+        assert_eq!(pane_name_label(None, None, None), None);
     }
 
     #[test]
@@ -1938,15 +1963,15 @@ mod tests {
         terminal.set_manual_label("review notes".into());
 
         assert_eq!(
-            pane_name_label(Some(&terminal), Some(2)).as_deref(),
+            pane_name_label(Some(&terminal), Some("Olivia".into()), Some(2)).as_deref(),
             Some("review notes")
         );
         assert_eq!(pane_type_label(Some(&terminal)), "Pi");
 
         terminal.clear_manual_label();
         assert_eq!(
-            pane_name_label(Some(&terminal), Some(2)).as_deref(),
-            Some("Pane 2")
+            pane_name_label(Some(&terminal), Some("Olivia".into()), Some(2)).as_deref(),
+            Some("Olivia")
         );
         assert_eq!(pane_type_label(Some(&terminal)), "Pi");
     }

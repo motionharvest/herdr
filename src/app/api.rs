@@ -54,6 +54,30 @@ impl App {
             return;
         }
 
+        if let AppEvent::AgentModelRefreshed { results } = ev {
+            self.agent_model_refresh_in_flight = false;
+            self.last_agent_model_refresh = Instant::now();
+            let mut changed = false;
+            for result in results {
+                if let Some(terminal) = self.state.terminals.get_mut(&result.terminal_id) {
+                    let still_current = terminal
+                        .model_probe_session()
+                        .is_some_and(|(_, session_id)| session_id == result.entry.session_id);
+                    if still_current && terminal.model_info != result.entry.info {
+                        terminal.model_info = result.entry.info.clone();
+                        changed = true;
+                    }
+                }
+                self.agent_model_cache
+                    .insert(result.terminal_id, result.entry);
+            }
+            if changed {
+                self.render_dirty.store(true, Ordering::Release);
+                self.render_notify.notify_one();
+            }
+            return;
+        }
+
         if let AppEvent::WorktreeAddFinished(result) = ev {
             self.handle_worktree_add_finished(result);
             return;

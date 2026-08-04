@@ -67,6 +67,9 @@ pub struct TerminalState {
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
+    /// Model + reasoning effort observed in the agent's session log; refreshed
+    /// in the background from the session reported for this terminal.
+    pub model_info: Option<crate::agent_model::AgentModelInfo>,
     hook_report_sequences: HashMap<String, u64>,
     metadata_report_sequences: HashMap<String, u64>,
     pub state: AgentState,
@@ -93,6 +96,7 @@ impl TerminalState {
             persisted_agent_session: None,
             manual_label: None,
             agent_name: None,
+            model_info: None,
             hook_report_sequences: HashMap::new(),
             metadata_report_sequences: HashMap::new(),
             state: AgentState::Unknown,
@@ -428,6 +432,26 @@ impl TerminalState {
         self.persisted_agent_session = Some(session);
     }
 
+    /// The (agent, session id) pair whose session log can be probed for model
+    /// info, when the current session belongs to a probe-supported agent.
+    pub fn model_probe_session(&self) -> Option<(Agent, String)> {
+        let (agent_label, session_ref) = if let Some((authority, session_ref)) = self
+            .hook_authority
+            .as_ref()
+            .and_then(|authority| Some((authority, authority.session_ref.as_ref()?)))
+        {
+            (authority.agent_label.as_str(), session_ref)
+        } else {
+            let session = self.persisted_agent_session.as_ref()?;
+            (session.agent.as_str(), &session.session_ref)
+        };
+        if session_ref.kind != crate::agent_resume::AgentSessionRefKind::Id {
+            return None;
+        }
+        let agent = crate::detect::parse_agent_label(agent_label)?;
+        crate::agent_model::probe_supported(agent).then(|| (agent, session_ref.value.clone()))
+    }
+
     pub fn set_agent_session_ref(
         &mut self,
         source: String,
@@ -704,6 +728,7 @@ impl TerminalState {
         self.stale_hook_idle_since = None;
         self.hook_authority = None;
         self.persisted_agent_session = None;
+        self.model_info = None;
         self.agent_metadata.clear();
         self.state = AgentState::Unknown;
         self.launch_argv = None;
@@ -1782,6 +1807,29 @@ mod tests {
             terminal.hook_authority.as_ref().unwrap().state,
             AgentState::Working
         );
+    }
+
+    #[test]
+    fn model_probe_session_uses_persisted_session_for_supported_agents() {
+        let mut terminal = test_terminal();
+        assert_eq!(terminal.model_probe_session(), None);
+
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("abc-123").unwrap(),
+        });
+        assert_eq!(
+            terminal.model_probe_session(),
+            Some((Agent::Claude, "abc-123".to_string()))
+        );
+
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::path("/tmp/pi.jsonl").unwrap(),
+        });
+        assert_eq!(terminal.model_probe_session(), None);
     }
 
     #[test]

@@ -87,6 +87,29 @@ pub fn agent_label(agent: Agent) -> &'static str {
     }
 }
 
+/// Human-readable harness name for sidebar identity lines.
+pub fn agent_display_name(agent: Agent) -> &'static str {
+    match agent {
+        Agent::Pi => "Pi",
+        Agent::Claude => "Claude",
+        Agent::Codex => "Codex",
+        Agent::Gemini => "Gemini",
+        Agent::Cursor => "Cursor",
+        Agent::Antigravity => "Antigravity",
+        Agent::Cline => "Cline",
+        Agent::OpenCode => "OpenCode",
+        Agent::GithubCopilot => "Copilot",
+        Agent::Kimi => "Kimi",
+        Agent::Kiro => "Kiro",
+        Agent::Droid => "Droid",
+        Agent::Amp => "Amp",
+        Agent::Grok => "Grok",
+        Agent::Hermes => "Hermes",
+        Agent::Kilo => "Kilo",
+        Agent::Qodercli => "Qoder",
+    }
+}
+
 pub fn parse_agent_label(agent: &str) -> Option<Agent> {
     let name = normalized_agent_lookup_name(agent);
     match name.as_str() {

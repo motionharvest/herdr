@@ -569,10 +569,7 @@ fn render_mobile_switcher_content(
             Span::styled(icon, icon_style.bg(bg)),
             Span::styled(" ", Style::default().bg(bg)),
             Span::styled(
-                truncate(
-                    &entry.primary_label,
-                    content.width.saturating_sub(5) as usize,
-                ),
+                truncate(&entry.name, content.width.saturating_sub(5) as usize),
                 Style::default()
                     .fg(p.text)
                     .bg(bg)
@@ -618,8 +615,8 @@ fn render_mobile_switcher_content(
 
 fn mobile_agent_detail(entry: &AgentPanelEntry) -> String {
     let mut parts = Vec::new();
-    if let Some(tab_label) = entry.primary_tab_label.as_deref() {
-        parts.push(tab_label.to_string());
+    if let Some(location) = entry.location.as_deref() {
+        parts.push(location.to_string());
     }
     let status = entry
         .state_labels
@@ -632,6 +629,9 @@ fn mobile_agent_detail(entry: &AgentPanelEntry) -> String {
     parts.push(status);
     if let Some(agent_label) = entry.agent_label.as_deref() {
         parts.push(agent_label.to_string());
+    }
+    if let Some(model_info) = &entry.model_info {
+        parts.push(model_info.display_label());
     }
     if let Some(custom_status) = entry.custom_status.as_deref() {
         parts.push(custom_status.to_string());
@@ -936,14 +936,15 @@ fn truncate(text: &str, max_width: usize) -> String {
 mod tests {
     use super::*;
 
-    fn agent_entry(primary_tab_label: Option<&str>, agent_label: Option<&str>) -> AgentPanelEntry {
+    fn agent_entry(location: Option<&str>, agent_label: Option<&str>) -> AgentPanelEntry {
         AgentPanelEntry {
             ws_idx: 0,
             tab_idx: 0,
             pane_id: PaneId::from_raw(1),
-            primary_label: "herdr".into(),
-            primary_tab_label: primary_tab_label.map(str::to_string),
+            name: "Olivia".into(),
             agent_label: agent_label.map(str::to_string),
+            model_info: None,
+            location: location.map(str::to_string),
             state: AgentState::Idle,
             seen: true,
             custom_status: None,
@@ -952,14 +953,17 @@ mod tests {
     }
 
     #[test]
-    fn mobile_agent_detail_includes_tab_context_when_available() {
-        let entry = agent_entry(Some("mobile-state"), Some("pi"));
+    fn mobile_agent_detail_includes_location_when_available() {
+        let entry = agent_entry(Some("~/lab/herdr (main ✓)"), Some("pi"));
 
-        assert_eq!(mobile_agent_detail(&entry), "  mobile-state · idle · pi");
+        assert_eq!(
+            mobile_agent_detail(&entry),
+            "  ~/lab/herdr (main ✓) · idle · pi"
+        );
     }
 
     #[test]
-    fn mobile_agent_detail_keeps_existing_compact_detail_without_tab_context() {
+    fn mobile_agent_detail_keeps_existing_compact_detail_without_location() {
         let entry = agent_entry(None, Some("pi"));
 
         assert_eq!(mobile_agent_detail(&entry), "  idle · pi");

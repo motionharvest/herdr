@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 use crossterm::terminal;
 
 use super::{
-    auto_updates_enabled, repeat_key_identity, App, Mode, ANIMATION_INTERVAL,
-    AUTO_UPDATE_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL, MIN_RENDER_INTERVAL,
-    RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
+    auto_updates_enabled, repeat_key_identity, App, Mode, AGENT_MODEL_REFRESH_INTERVAL,
+    ANIMATION_INTERVAL, AUTO_UPDATE_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL,
+    MIN_RENDER_INTERVAL, RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
 };
 use crate::events::AppEvent;
 use crate::workspace::{GitStatusCacheEntry, Workspace, WorkspaceGitStatus};
@@ -235,6 +235,7 @@ impl App {
         changed |= self.clear_due_selection_highlight(now);
 
         self.start_git_status_refresh_if_due(now);
+        changed |= self.start_agent_model_refresh_if_due(now);
 
         if self
             .next_auto_update_check
@@ -483,6 +484,62 @@ impl App {
             .then_some(self.last_git_remote_status_refresh + GIT_REMOTE_STATUS_REFRESH_INTERVAL)
     }
 
+    /// Kick off a background refresh of per-terminal agent model info when the
+    /// interval elapsed. Returns true when stale model info was cleared and a
+    /// re-render is needed.
+    pub(crate) fn start_agent_model_refresh_if_due(&mut self, now: Instant) -> bool {
+        let Some(deadline) = self.agent_model_refresh_deadline() else {
+            return false;
+        };
+        if now < deadline {
+            return false;
+        }
+
+        let mut jobs = Vec::new();
+        let mut cleared = false;
+        for (terminal_id, terminal) in self.state.terminals.iter_mut() {
+            match terminal.model_probe_session() {
+                Some((agent, session_id)) => {
+                    let cached = self
+                        .agent_model_cache
+                        .get(terminal_id)
+                        .filter(|entry| entry.session_id == session_id)
+                        .cloned();
+                    jobs.push(crate::agent_model::AgentModelRefreshJob {
+                        terminal_id: terminal_id.clone(),
+                        agent,
+                        session_id,
+                        cached,
+                    });
+                }
+                None => {
+                    self.agent_model_cache.remove(terminal_id);
+                    if terminal.model_info.take().is_some() {
+                        cleared = true;
+                    }
+                }
+            }
+        }
+
+        if jobs.is_empty() {
+            self.last_agent_model_refresh = now;
+            return cleared;
+        }
+
+        self.agent_model_refresh_in_flight = true;
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let results = crate::agent_model::refresh_agent_model_infos(jobs);
+            let _ = event_tx.blocking_send(AppEvent::AgentModelRefreshed { results });
+        });
+        cleared
+    }
+
+    pub(crate) fn agent_model_refresh_deadline(&self) -> Option<Instant> {
+        (!self.agent_model_refresh_in_flight && !self.state.terminals.is_empty())
+            .then_some(self.last_agent_model_refresh + AGENT_MODEL_REFRESH_INTERVAL)
+    }
+
     pub(crate) fn next_loop_deadline(&self, now: Instant, needs_render: bool) -> Option<Instant> {
         self.next_loop_deadline_with_resize_poll(now, needs_render, true, true)
     }
@@ -519,6 +576,11 @@ impl App {
             self.next_animation_tick,
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
+                .flatten(),
+            // Gated with git refresh: both only run while an app client is
+            // attached, so a clientless headless server stays asleep.
+            include_git_refresh
+                .then(|| self.agent_model_refresh_deadline())
                 .flatten(),
             self.next_auto_update_check,
             self.agent_metadata_deadline,

@@ -626,6 +626,16 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
+/// Clickable region for an agent row nested under its space card. The rect
+/// covers only the entry's content rows, not the leading gap row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentRowArea {
+    pub ws_idx: usize,
+    pub tab_idx: usize,
+    pub pane_id: PaneId,
+    pub rect: Rect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -800,6 +810,7 @@ pub struct ViewState {
     pub layout: ViewLayout,
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
+    pub agent_row_areas: Vec<AgentRowArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -1074,9 +1085,6 @@ pub(crate) enum DragTarget {
     WorkspaceListScrollbar {
         grab_row_offset: u16,
     },
-    AgentPanelScrollbar {
-        grab_row_offset: u16,
-    },
     PaneSplit {
         path: Vec<bool>,
         direction: Direction,
@@ -1102,7 +1110,6 @@ pub(crate) enum DragTarget {
         grab_row_offset: u16,
     },
     SidebarDivider,
-    SidebarSectionDivider,
 }
 
 /// Active mouse drag on a split border or sidebar divider.
@@ -1370,7 +1377,6 @@ pub struct AppState {
     pub navigator: NavigatorState,
     pub copy_mode: Option<CopyModeState>,
     pub workspace_scroll: usize,
-    pub agent_panel_scroll: usize,
     pub tab_scroll: usize,
     pub tab_scroll_follow_active: bool,
     pub mobile_switcher_scroll: usize,
@@ -1405,10 +1411,11 @@ pub struct AppState {
     pub sidebar_width_source: SidebarWidthSource,
     pub sidebar_width_auto: bool,
     pub sidebar_collapsed: bool,
-    /// Fold the spaces section down to its header row plus the active space
-    /// card, leaving the agent panel visible in the remaining sidebar height.
+    /// Fold the spaces list down to its header row plus the active space
+    /// card and that space's agent rows.
     pub spaces_collapsed: bool,
-    /// Ratio of sidebar height allocated to the workspaces section.
+    /// Legacy ratio of sidebar height once allocated to the workspaces
+    /// section. Kept only so persisted sessions round-trip.
     pub sidebar_section_split: f32,
     pub agent_panel_scope: AgentPanelScope,
     /// Capture mouse input for Herdr's own mouse UI. When false, Herdr only
@@ -1710,7 +1717,6 @@ impl AppState {
             navigator: NavigatorState::default(),
             copy_mode: None,
             workspace_scroll: 0,
-            agent_panel_scroll: 0,
             tab_scroll: 0,
             tab_scroll_follow_active: true,
             mobile_switcher_scroll: 0,
@@ -1718,6 +1724,7 @@ impl AppState {
                 layout: ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                agent_row_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),

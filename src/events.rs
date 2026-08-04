@@ -101,6 +101,10 @@ pub enum AppEvent {
         results: Vec<WorkspaceGitStatus>,
         cache_updates: Vec<(std::path::PathBuf, GitStatusCacheEntry)>,
     },
+    /// Background agent model info refresh completed for terminals.
+    AgentModelRefreshed {
+        results: Vec<crate::agent_model::AgentModelRefreshResult>,
+    },
     /// Background `git worktree add` completed.
     WorktreeAddFinished(WorktreeAddResult),
     /// Background `git worktree remove` completed.

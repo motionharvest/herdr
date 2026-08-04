@@ -9,12 +9,14 @@ use super::{Tab, Workspace};
 /// Detail info for a single pane, used by the agent detail panel.
 pub struct PaneDetail {
     pub pane_id: PaneId,
+    pub terminal_id: TerminalId,
     pub tab_idx: usize,
     pub tab_label: String,
     pub label: String,
     pub agent_label: String,
     #[allow(dead_code)]
     pub agent: Option<Agent>,
+    pub model_info: Option<crate::agent_model::AgentModelInfo>,
     pub state: AgentState,
     pub seen: bool,
     pub custom_status: Option<String>,
@@ -57,11 +59,13 @@ impl Tab {
                 let presentation = terminal.effective_presentation();
                 Some(PaneDetail {
                     pane_id: *id,
+                    terminal_id: pane.attached_terminal_id.clone(),
                     tab_idx: self.number.saturating_sub(1),
                     tab_label: self.display_name(),
                     label: agent_label.clone(),
                     agent_label,
                     agent: terminal.effective_known_agent(),
+                    model_info: terminal.model_info.clone(),
                     state: terminal.state,
                     seen: pane.seen,
                     custom_status: presentation.custom_status,

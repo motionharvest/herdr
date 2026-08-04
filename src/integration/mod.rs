@@ -2397,11 +2397,11 @@ fn omp_extension_dir() -> io::Result<PathBuf> {
     )
 }
 
-fn claude_dir() -> io::Result<PathBuf> {
+pub(crate) fn claude_dir() -> io::Result<PathBuf> {
     config_dir_from_env_or_home(CLAUDE_CONFIG_DIR_ENV_VAR, &[".claude"])
 }
 
-fn codex_dir() -> io::Result<PathBuf> {
+pub(crate) fn codex_dir() -> io::Result<PathBuf> {
     config_dir_from_env_or_home(CODEX_HOME_ENV_VAR, &[".codex"])
 }
 

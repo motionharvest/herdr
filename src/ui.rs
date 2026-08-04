@@ -64,14 +64,12 @@ pub(crate) use self::{
     },
     settings::{settings_button_rects, settings_show_primary_action},
     sidebar::{
-        agent_panel_body_rect, agent_panel_entries, agent_panel_scroll_metrics,
-        agent_panel_scrollbar_rect, agent_panel_toggle_rect, collapsed_sidebar_sections,
-        collapsed_sidebar_toggle_rect, compute_workspace_card_areas, expanded_sidebar_sections,
+        agent_panel_entries, agent_scope_toggle_rect, collapsed_sidebar_sections,
+        collapsed_sidebar_toggle_rect, compute_workspace_card_areas, compute_workspace_list_areas,
         expanded_sidebar_toggle_rect, normalized_workspace_scroll, render_sidebar,
-        sidebar_section_divider_rect, spaces_section_collapsed, spaces_section_header_rect,
-        workspace_drop_indicator_row, workspace_list_entries, workspace_list_rect,
-        workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
-        WorkspaceListEntry,
+        spaces_section_collapsed, spaces_section_header_rect, workspace_drop_indicator_row,
+        workspace_list_entries, workspace_list_rect, workspace_list_scroll_metrics,
+        workspace_list_scrollbar_rect, workspace_parent_group_state, WorkspaceListEntry,
     },
 };
 pub(crate) use self::{
@@ -197,7 +195,6 @@ fn compute_view_internal(
         (Rect::default(), main_area)
     };
     app.workspace_scroll = 0;
-    app.agent_panel_scroll = 0;
 
     let tab_bar_view = app
         .active
@@ -242,14 +239,16 @@ fn compute_view_internal(
         .map(|toast| toast_notification_rect(terminal_area, toast, app.config_diagnostic.is_some()))
         .unwrap_or_default();
 
+    let (workspace_card_areas, agent_row_areas) = if app.sidebar_collapsed {
+        (Vec::new(), Vec::new())
+    } else {
+        compute_workspace_list_areas(app, sidebar_rect)
+    };
     app.view = crate::app::ViewState {
         layout: ViewLayout::Desktop,
         sidebar_rect,
-        workspace_card_areas: if app.sidebar_collapsed {
-            Vec::new()
-        } else {
-            compute_workspace_card_areas(app, sidebar_rect)
-        },
+        workspace_card_areas,
+        agent_row_areas,
         tab_bar_rect,
         tab_hit_areas: tab_bar_view.tab_hit_areas,
         tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
@@ -346,6 +345,7 @@ fn compute_mobile_view(
         layout: ViewLayout::Mobile,
         sidebar_rect: Rect::default(),
         workspace_card_areas: Vec::new(),
+        agent_row_areas: Vec::new(),
         tab_bar_rect: Rect::default(),
         tab_hit_areas: Vec::new(),
         tab_scroll_left_hit_area: Rect::default(),
@@ -693,6 +693,52 @@ mod tests {
         assert_eq!(card.x, 0);
 
         std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn sidebar_lists_agents_under_their_space_with_status_bar_and_header_toggle() {
+        let mut app = crate::app::state::AppState::test_new();
+        let ws = Workspace::test_new("one");
+        let root_pane = ws.tabs[0].root_pane;
+
+        app.workspaces = vec![ws];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&root_pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent =
+            Some(crate::detect::Agent::Claude);
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+
+        compute_view(&mut app, Rect::new(0, 0, 100, 24));
+
+        // The agent nests under its space card in the merged list.
+        let card = app.view.workspace_card_areas[0];
+        let agent_row = app.view.agent_row_areas[0];
+        assert_eq!(agent_row.ws_idx, card.ws_idx);
+        assert_eq!(agent_row.pane_id, root_pane);
+        assert_eq!(agent_row.rect.y, card.rect.y + card.rect.height + 1);
+        assert_eq!(agent_row.rect.height, 3);
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(&app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // Status bar glyph runs down the agent entry's left edge.
+        for row in agent_row.rect.y..agent_row.rect.y + agent_row.rect.height {
+            assert_eq!(buffer[(agent_row.rect.x + 1, row)].symbol(), "▎");
+        }
+
+        // Scope toggle is right-aligned on the header row.
+        let toggle = agent_scope_toggle_rect(&app, app.view.sidebar_rect);
+        assert_eq!(toggle.y, app.view.sidebar_rect.y);
+        let header_text: String = (toggle.x..toggle.x + toggle.width)
+            .map(|x| buffer[(x, toggle.y)].symbol().to_string())
+            .collect();
+        assert_eq!(header_text, "agents all");
     }
 
     #[test]
