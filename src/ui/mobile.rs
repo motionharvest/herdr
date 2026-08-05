@@ -942,6 +942,7 @@ mod tests {
             tab_idx: 0,
             pane_id: PaneId::from_raw(1),
             name: "Olivia".into(),
+            tab_name: "api".into(),
             agent_label: agent_label.map(str::to_string),
             model_info: None,
             location: location.map(str::to_string),

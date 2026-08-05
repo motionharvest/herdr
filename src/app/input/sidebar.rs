@@ -1652,7 +1652,7 @@ mod tests {
         assert_eq!(app.state.workspace_drop_index_at_row(1), Some(0));
         assert_eq!(app.state.workspace_drop_index_at_row(2), Some(1));
         assert_eq!(app.state.workspace_drop_index_at_row(3), Some(1));
-        assert_eq!(app.state.workspace_drop_index_at_row(6), Some(1));
+        assert_eq!(app.state.workspace_drop_index_at_row(4), Some(1));
 
         let _ = fs::remove_dir_all(first_repo);
         let _ = fs::remove_dir_all(second_repo);

@@ -5,6 +5,11 @@
 ### Added
 - Right-clicking an agent row in the sidebar opens a context menu with "Rename pane", which runs the same rename dialog as the pane's own right-click menu.
 
+### Changed
+- Sidebar agent rows now lead with the tab they belong to, with the pane's own name below it. The working directory and branch that used to sit there are still on the pane's title.
+- The space you are working in is now drawn as one outlined group in the sidebar: the box runs from the space card down around every agent listed under it, instead of marking only the focused agent row.
+- Space cards no longer repeat the git branch. It is already on the pane, where the work happens, so the card is just the space name.
+
 ## [0.7.1] - 2026-08-04
 
 ### Added

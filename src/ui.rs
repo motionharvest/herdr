@@ -689,8 +689,9 @@ mod tests {
         app.view.sidebar_rect = Rect::new(0, 0, 26, 20);
         app.view.workspace_card_areas = compute_workspace_card_areas(&app, app.view.sidebar_rect);
 
+        // Border, name, border: the branch row the card used to carry is gone.
         let card = app.view.workspace_card_areas[0].rect;
-        assert_eq!(card.height, 4);
+        assert_eq!(card.height, 3);
         assert_eq!(card.x, 0);
 
         std::fs::remove_dir_all(repo).ok();

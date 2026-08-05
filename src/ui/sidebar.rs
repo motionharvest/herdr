@@ -14,15 +14,15 @@ use crate::terminal::TerminalRuntimeRegistry;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 1;
 const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 3;
-/// Content rows per agent list entry: name, location, status.
+/// Content rows per agent list entry: tab name, pane name, status.
 pub(crate) const AGENT_PANEL_ENTRY_CONTENT_ROWS: u16 = 3;
 /// Rows an agent entry occupies in the sidebar list: a gap row separating it
 /// from the card or agent above, then its content rows.
 const AGENT_ENTRY_ROWS: u16 = AGENT_PANEL_ENTRY_CONTENT_ROWS + 1;
 /// Status glyph drawn down the left edge of an agent entry.
 const AGENT_STATUS_BAR_GLYPH: &str = "▎";
-/// Branch glyph prefixed to a workspace card's git branch name.
-const GIT_BRANCH_GLYPH: &str = "\u{f126}";
+/// Rows a space card occupies: top border, its name, bottom border.
+const WORKSPACE_CARD_ROWS: u16 = 3;
 
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
@@ -30,9 +30,12 @@ pub(crate) struct AgentPanelEntry {
     pub pane_id: crate::layout::PaneId,
     /// Human name for the pane (manual label, else the assigned pane name).
     pub name: String,
+    /// Name of the tab the pane lives in, as shown in the tab bar.
+    pub tab_name: String,
     pub agent_label: Option<String>,
     pub model_info: Option<crate::agent_model::AgentModelInfo>,
-    /// Where the agent is working: cwd plus git branch/dirty marker.
+    /// Where the agent is working: cwd plus git branch/dirty marker. The
+    /// sidebar leads with the tab name instead; this is for the mobile list.
     pub location: Option<String>,
     pub state: AgentState,
     pub seen: bool,
@@ -135,6 +138,7 @@ fn agent_panel_entries_with_runtimes(
                 tab_idx: detail.tab_idx,
                 pane_id: detail.pane_id,
                 name,
+                tab_name: detail.tab_label,
                 agent_label: Some(detail.agent_label),
                 model_info: detail.model_info,
                 location,
@@ -181,7 +185,7 @@ pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static 
 }
 
 fn workspace_row_height(_ws: &crate::workspace::Workspace) -> u16 {
-    4
+    WORKSPACE_CARD_ROWS
 }
 pub(crate) fn workspace_parent_group_state(
     app: &AppState,
@@ -758,8 +762,9 @@ fn render_workspace_rows(
         )
     };
 
+    let outlined = outlined_space_group(app, &cards, &agent_rows);
+
     render_agent_rows(app, terminal_runtimes, frame, &agent_rows);
-    render_focused_agent_outline(app, frame, area, &agent_rows);
     render_agent_drop_indicator(app, frame, &agent_rows);
 
     for card in cards {
@@ -770,49 +775,76 @@ fn render_workspace_rows(
         let is_selected = app.mode == Mode::Navigate && card.ws_idx == app.selected;
         let selected = is_selected || is_active;
         let (state, seen) = ws.aggregate_state(&app.terminals);
-        let (name, branch) =
-            workspace_card_labels(app, terminal_runtimes, ws, card.indented, state, seen);
-        render_workspace_card(frame, card.rect, &name, &branch, selected, app);
+        let name = workspace_card_label(app, terminal_runtimes, ws, card.indented, state, seen);
+        // A card inside the group outline stops at its name: the outline
+        // supplies the enclosing box, so its own floor would only cut the
+        // group in half.
+        let open_bottom =
+            outlined.is_some_and(|group| group.y == card.rect.y && group.height > card.rect.height);
+        render_workspace_card(frame, card.rect, &name, selected, open_bottom, app);
     }
+
+    render_space_group_outline(app, frame, area, outlined);
 
     if layout.new_button != Rect::default() {
         render_new_workspace_button(frame, layout.new_button, app);
     }
 }
 
-/// The agent you are typing into carries the sidebar's selection outline; its
-/// space card only tints its name. An entry is three content rows tall, so the
-/// box borrows the blank row above and below it. That is safe because exactly
-/// one agent is ever outlined, and every entry is padded by those blank rows.
-fn render_focused_agent_outline(
+/// The space you are working in, as the box the outline should draw: its card
+/// plus every agent row listed under it. `None` when that space has scrolled
+/// out of the list.
+fn outlined_space_group(
     app: &AppState,
-    frame: &mut Frame,
-    area: Rect,
+    cards: &[crate::app::state::WorkspaceCardArea],
     agent_rows: &[crate::app::state::AgentRowArea],
-) {
-    let Some((ws_idx, tab_idx, pane_id)) = focused_agent_row(app) else {
-        return;
-    };
-    let Some(row) = agent_rows
+) -> Option<Rect> {
+    let ws_idx = if app.mode == Mode::Navigate {
+        Some(app.selected)
+    } else {
+        app.active
+    }?;
+    let card = cards.iter().find(|card| card.ws_idx == ws_idx)?.rect;
+    if card.width < 2 || card.height == 0 {
+        return None;
+    }
+    // An agent entry's box floor is the blank row just past its content. The
+    // list always leaves that row free: either the next space card reserves it
+    // as a gap, or the `+ new` button starts one row lower.
+    let bottom = agent_rows
         .iter()
-        .find(|row| row.ws_idx == ws_idx && row.tab_idx == tab_idx && row.pane_id == pane_id)
-    else {
+        .filter(|row| row.ws_idx == ws_idx)
+        .map(|row| row.rect.y + row.rect.height)
+        .max()
+        .unwrap_or(card.y + card.height - 1);
+    Some(Rect::new(
+        card.x,
+        card.y,
+        card.width,
+        bottom.saturating_sub(card.y).saturating_add(1),
+    ))
+}
+
+/// Draws the selected space and its agents as one box. This runs after the
+/// cards so the accent edges win over the card's own dim border, which is what
+/// turns a card and a loose list into a group you can read at a glance.
+fn render_space_group_outline(app: &AppState, frame: &mut Frame, area: Rect, group: Option<Rect>) {
+    let Some(rect) = group else {
         return;
     };
-    let rect = row.rect;
-    if rect.width < 2 || rect.height == 0 {
+    if rect.width < 2 || rect.height < 2 {
         return;
     }
 
     let list = workspace_list_rect(app, area);
     let visible = |y: u16| list.height > 0 && y >= list.y && y < list.y + list.height;
-    let style = Style::default().fg(app.palette.accent);
-    let right = rect.x + rect.width.saturating_sub(1);
-    let top = rect.y.saturating_sub(1);
-    let bottom = rect.y + rect.height;
+    let style = Style::default().fg(app.palette.focused_pane_border());
+    let right = rect.x + rect.width - 1;
+    let top = rect.y;
+    let bottom = rect.y + rect.height - 1;
     let buf = frame.buffer_mut();
 
-    for y in rect.y..bottom {
+    for y in top + 1..bottom {
         if !visible(y) {
             continue;
         }
@@ -821,7 +853,7 @@ fn render_focused_agent_outline(
     }
 
     for (y, left_corner, right_corner) in [(top, "╭", "╮"), (bottom, "╰", "╯")] {
-        if y == rect.y || !visible(y) {
+        if !visible(y) {
             continue;
         }
         buf[(rect.x, y)].set_symbol(left_corner).set_style(style);
@@ -948,31 +980,28 @@ fn render_new_workspace_button(frame: &mut Frame, rect: Rect, app: &AppState) {
     }
 }
 
-fn workspace_card_labels(
+/// A space card carries its name and nothing else: the branch it used to show
+/// is already on the pane, where the work happens.
+fn workspace_card_label(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     ws: &crate::workspace::Workspace,
     indented: bool,
     state: AgentState,
     seen: bool,
-) -> (String, String) {
+) -> String {
     let (dot, _) = sidebar_state_dot(state, seen, app);
     let indent = if indented { "  " } else { "" };
     let name = ws.display_name_from(&app.terminals, terminal_runtimes);
-    // Git branches lead with a branch glyph; non-repo spaces stay plain.
-    let branch = match ws.branch() {
-        Some(branch) => format!("{indent}  {GIT_BRANCH_GLYPH} {branch}"),
-        None => format!("{indent}  shell"),
-    };
-    (format!("{indent}{dot} {name}"), branch)
+    format!("{indent}{dot} {name}")
 }
 
 fn render_workspace_card(
     frame: &mut Frame,
     rect: Rect,
     name: &str,
-    branch: &str,
     selected: bool,
+    open_bottom: bool,
     app: &AppState,
 ) {
     if rect.width < 2 || rect.height == 0 {
@@ -989,15 +1018,13 @@ fn render_workspace_card(
     };
     let border_style = Style::default().fg(border_color);
     let name_style = Style::default().fg(name_color).add_modifier(Modifier::BOLD);
-    let branch_style = Style::default().fg(app.palette.overlay0);
     let inner_width = rect.width.saturating_sub(2) as usize;
     let name = pad_to_width(&truncate_chars(name, inner_width), inner_width);
-    let branch = pad_to_width(&truncate_chars(branch, inner_width), inner_width);
 
     let buf = frame.buffer_mut();
     let right = rect.x + rect.width.saturating_sub(1);
 
-    if rect.height < 4 {
+    if rect.height < WORKSPACE_CARD_ROWS {
         render_workspace_card_compact(buf, rect, right, &name, border_style, name_style);
         return;
     }
@@ -1021,15 +1048,10 @@ fn render_workspace_card(
         border_style,
         name_style,
     );
-    render_workspace_card_text_row(
-        buf,
-        rect.x,
-        right,
-        rect.y + 2,
-        &branch,
-        border_style,
-        branch_style,
-    );
+
+    if open_bottom {
+        return;
+    }
 
     buf[(rect.x, bottom)]
         .set_symbol("╰")
@@ -1133,38 +1155,37 @@ fn render_agent_rows(
             Style::default().fg(color),
         );
         let text_width = rect.width.saturating_sub(4) as usize;
-        // The focused pane's entry mirrors the selected workspace card:
-        // accent-colored bold name.
+        // The pane you are typing into reads in the same color its own chrome
+        // uses when focused, so the sidebar and the pane agree.
         let name_style = if is_focused_pane {
             Style::default()
-                .fg(app.palette.accent)
+                .fg(app.palette.focused_pane_border())
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(app.palette.text)
         };
+        // The tab is what the row is really about, so it leads; the pane's own
+        // name sits under it.
+        render_sidebar_line(
+            frame,
+            Rect::new(rect.x, rect.y, rect.width, 1),
+            Line::from(vec![
+                bar.clone(),
+                Span::styled(truncate_chars(&entry.tab_name, text_width), name_style),
+            ]),
+        );
         let mut title_spans = vec![bar.clone()];
         super::panes::push_title_name_spans(
             &mut title_spans,
             &truncate_chars(&title, text_width),
-            name_style,
             Style::default().fg(app.palette.overlay1),
             Style::default().fg(app.palette.overlay1),
-        );
-        render_sidebar_line(
-            frame,
-            Rect::new(rect.x, rect.y, rect.width, 1),
-            Line::from(title_spans),
+            Style::default().fg(app.palette.overlay1),
         );
         render_sidebar_line(
             frame,
             Rect::new(rect.x, rect.y + 1, rect.width, 1),
-            Line::from(vec![
-                bar.clone(),
-                Span::styled(
-                    truncate_chars(entry.location.as_deref().unwrap_or_default(), text_width),
-                    Style::default().fg(app.palette.overlay1),
-                ),
-            ]),
+            Line::from(title_spans),
         );
         render_sidebar_line(
             frame,
@@ -1180,7 +1201,7 @@ fn render_agent_rows(
     }
 }
 
-/// First entry row: the pane's human name plus the harness, e.g.
+/// Second entry row: the pane's human name plus the harness, e.g.
 /// `Olivia {Claude}`.
 pub(crate) fn agent_entry_title(entry: &AgentPanelEntry) -> String {
     match entry.agent_label.as_deref().map(harness_display_name) {
@@ -1267,47 +1288,66 @@ mod tests {
     }
 
     #[test]
-    fn focused_agent_row_carries_the_accent_outline() {
-        let area = Rect::new(0, 0, 28, 24);
-        let (app, terminal) = render_sidebar_list(area);
-        let rows = compute_workspace_list_areas(&app, area).1;
-        let rect = rows
-            .first()
-            .expect("the space's agent should have a row")
-            .rect;
-        let right = rect.x + rect.width - 1;
-        let buf = terminal.backend().buffer();
-
-        assert_eq!(buf[(rect.x, rect.y - 1)].symbol(), "╭");
-        assert_eq!(buf[(right, rect.y - 1)].symbol(), "╮");
-        assert_eq!(buf[(rect.x, rect.y + rect.height)].symbol(), "╰");
-        assert_eq!(buf[(right, rect.y + rect.height)].symbol(), "╯");
-        assert_eq!(buf[(rect.x, rect.y)].symbol(), "│");
-        assert_eq!(
-            buf[(rect.x, rect.y)].style().fg,
-            Some(app.palette.accent),
-            "the outline is the selection cue, so it must be accent-colored"
-        );
-    }
-
-    #[test]
-    fn selected_space_card_keeps_a_dim_border() {
+    fn selected_space_outline_encloses_its_card_and_every_agent() {
         let area = Rect::new(0, 0, 28, 24);
         let (app, terminal) = render_sidebar_list(area);
         let card = compute_workspace_card_areas(&app, area)[0].rect;
+        let rows = compute_workspace_list_areas(&app, area).1;
+        let last = rows
+            .last()
+            .expect("the space's agent should have a row")
+            .rect;
+        let right = card.x + card.width - 1;
+        let bottom = last.y + last.height;
+        let accent = app.palette.focused_pane_border();
         let buf = terminal.backend().buffer();
+
+        // One box: it opens on the card and closes below the last agent.
+        assert_eq!(buf[(card.x, card.y)].symbol(), "╭");
+        assert_eq!(buf[(right, card.y)].symbol(), "╮");
+        assert_eq!(buf[(card.x, bottom)].symbol(), "╰");
+        assert_eq!(buf[(right, bottom)].symbol(), "╯");
+        assert_eq!(buf[(card.x, card.y)].style().fg, Some(accent));
+        assert_eq!(buf[(card.x, bottom)].style().fg, Some(accent));
+
+        // Every row in between is a side, including the card's own floor and
+        // the agent rows the outline now owns.
+        for y in card.y + 1..bottom {
+            assert_eq!(buf[(card.x, y)].symbol(), "│", "left edge at row {y}");
+            assert_eq!(buf[(right, y)].symbol(), "│", "right edge at row {y}");
+            assert_eq!(buf[(card.x, y)].style().fg, Some(accent));
+        }
+
+        // The card's old floor is gone, so the group does not read as a card
+        // with a list stuck under it.
+        let card_floor = card.y + card.height - 1;
+        assert_eq!(buf[(card.x + 1, card_floor)].symbol(), " ");
+    }
+
+    #[test]
+    fn unselected_space_card_keeps_its_own_dim_border() {
+        let area = Rect::new(0, 0, 28, 24);
+        let (mut app, _) = render_sidebar_list(area);
+        app.active = None;
+        app.selected = 1;
+
+        let runtimes = TerminalRuntimeRegistry::new();
+        let backend = TestBackend::new(area.x + area.width, area.y + area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_workspace_rows(&app, &runtimes, frame, area))
+            .unwrap();
+
+        let card = compute_workspace_card_areas(&app, area)[0].rect;
+        let buf = terminal.backend().buffer();
+        let floor = card.y + card.height - 1;
 
         assert_eq!(buf[(card.x, card.y)].symbol(), "╭");
         assert_eq!(
             buf[(card.x, card.y)].style().fg,
-            Some(app.palette.surface_dim),
-            "the accent outline belongs to the focused agent, not its space"
+            Some(app.palette.surface_dim)
         );
-        assert_eq!(
-            buf[(card.x + 1, card.y + 1)].style().fg,
-            Some(app.palette.accent),
-            "the selected space still reads through its name"
-        );
+        assert_eq!(buf[(card.x, floor)].symbol(), "╰");
     }
 
     #[test]
@@ -1484,6 +1524,7 @@ mod tests {
             tab_idx: 0,
             pane_id: crate::layout::PaneId::from_raw(1),
             name: "Olivia".into(),
+            tab_name: "api".into(),
             agent_label: Some("claude".into()),
             model_info: Some(crate::agent_model::AgentModelInfo {
                 model: "claude-fable-5".into(),
@@ -1561,7 +1602,7 @@ mod tests {
         let cards = compute_workspace_card_areas(&app, area);
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].ws_idx, 1);
-        assert_eq!(cards[0].rect, Rect::new(0, 1, 29, 4));
+        assert_eq!(cards[0].rect, Rect::new(0, 1, 29, WORKSPACE_CARD_ROWS));
     }
 
     #[test]
