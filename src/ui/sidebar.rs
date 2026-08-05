@@ -16,9 +16,6 @@ const WORKSPACE_SECTION_HEADER_ROWS: u16 = 1;
 const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 3;
 /// Content rows per agent list entry: tab name, pane name, status.
 pub(crate) const AGENT_PANEL_ENTRY_CONTENT_ROWS: u16 = 3;
-/// Rows an agent entry occupies in the sidebar list: a gap row separating it
-/// from the card or agent above, then its content rows.
-const AGENT_ENTRY_ROWS: u16 = AGENT_PANEL_ENTRY_CONTENT_ROWS + 1;
 /// Status glyph drawn down the left edge of an agent entry.
 const AGENT_STATUS_BAR_GLYPH: &str = "▎";
 /// Rows a space card occupies: top border, its name, bottom border.
@@ -228,18 +225,32 @@ pub(crate) enum WorkspaceListEntry {
 fn entry_row_height(
     app: &AppState,
     entry: &WorkspaceListEntry,
+    prev: Option<&WorkspaceListEntry>,
     next: Option<&WorkspaceListEntry>,
 ) -> Option<u16> {
     match entry {
         WorkspaceListEntry::Workspace { ws_idx, .. } => {
             app.workspaces.get(*ws_idx).map(workspace_row_height)
         }
-        // A space's last agent keeps a gap row before the next space card.
+        // A space's last agent reserves two rows below it: the blank row that
+        // pads the bottom of the space's outline, and the outline's own floor.
         WorkspaceListEntry::Agent { .. } => Some(
-            AGENT_ENTRY_ROWS
-                + u16::from(matches!(next, Some(WorkspaceListEntry::Workspace { .. }))),
+            agent_leading_gap(prev)
+                + AGENT_PANEL_ENTRY_CONTENT_ROWS
+                + if matches!(next, Some(WorkspaceListEntry::Agent { .. })) {
+                    0
+                } else {
+                    2
+                },
         ),
     }
+}
+
+/// Blank rows above an agent's content. Agents are separated from each other
+/// by one, but the first agent under a space needs none: the space card's own
+/// floor row already sits above it.
+fn agent_leading_gap(prev: Option<&WorkspaceListEntry>) -> u16 {
+    u16::from(matches!(prev, Some(WorkspaceListEntry::Agent { .. })))
 }
 
 /// Whether a space's agents are listed under its card. Spaces start expanded
@@ -419,7 +430,12 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
     let mut visible = 0usize;
     let entries = workspace_list_entries(app);
     for (idx, entry) in entries.iter().enumerate().skip(scroll) {
-        let Some(row_height) = entry_row_height(app, entry, entries.get(idx + 1)) else {
+        let Some(row_height) = entry_row_height(
+            app,
+            entry,
+            idx.checked_sub(1).and_then(|prev| entries.get(prev)),
+            entries.get(idx + 1),
+        ) else {
             continue;
         };
         if used_rows.saturating_add(row_height) > body.height {
@@ -496,7 +512,8 @@ fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
 
     let entries = workspace_list_entries(app);
     for (idx, entry) in entries.iter().enumerate().skip(scroll) {
-        let Some(row_height) = entry_row_height(app, entry, entries.get(idx + 1)) else {
+        let prev = idx.checked_sub(1).and_then(|prev| entries.get(prev));
+        let Some(row_height) = entry_row_height(app, entry, prev, entries.get(idx + 1)) else {
             continue;
         };
         if row_y.saturating_add(row_height) > body_bottom {
@@ -521,7 +538,7 @@ fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
                     pane_id: *pane_id,
                     rect: Rect::new(
                         body.x,
-                        row_y + 1,
+                        row_y + agent_leading_gap(prev),
                         body.width,
                         AGENT_PANEL_ENTRY_CONTENT_ROWS,
                     ),
@@ -808,13 +825,12 @@ fn outlined_space_group(
     if card.width < 2 || card.height == 0 {
         return None;
     }
-    // An agent entry's box floor is the blank row just past its content. The
-    // list always leaves that row free: either the next space card reserves it
-    // as a gap, or the `+ new` button starts one row lower.
+    // The last agent reserves a blank row and then the floor, so the box pads
+    // its bottom the way the card's own floor row pads its top.
     let bottom = agent_rows
         .iter()
         .filter(|row| row.ws_idx == ws_idx)
-        .map(|row| row.rect.y + row.rect.height)
+        .map(|row| row.rect.y + row.rect.height + 1)
         .max()
         .unwrap_or(card.y + card.height - 1);
     Some(Rect::new(
@@ -1149,12 +1165,13 @@ fn render_agent_rows(
             AgentState::Unknown => app.palette.overlay0,
         };
         // Status is shown as a vertical bar running down the entry's left edge
-        // instead of a bullet.
+        // instead of a bullet. It is inset by two so it clears the space
+        // outline's edge with a column to spare.
         let bar = Span::styled(
-            format!(" {AGENT_STATUS_BAR_GLYPH} "),
+            format!("  {AGENT_STATUS_BAR_GLYPH} "),
             Style::default().fg(color),
         );
-        let text_width = rect.width.saturating_sub(4) as usize;
+        let text_width = rect.width.saturating_sub(5) as usize;
         // The pane you are typing into reads in the same color its own chrome
         // uses when focused, so the sidebar and the pane agree.
         let name_style = if is_focused_pane {
@@ -1298,7 +1315,9 @@ mod tests {
             .expect("the space's agent should have a row")
             .rect;
         let right = card.x + card.width - 1;
-        let bottom = last.y + last.height;
+        // A blank row pads the bottom of the box, matching the card's floor row
+        // at the top, so the outline closes one row below that.
+        let bottom = last.y + last.height + 1;
         let accent = app.palette.focused_pane_border();
         let buf = terminal.backend().buffer();
 

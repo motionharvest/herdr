@@ -721,7 +721,9 @@ mod tests {
         let agent_row = app.view.agent_row_areas[0];
         assert_eq!(agent_row.ws_idx, card.ws_idx);
         assert_eq!(agent_row.pane_id, root_pane);
-        assert_eq!(agent_row.rect.y, card.rect.y + card.rect.height + 1);
+        // The first agent starts right under the card: the card's own floor row
+        // is the only padding between the space name and its agents.
+        assert_eq!(agent_row.rect.y, card.rect.y + card.rect.height);
         assert_eq!(agent_row.rect.height, 3);
 
         let backend = TestBackend::new(100, 24);
@@ -729,9 +731,10 @@ mod tests {
         terminal.draw(|frame| render(&app, frame)).unwrap();
         let buffer = terminal.backend().buffer();
 
-        // Status bar glyph runs down the agent entry's left edge.
+        // Status bar glyph runs down the agent entry's left edge, inset far
+        // enough to clear the space outline.
         for row in agent_row.rect.y..agent_row.rect.y + agent_row.rect.height {
-            assert_eq!(buffer[(agent_row.rect.x + 1, row)].symbol(), "▎");
+            assert_eq!(buffer[(agent_row.rect.x + 2, row)].symbol(), "▎");
         }
 
         // Folding the space drops its agent rows from the list.
