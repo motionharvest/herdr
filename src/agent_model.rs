@@ -86,9 +86,11 @@ fn refresh_job(job: AgentModelRefreshJob) -> Option<AgentModelRefreshResult> {
         .filter(|file| file.is_file())
         .or_else(|| resolve_session_file(job.agent, &job.session_id))?;
     let modified = fs::metadata(&session_file).ok()?.modified().ok()?;
-    if job.cached.as_ref().is_some_and(|cached| {
-        cached.session_file == session_file && cached.modified == modified
-    }) {
+    if job
+        .cached
+        .as_ref()
+        .is_some_and(|cached| cached.session_file == session_file && cached.modified == modified)
+    {
         return None;
     }
 
@@ -115,9 +117,7 @@ fn refresh_job(job: AgentModelRefreshJob) -> Option<AgentModelRefreshResult> {
 
 fn resolve_session_file(agent: Agent, session_id: &str) -> Option<PathBuf> {
     match agent {
-        Agent::Claude => {
-            claude_session_file(&crate::integration::claude_dir().ok()?, session_id)
-        }
+        Agent::Claude => claude_session_file(&crate::integration::claude_dir().ok()?, session_id),
         Agent::Codex => codex_session_file(&crate::integration::codex_dir().ok()?, session_id),
         _ => None,
     }
@@ -309,7 +309,10 @@ mod tests {
     fn display_model_name_prettifies_known_ids() {
         assert_eq!(display_model_name("claude-fable-5"), "Fable 5");
         assert_eq!(display_model_name("claude-opus-4-5-20251101"), "Opus 4.5");
-        assert_eq!(display_model_name("claude-3-5-sonnet-20241022"), "3.5 Sonnet");
+        assert_eq!(
+            display_model_name("claude-3-5-sonnet-20241022"),
+            "3.5 Sonnet"
+        );
         assert_eq!(display_model_name("gpt-5.6-sol"), "GPT-5.6 Sol");
         assert_eq!(display_model_name("claude-fable-5[1m]"), "Fable 5");
         assert_eq!(display_model_name("mystery"), "Mystery");
