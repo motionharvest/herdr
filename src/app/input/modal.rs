@@ -719,7 +719,10 @@ pub(super) fn apply_context_menu_action(
                 };
             }
         }
-        (ContextMenuKind::Pane { pane_id, .. }, Some("Rename pane")) => {
+        (
+            ContextMenuKind::Agent { pane_id } | ContextMenuKind::Pane { pane_id, .. },
+            Some("Rename pane"),
+        ) => {
             open_rename_pane(state, pane_id);
         }
         (ContextMenuKind::Pane { pane_id, .. }, Some("Clear pane name")) => {

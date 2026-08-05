@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Right-clicking an agent row in the sidebar opens a context menu with "Rename pane", which runs the same rename dialog as the pane's own right-click menu.
+
 ## [0.7.1] - 2026-08-04
 
 ### Added

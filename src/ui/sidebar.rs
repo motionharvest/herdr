@@ -759,6 +759,7 @@ fn render_workspace_rows(
     };
 
     render_agent_rows(app, terminal_runtimes, frame, &agent_rows);
+    render_focused_agent_outline(app, frame, area, &agent_rows);
     render_agent_drop_indicator(app, frame, &agent_rows);
 
     for card in cards {
@@ -777,6 +778,65 @@ fn render_workspace_rows(
     if layout.new_button != Rect::default() {
         render_new_workspace_button(frame, layout.new_button, app);
     }
+}
+
+/// The agent you are typing into carries the sidebar's selection outline; its
+/// space card only tints its name. An entry is three content rows tall, so the
+/// box borrows the blank row above and below it. That is safe because exactly
+/// one agent is ever outlined, and every entry is padded by those blank rows.
+fn render_focused_agent_outline(
+    app: &AppState,
+    frame: &mut Frame,
+    area: Rect,
+    agent_rows: &[crate::app::state::AgentRowArea],
+) {
+    let Some((ws_idx, tab_idx, pane_id)) = focused_agent_row(app) else {
+        return;
+    };
+    let Some(row) = agent_rows
+        .iter()
+        .find(|row| row.ws_idx == ws_idx && row.tab_idx == tab_idx && row.pane_id == pane_id)
+    else {
+        return;
+    };
+    let rect = row.rect;
+    if rect.width < 2 || rect.height == 0 {
+        return;
+    }
+
+    let list = workspace_list_rect(app, area);
+    let visible = |y: u16| list.height > 0 && y >= list.y && y < list.y + list.height;
+    let style = Style::default().fg(app.palette.accent);
+    let right = rect.x + rect.width.saturating_sub(1);
+    let top = rect.y.saturating_sub(1);
+    let bottom = rect.y + rect.height;
+    let buf = frame.buffer_mut();
+
+    for y in rect.y..bottom {
+        if !visible(y) {
+            continue;
+        }
+        buf[(rect.x, y)].set_symbol("│").set_style(style);
+        buf[(right, y)].set_symbol("│").set_style(style);
+    }
+
+    for (y, left_corner, right_corner) in [(top, "╭", "╮"), (bottom, "╰", "╯")] {
+        if y == rect.y || !visible(y) {
+            continue;
+        }
+        buf[(rect.x, y)].set_symbol(left_corner).set_style(style);
+        buf[(right, y)].set_symbol(right_corner).set_style(style);
+        for x in rect.x + 1..right {
+            buf[(x, y)].set_symbol("─").set_style(style);
+        }
+    }
+}
+
+/// The pane the user is typing into, as a sidebar agent-row key.
+fn focused_agent_row(app: &AppState) -> Option<(usize, usize, crate::layout::PaneId)> {
+    let ws_idx = app.active?;
+    let ws = app.workspaces.get(ws_idx)?;
+    Some((ws_idx, ws.active_tab, ws.focused_pane_id()?))
 }
 
 /// Marks where a dragged agent row would land. Space cards have no equivalent
@@ -919,11 +979,9 @@ fn render_workspace_card(
         return;
     }
 
-    let border_color = if selected {
-        app.palette.accent
-    } else {
-        app.palette.surface_dim
-    };
+    // Cards keep a dim border whatever their state: the accent outline belongs
+    // to the focused agent row, so a selected space reads through its name.
+    let border_color = app.palette.surface_dim;
     let name_color = if selected {
         app.palette.accent
     } else {
@@ -1042,11 +1100,7 @@ fn render_agent_rows(
     }
 
     let entries = all_workspace_agent_entries(app, terminal_runtimes);
-    let focused_agent = app.active.and_then(|ws_idx| {
-        let ws = app.workspaces.get(ws_idx)?;
-        ws.focused_pane_id()
-            .map(|pane_id| (ws_idx, ws.active_tab, pane_id))
-    });
+    let focused_agent = focused_agent_row(app);
 
     for row in agent_rows {
         let Some(entry) = entries.iter().find(|entry| {
@@ -1187,6 +1241,74 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::{detect::Agent, workspace::Workspace};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    /// One space holding a single agent pane, rendered into `area`.
+    fn render_sidebar_list(area: Rect) -> (crate::app::state::AppState, Terminal<TestBackend>) {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("herdr");
+        let pane = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        app.active = Some(0);
+        app.selected = 0;
+
+        let runtimes = TerminalRuntimeRegistry::new();
+        let backend = TestBackend::new(area.x + area.width, area.y + area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_workspace_rows(&app, &runtimes, frame, area))
+            .unwrap();
+        (app, terminal)
+    }
+
+    #[test]
+    fn focused_agent_row_carries_the_accent_outline() {
+        let area = Rect::new(0, 0, 28, 24);
+        let (app, terminal) = render_sidebar_list(area);
+        let rows = compute_workspace_list_areas(&app, area).1;
+        let rect = rows
+            .first()
+            .expect("the space's agent should have a row")
+            .rect;
+        let right = rect.x + rect.width - 1;
+        let buf = terminal.backend().buffer();
+
+        assert_eq!(buf[(rect.x, rect.y - 1)].symbol(), "╭");
+        assert_eq!(buf[(right, rect.y - 1)].symbol(), "╮");
+        assert_eq!(buf[(rect.x, rect.y + rect.height)].symbol(), "╰");
+        assert_eq!(buf[(right, rect.y + rect.height)].symbol(), "╯");
+        assert_eq!(buf[(rect.x, rect.y)].symbol(), "│");
+        assert_eq!(
+            buf[(rect.x, rect.y)].style().fg,
+            Some(app.palette.accent),
+            "the outline is the selection cue, so it must be accent-colored"
+        );
+    }
+
+    #[test]
+    fn selected_space_card_keeps_a_dim_border() {
+        let area = Rect::new(0, 0, 28, 24);
+        let (app, terminal) = render_sidebar_list(area);
+        let card = compute_workspace_card_areas(&app, area)[0].rect;
+        let buf = terminal.backend().buffer();
+
+        assert_eq!(buf[(card.x, card.y)].symbol(), "╭");
+        assert_eq!(
+            buf[(card.x, card.y)].style().fg,
+            Some(app.palette.surface_dim),
+            "the accent outline belongs to the focused agent, not its space"
+        );
+        assert_eq!(
+            buf[(card.x + 1, card.y + 1)].style().fg,
+            Some(app.palette.accent),
+            "the selected space still reads through its name"
+        );
+    }
 
     #[test]
     fn expanded_sidebar_toggle_sits_in_upper_left_corner() {

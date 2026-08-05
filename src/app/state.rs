@@ -1166,6 +1166,12 @@ pub enum ContextMenuKind {
         ws_idx: usize,
         tab_idx: usize,
     },
+    /// A sidebar agent row. The row is a shortcut to a pane that already lives
+    /// in some tab's layout, so this menu only carries the actions that make
+    /// sense from the list itself.
+    Agent {
+        pane_id: PaneId,
+    },
     Pane {
         pane_id: PaneId,
         has_manual_label: bool,
@@ -1219,6 +1225,7 @@ impl ContextMenuState {
                 "Collapse",
             ],
             ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
+            ContextMenuKind::Agent { .. } => &["Rename pane"],
             ContextMenuKind::Pane {
                 has_manual_label: true,
                 dimmed,

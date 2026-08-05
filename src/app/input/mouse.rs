@@ -1044,6 +1044,20 @@ impl AppState {
                         list: MenuListState::new(0),
                     });
                     self.mode = Mode::ContextMenu;
+                    return None;
+                }
+
+                if let Some((ws_idx, _tab_idx, pane_id)) = self.agent_detail_target_at(mouse.row) {
+                    // Focus the row's pane first, the way right-clicking the
+                    // pane itself does, so the menu acts on what was clicked.
+                    self.focus_pane_in_workspace(ws_idx, pane_id);
+                    self.context_menu = Some(ContextMenuState {
+                        kind: ContextMenuKind::Agent { pane_id },
+                        x: mouse.column,
+                        y: mouse.row,
+                        list: MenuListState::new(0),
+                    });
+                    self.mode = Mode::ContextMenu;
                 }
             }
 

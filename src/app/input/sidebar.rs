@@ -457,7 +457,7 @@ mod tests {
 
     use super::super::{app_for_mouse_test, capture_snapshot, mouse, unique_temp_path};
     use crate::{
-        app::state::{AgentPanelScope, DragTarget, Mode},
+        app::state::{AgentPanelScope, ContextMenuKind, DragTarget, Mode},
         detect::Agent,
         workspace::Workspace,
     };
@@ -1333,6 +1333,42 @@ mod tests {
             tab_numbers
         );
         assert_eq!(app.state.workspaces[0].natural_pane_order(), natural);
+    }
+
+    #[test]
+    fn right_clicking_an_agent_row_renames_that_row_s_pane() {
+        let mut app = app_with_agent_rows(&[("one", Agent::Pi), ("two", Agent::Claude)]);
+        let rows = app.state.view.agent_row_areas.clone();
+        // The second row lives in another tab, so the menu has to carry the
+        // pane rather than lean on whatever was focused before.
+        let target = &rows[1];
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            target.rect.x + 2,
+            target.rect.y,
+        ));
+
+        assert_eq!(app.state.mode, Mode::ContextMenu);
+        let menu = app.state.context_menu.as_ref().expect("agent context menu");
+        assert_eq!(
+            menu.kind,
+            ContextMenuKind::Agent {
+                pane_id: target.pane_id
+            }
+        );
+        assert_eq!(menu.items(), ["Rename pane"]);
+
+        let menu_rect = app.state.context_menu_rect().expect("menu rect");
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            menu_rect.x + 2,
+            menu_rect.y + 1,
+        ));
+
+        assert_eq!(app.state.mode, Mode::RenamePane);
+        assert_eq!(app.state.rename_pane_target, Some(target.pane_id));
+        assert!(app.state.context_menu.is_none());
     }
 
     #[test]
