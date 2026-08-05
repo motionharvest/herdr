@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+- Agent rows in the sidebar can be dragged to reorder them within their space. The order is display only — tabs and the pane layout are untouched — and it survives session restore.
+- A space's agent list can be collapsed in the sidebar, so spaces you are not working in fold away to a single row.
+- Panes now carry a stable human name (Ada, Milo, Nadia, …) derived from their terminal id, so a sidebar full of agents is scannable instead of reading "Pane 1" over and over. The same pane keeps its name across renders and restores.
+- Agent rows show the model and reasoning effort the session is actually running, read from the agent's own session log (Claude Code transcripts, Codex rollouts). This stays correct across mid-session model switches.
+
+### Changed
+- Redesigned the sidebar's agent rows around the new names, model info, and status.
+
 ## [0.7.0] - 2026-08-02
 
 ### Fixed
