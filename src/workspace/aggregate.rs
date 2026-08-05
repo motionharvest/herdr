@@ -115,7 +115,8 @@ impl Workspace {
 
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
         let multi_tab = self.tabs.len() > 1;
-        self.tabs
+        let mut details = self
+            .tabs
             .iter()
             .flat_map(|tab| tab.pane_details(terminals))
             .map(|mut detail| {
@@ -124,7 +125,19 @@ impl Workspace {
                 }
                 detail
             })
-            .collect()
+            .collect::<Vec<_>>();
+        // The sidebar's agent rows are drag-reorderable, so honor the space's
+        // custom order. Panes it doesn't mention keep their natural position.
+        if !self.agent_order.is_empty() {
+            let rank: HashMap<PaneId, usize> = self
+                .ordered_pane_ids()
+                .into_iter()
+                .enumerate()
+                .map(|(idx, id)| (id, idx))
+                .collect();
+            details.sort_by_key(|detail| rank.get(&detail.pane_id).copied().unwrap_or(usize::MAX));
+        }
+        details
     }
 }
 
@@ -263,5 +276,42 @@ mod tests {
                 ("review·claude".into(), "claude".into(), Some(Agent::Claude)),
             ]
         );
+    }
+
+    #[test]
+    fn pane_details_follows_the_custom_agent_order() {
+        let mut ws = Workspace::test_new("test");
+        let first = ws.tabs[0].root_pane;
+        let second_tab = ws.test_add_tab(Some("review"));
+        let second = ws.tabs[second_tab].root_pane;
+        let mut terminals = HashMap::new();
+        for pane in [first, second] {
+            let mut terminal = terminal_for_pane(&ws, pane);
+            terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+            terminals.insert(terminal.id.clone(), terminal);
+        }
+
+        assert!(ws.move_agent(second, 0));
+
+        let ordered: Vec<_> = ws
+            .pane_details(&terminals)
+            .into_iter()
+            .map(|detail| detail.pane_id)
+            .collect();
+        assert_eq!(ordered, vec![second, first]);
+    }
+
+    #[test]
+    fn a_pane_opened_after_a_reorder_lands_at_the_end_of_the_list() {
+        let mut ws = Workspace::test_new("test");
+        let first = ws.tabs[0].root_pane;
+        let second_tab = ws.test_add_tab(Some("review"));
+        let second = ws.tabs[second_tab].root_pane;
+        assert!(ws.move_agent(second, 0));
+
+        let third_tab = ws.test_add_tab(Some("ops"));
+        let third = ws.tabs[third_tab].root_pane;
+
+        assert_eq!(ws.ordered_pane_ids(), vec![second, first, third]);
     }
 }

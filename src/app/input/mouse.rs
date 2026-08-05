@@ -5,7 +5,7 @@ use tracing::warn;
 
 use crate::{
     app::state::{
-        AgentPanelScope, AppState, ContextMenuKind, ContextMenuState, DragState, DragTarget,
+        AgentPressState, AppState, ContextMenuKind, ContextMenuState, DragState, DragTarget,
         MenuListState, Mode, PanePressState, RightClickPassthroughGesture, TabPressState,
         ViewLayout, WorkspacePressState,
     },
@@ -23,7 +23,8 @@ use super::{
         modal_action_from_buttons, open_global_menu, open_new_tab_dialog, ModalAction,
     },
     settings::SettingsAction,
-    ScrollbarClickTarget, PANE_DRAG_THRESHOLD, TAB_DRAG_THRESHOLD, WORKSPACE_DRAG_THRESHOLD,
+    ScrollbarClickTarget, AGENT_DRAG_THRESHOLD, PANE_DRAG_THRESHOLD, TAB_DRAG_THRESHOLD,
+    WORKSPACE_DRAG_THRESHOLD,
 };
 
 impl AppState {
@@ -179,6 +180,7 @@ impl AppState {
                 self.selection = None;
                 self.selection_autoscroll = None;
                 self.workspace_press = None;
+                self.agent_press = None;
 
                 if self.mode == Mode::ConfirmClose {
                     let popup = self.confirm_close_rect();
@@ -477,17 +479,6 @@ impl AppState {
                         return None;
                     }
 
-                    // The scope toggle sits on the header row, so it must win
-                    // over the header's collapse click target.
-                    if self.on_agent_panel_scope_toggle(mouse.column, mouse.row) {
-                        self.agent_panel_scope = match self.agent_panel_scope {
-                            AgentPanelScope::CurrentWorkspace => AgentPanelScope::AllWorkspaces,
-                            AgentPanelScope::AllWorkspaces => AgentPanelScope::CurrentWorkspace,
-                        };
-                        self.mark_session_dirty();
-                        return None;
-                    }
-
                     if self.on_spaces_section_header(mouse.column, mouse.row) {
                         self.spaces_collapsed = !self.spaces_collapsed;
                         return None;
@@ -570,6 +561,14 @@ impl AppState {
                     if let Some((ws_idx, _tab_idx, pane_id)) =
                         self.agent_detail_target_at(mouse.row)
                     {
+                        // Hold the press so a drag can reorder the row; a plain
+                        // click still focuses the pane right away.
+                        self.agent_press = Some(AgentPressState {
+                            ws_idx,
+                            pane_id,
+                            start_col: mouse.column,
+                            start_row: mouse.row,
+                        });
                         self.focus_pane_in_workspace(ws_idx, pane_id);
                         self.mode = Mode::Terminal;
                         return None;
@@ -628,8 +627,29 @@ impl AppState {
 
                 let workspace_drop_index = self.workspace_drop_index_at_row(mouse.row);
                 let tab_drop_index = self.tab_drop_index_at(mouse.column, mouse.row);
+                let agent_drop_index = self
+                    .agent_press
+                    .as_ref()
+                    .map(|press| press.ws_idx)
+                    .or_else(|| match self.drag.as_ref().map(|drag| &drag.target) {
+                        Some(DragTarget::AgentReorder { ws_idx, .. }) => Some(*ws_idx),
+                        _ => None,
+                    })
+                    .and_then(|ws_idx| self.agent_drop_index_at_row(ws_idx, mouse.row));
                 if self.drag.is_none() {
-                    if let Some(press) = &self.workspace_press {
+                    if let Some(press) = &self.agent_press {
+                        let delta_col = mouse.column.abs_diff(press.start_col);
+                        let delta_row = mouse.row.abs_diff(press.start_row);
+                        if delta_col.max(delta_row) >= AGENT_DRAG_THRESHOLD {
+                            self.drag = Some(DragState {
+                                target: DragTarget::AgentReorder {
+                                    ws_idx: press.ws_idx,
+                                    source_pane_id: press.pane_id,
+                                    insert_idx: agent_drop_index,
+                                },
+                            });
+                        }
+                    } else if let Some(press) = &self.workspace_press {
                         let delta_col = mouse.column.abs_diff(press.start_col);
                         let delta_row = mouse.row.abs_diff(press.start_row);
                         let can_reorder = self
@@ -702,6 +722,11 @@ impl AppState {
                 }
 
                 if let Some(DragState {
+                    target: DragTarget::AgentReorder { insert_idx, .. },
+                }) = &mut self.drag
+                {
+                    *insert_idx = agent_drop_index;
+                } else if let Some(DragState {
                     target: DragTarget::WorkspaceReorder { insert_idx, .. },
                 }) = &mut self.drag
                 {
@@ -720,6 +745,7 @@ impl AppState {
                     match &drag.target {
                         DragTarget::WorkspaceReorder { .. }
                         | DragTarget::TabReorder { .. }
+                        | DragTarget::AgentReorder { .. }
                         | DragTarget::PaneSwap { .. } => {}
                         DragTarget::WorkspaceListScrollbar { grab_row_offset } => {
                             if let Some(offset_from_bottom) =
@@ -786,6 +812,7 @@ impl AppState {
 
                     self.workspace_press = None;
                     self.tab_press = None;
+                    self.agent_press = None;
                     self.pane_press = None;
                     self.drag = None;
                     self.selection_autoscroll = None;
@@ -804,6 +831,7 @@ impl AppState {
                             self.selection_autoscroll = None;
                             self.workspace_press = None;
                             self.tab_press = None;
+                            self.agent_press = None;
                             self.pane_press = None;
                             self.drag = None;
                             return None;
@@ -814,6 +842,7 @@ impl AppState {
                 let workspace_press = self.workspace_press.take();
                 let tab_press = self.tab_press.take();
                 let pane_press = self.pane_press.take();
+                self.agent_press = None;
                 match self.drag.take() {
                     Some(DragState {
                         target:
@@ -823,6 +852,16 @@ impl AppState {
                             },
                     }) => {
                         self.move_workspace(source_ws_idx, insert_idx);
+                    }
+                    Some(DragState {
+                        target:
+                            DragTarget::AgentReorder {
+                                ws_idx,
+                                source_pane_id,
+                                insert_idx: Some(insert_idx),
+                            },
+                    }) => {
+                        self.move_agent(ws_idx, source_pane_id, insert_idx);
                     }
                     Some(DragState {
                         target:
@@ -871,6 +910,9 @@ impl AppState {
                     None => {
                         if let Some(press) = workspace_press {
                             self.switch_workspace(press.ws_idx);
+                            // Clicking a space card also folds its agent list
+                            // open or closed.
+                            self.toggle_workspace_agents(press.ws_idx);
                             self.mode = Mode::Terminal;
                             return None;
                         }
@@ -954,6 +996,7 @@ impl AppState {
             MouseEventKind::Down(MouseButton::Right) if in_sidebar && !self.sidebar_collapsed => {
                 self.workspace_press = None;
                 self.tab_press = None;
+                self.agent_press = None;
                 if self
                     .workspace_list_scrollbar_target_at(mouse.column, mouse.row)
                     .is_some()
@@ -1515,6 +1558,7 @@ impl AppState {
         self.selection_autoscroll = None;
         self.workspace_press = None;
         self.tab_press = None;
+        self.agent_press = None;
         self.drag = None;
         self.context_menu = None;
         self.right_click_passthrough = Some(RightClickPassthroughGesture {

@@ -118,6 +118,11 @@ pub struct Workspace {
     /// New panes append at the end; closing a pane compacts higher numbers down.
     pub public_pane_numbers: HashMap<PaneId, usize>,
     pub(crate) next_public_pane_number: usize,
+    /// User-chosen order for this space's agent rows in the sidebar. Display
+    /// only — it never touches tab order or the pane layout tree. Panes missing
+    /// from this list fall back to their natural (tab, layout) position, and an
+    /// empty list means "no custom order".
+    pub agent_order: Vec<PaneId>,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
     #[cfg(test)]
@@ -246,6 +251,7 @@ impl Workspace {
                 worktree_space: None,
                 public_pane_numbers,
                 next_public_pane_number: 2,
+                agent_order: Vec::new(),
                 tabs: vec![tab],
                 active_tab: 0,
                 #[cfg(test)]
@@ -639,6 +645,7 @@ impl Workspace {
             worktree_space: None,
             public_pane_numbers,
             next_public_pane_number: 2,
+            agent_order: Vec::new(),
             tabs: vec![tab],
             active_tab: 0,
             #[cfg(test)]
@@ -795,8 +802,65 @@ impl Workspace {
         self.next_public_pane_number += 1;
     }
 
+    /// Panes in tab order, each tab's panes in layout-tree order. This is the
+    /// order the sidebar uses when the space has no custom agent order.
+    pub fn natural_pane_order(&self) -> Vec<PaneId> {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.layout.pane_ids())
+            .collect()
+    }
+
+    /// Panes in sidebar order: the custom order first (stale entries dropped),
+    /// then any pane the custom order doesn't mention, in natural order.
+    pub fn ordered_pane_ids(&self) -> Vec<PaneId> {
+        let natural = self.natural_pane_order();
+        if self.agent_order.is_empty() {
+            return natural;
+        }
+        let mut ordered: Vec<PaneId> = self
+            .agent_order
+            .iter()
+            .copied()
+            .filter(|id| natural.contains(id))
+            .collect();
+        let missing: Vec<PaneId> = natural
+            .iter()
+            .copied()
+            .filter(|id| !ordered.contains(id))
+            .collect();
+        ordered.extend(missing);
+        ordered
+    }
+
+    /// Move an agent row to `insert_idx`, an insert-before position in the
+    /// current sidebar order. Returns whether the order actually changed.
+    pub fn move_agent(&mut self, source: PaneId, insert_idx: usize) -> bool {
+        let mut ordered = self.ordered_pane_ids();
+        let Some(source_idx) = ordered.iter().position(|id| *id == source) else {
+            return false;
+        };
+        if insert_idx > ordered.len() {
+            return false;
+        }
+        let target_idx = if source_idx < insert_idx {
+            insert_idx.saturating_sub(1)
+        } else {
+            insert_idx
+        }
+        .min(ordered.len().saturating_sub(1));
+        if target_idx == source_idx {
+            return false;
+        }
+        ordered.remove(source_idx);
+        ordered.insert(target_idx, source);
+        self.agent_order = ordered;
+        true
+    }
+
     fn unregister_pane(&mut self, pane_id: PaneId) {
         self.pane_git_statuses.remove(&pane_id);
+        self.agent_order.retain(|id| *id != pane_id);
         if let Some(removed_number) = self.public_pane_numbers.remove(&pane_id) {
             for number in self.public_pane_numbers.values_mut() {
                 if *number > removed_number {
@@ -859,6 +923,7 @@ impl Workspace {
             worktree_space: None,
             public_pane_numbers,
             next_public_pane_number: 2,
+            agent_order: Vec::new(),
             tabs: vec![tab],
             active_tab: 0,
             test_runtimes: HashMap::new(),

@@ -24,6 +24,10 @@ enum WheelRouting {
 const WORKSPACE_DRAG_THRESHOLD: u16 = 1;
 const TAB_DRAG_THRESHOLD: u16 = 1;
 const PANE_DRAG_THRESHOLD: u16 = 1;
+/// Agent rows are three lines tall, so a reorder drag has to clear the row it
+/// started on before it counts — otherwise a sloppy click would reshuffle the
+/// list.
+const AGENT_DRAG_THRESHOLD: u16 = 3;
 
 mod copy_mode;
 mod modal;

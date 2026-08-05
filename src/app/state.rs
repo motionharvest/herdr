@@ -1082,6 +1082,13 @@ pub(crate) enum DragTarget {
         source_tab_idx: usize,
         insert_idx: Option<usize>,
     },
+    /// Reordering an agent row inside its space's sidebar list. Display order
+    /// only — the pane layout is untouched.
+    AgentReorder {
+        ws_idx: usize,
+        source_pane_id: PaneId,
+        insert_idx: Option<usize>,
+    },
     WorkspaceListScrollbar {
         grab_row_offset: u16,
     },
@@ -1131,6 +1138,14 @@ pub(crate) struct TabPressState {
 }
 
 pub(crate) struct PanePressState {
+    pub pane_id: PaneId,
+    pub start_col: u16,
+    pub start_row: u16,
+}
+
+/// Left button held on a sidebar agent row, waiting to become a reorder drag.
+pub(crate) struct AgentPressState {
+    pub ws_idx: usize,
     pub pane_id: PaneId,
     pub start_col: u16,
     pub start_row: u16,
@@ -1368,6 +1383,9 @@ pub struct AppState {
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    /// Ids of spaces whose agent entries are folded away in the sidebar.
+    /// Spaces default to expanded, so only collapsed ones are tracked.
+    pub collapsed_agent_space_ids: std::collections::HashSet<String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1386,6 +1404,7 @@ pub struct AppState {
     pub(crate) workspace_press: Option<WorkspacePressState>,
     pub(crate) tab_press: Option<TabPressState>,
     pub(crate) pane_press: Option<PanePressState>,
+    pub(crate) agent_press: Option<AgentPressState>,
     pub selection: Option<Selection>,
     pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub context_menu: Option<ContextMenuState>,
@@ -1708,6 +1727,7 @@ impl AppState {
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_agent_space_ids: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -1743,6 +1763,7 @@ impl AppState {
             workspace_press: None,
             tab_press: None,
             pane_press: None,
+            agent_press: None,
             selection: None,
             selection_autoscroll: None,
             context_menu: None,

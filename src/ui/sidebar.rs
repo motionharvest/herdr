@@ -67,44 +67,43 @@ fn agent_panel_current_workspace_idx(app: &AppState) -> Option<usize> {
     }
 }
 
-fn agent_panel_toggle_label(scope: AgentPanelScope) -> &'static str {
-    match scope {
-        AgentPanelScope::CurrentWorkspace => "current",
-        AgentPanelScope::AllWorkspaces => "all",
-    }
-}
-
-/// Right-aligned `agents all|current` scope toggle on the sidebar header row.
-pub(crate) fn agent_scope_toggle_rect(app: &AppState, area: Rect) -> Rect {
-    if area.width <= 2 || area.height == 0 {
-        return Rect::default();
-    }
-
-    let label_len = "agents ".len() + agent_panel_toggle_label(app.agent_panel_scope).len();
-    let content_width = area.width.saturating_sub(1);
-    let width = (label_len as u16).min(content_width);
-    Rect::new(
-        area.x + content_width.saturating_sub(width),
-        area.y,
-        width,
-        1,
-    )
-}
-
 pub(crate) fn agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
-    agent_panel_entries_with_runtimes(app, None)
+    agent_panel_entries_with_runtimes(app, None, scoped_workspace_indices(app))
 }
 
 pub(crate) fn agent_panel_entries_from(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> Vec<AgentPanelEntry> {
-    agent_panel_entries_with_runtimes(app, Some(terminal_runtimes))
+    agent_panel_entries_with_runtimes(app, Some(terminal_runtimes), scoped_workspace_indices(app))
+}
+
+/// Sidebar entries cover every space: the list itself decides which spaces are
+/// expanded, so the scope setting must not hide their agents.
+fn all_workspace_agent_entries(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+) -> Vec<AgentPanelEntry> {
+    agent_panel_entries_with_runtimes(
+        app,
+        Some(terminal_runtimes),
+        (0..app.workspaces.len()).collect(),
+    )
+}
+
+fn scoped_workspace_indices(app: &AppState) -> Vec<usize> {
+    match app.agent_panel_scope {
+        AgentPanelScope::CurrentWorkspace => {
+            agent_panel_current_workspace_idx(app).into_iter().collect()
+        }
+        AgentPanelScope::AllWorkspaces => (0..app.workspaces.len()).collect(),
+    }
 }
 
 fn agent_panel_entries_with_runtimes(
     app: &AppState,
     terminal_runtimes: Option<&TerminalRuntimeRegistry>,
+    ws_indices: Vec<usize>,
 ) -> Vec<AgentPanelEntry> {
     let empty_runtimes;
     let terminal_runtimes = match terminal_runtimes {
@@ -116,12 +115,6 @@ fn agent_panel_entries_with_runtimes(
     };
 
     let names = crate::pane_names::assigned_names(&app.terminals);
-    let ws_indices: Vec<usize> = match app.agent_panel_scope {
-        AgentPanelScope::CurrentWorkspace => {
-            agent_panel_current_workspace_idx(app).into_iter().collect()
-        }
-        AgentPanelScope::AllWorkspaces => (0..app.workspaces.len()).collect(),
-    };
 
     let mut entries = Vec::new();
     for ws_idx in ws_indices {
@@ -245,13 +238,12 @@ fn entry_row_height(
     }
 }
 
-/// Whether a workspace's agents are listed under its card given the scope
-/// toggle: `all` lists every space's agents, `current` only the active one's.
-fn workspace_agents_visible(app: &AppState, ws_idx: usize) -> bool {
-    match app.agent_panel_scope {
-        AgentPanelScope::AllWorkspaces => true,
-        AgentPanelScope::CurrentWorkspace => agent_panel_current_workspace_idx(app) == Some(ws_idx),
-    }
+/// Whether a space's agents are listed under its card. Spaces start expanded
+/// and clicking the card folds them away.
+pub(crate) fn workspace_agents_expanded(app: &AppState, ws_idx: usize) -> bool {
+    app.workspaces
+        .get(ws_idx)
+        .is_some_and(|ws| !app.collapsed_agent_space_ids.contains(&ws.id))
 }
 
 fn push_workspace_with_agents(
@@ -261,7 +253,7 @@ fn push_workspace_with_agents(
     entries: &mut Vec<WorkspaceListEntry>,
 ) {
     entries.push(WorkspaceListEntry::Workspace { ws_idx, indented });
-    if !workspace_agents_visible(app, ws_idx) {
+    if !workspace_agents_expanded(app, ws_idx) {
         return;
     }
     let Some(ws) = app.workspaces.get(ws_idx) else {
@@ -466,22 +458,24 @@ pub(crate) fn workspace_list_scrollbar_rect(app: &AppState, area: Rect) -> Optio
     ))
 }
 
-pub(crate) fn compute_workspace_list_areas(
-    app: &AppState,
-    area: Rect,
-) -> (
-    Vec<crate::app::state::WorkspaceCardArea>,
-    Vec<crate::app::state::AgentRowArea>,
-) {
+#[derive(Default)]
+pub(crate) struct WorkspaceListLayout {
+    pub cards: Vec<crate::app::state::WorkspaceCardArea>,
+    pub agent_rows: Vec<crate::app::state::AgentRowArea>,
+    /// `+ new` button, placed right below the last entry in the list.
+    pub new_button: Rect,
+}
+
+fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
     let ws_area = workspace_list_rect(app, area);
     if ws_area == Rect::default() {
-        return (Vec::new(), Vec::new());
+        return WorkspaceListLayout::default();
     }
 
     let metrics = workspace_list_scroll_metrics(app, ws_area);
     let body = workspace_list_body_rect(app, ws_area, should_show_scrollbar(metrics));
     if body.width == 0 || body.height == 0 {
-        return (Vec::new(), Vec::new());
+        return WorkspaceListLayout::default();
     }
 
     // A stale scroll offset from the expanded list must not hide the lone
@@ -533,7 +527,44 @@ pub(crate) fn compute_workspace_list_areas(
         row_y = row_y.saturating_add(row_height);
     }
 
-    (cards, agent_rows)
+    WorkspaceListLayout {
+        cards,
+        agent_rows,
+        new_button: new_workspace_button_rect_below(app, ws_area, row_y),
+    }
+}
+
+/// The `+ new` button hugs the bottom of the list rather than the panel: it
+/// follows the last entry down and stops once it reaches the sidebar's floor.
+fn new_workspace_button_rect_below(app: &AppState, ws_area: Rect, list_bottom: u16) -> Rect {
+    if spaces_section_collapsed(app) || ws_area.height < WORKSPACE_SECTION_FOOTER_ROWS {
+        return Rect::default();
+    }
+    // A gap row keeps the button off the last entry and leaves room for the
+    // reorder drop indicator.
+    let floor = ws_area.y + ws_area.height.saturating_sub(WORKSPACE_SECTION_FOOTER_ROWS);
+    Rect::new(
+        ws_area.x,
+        list_bottom.saturating_add(1).min(floor),
+        ws_area.width,
+        WORKSPACE_SECTION_FOOTER_ROWS,
+    )
+}
+
+pub(crate) fn compute_workspace_list_areas(
+    app: &AppState,
+    area: Rect,
+) -> (
+    Vec<crate::app::state::WorkspaceCardArea>,
+    Vec<crate::app::state::AgentRowArea>,
+) {
+    let layout = workspace_list_layout(app, area);
+    (layout.cards, layout.agent_rows)
+}
+
+/// Hit area and draw target for the sidebar's `+ new` button.
+pub(crate) fn new_workspace_button_rect(app: &AppState, area: Rect) -> Rect {
+    workspace_list_layout(app, area).new_button
 }
 
 pub(crate) fn compute_workspace_card_areas(
@@ -596,6 +627,26 @@ pub(crate) fn workspace_drop_indicator_row(
     }
 
     None
+}
+
+/// Screen row for an agent reorder drop marker. `agent_rows` must already be
+/// narrowed to the dragged space, and `ordered` is that space's current agent
+/// order. Returns `None` when the slot is scrolled out of view.
+pub(crate) fn agent_drop_indicator_row(
+    agent_rows: &[crate::app::state::AgentRowArea],
+    ordered: &[crate::layout::PaneId],
+    insert_idx: usize,
+) -> Option<u16> {
+    let last = agent_rows.last()?;
+    // Every agent entry reserves a gap row above its content, which is where
+    // the marker goes; dropping at the end uses the row just past the block.
+    match ordered.get(insert_idx) {
+        Some(pane_id) => agent_rows
+            .iter()
+            .find(|area| area.pane_id == *pane_id)
+            .and_then(|area| area.rect.y.checked_sub(1)),
+        None => Some(last.rect.y.saturating_add(last.rect.height)),
+    }
 }
 
 pub(crate) fn collapsed_sidebar_toggle_rect(area: Rect) -> Rect {
@@ -669,17 +720,6 @@ pub(crate) fn render_sidebar(
             ),
         ]),
     );
-    render_sidebar_line(
-        frame,
-        agent_scope_toggle_rect(app, area),
-        Line::from(vec![
-            Span::styled("agents ", Style::default().fg(app.palette.overlay0)),
-            Span::styled(
-                agent_panel_toggle_label(app.agent_panel_scope),
-                Style::default().fg(app.palette.accent),
-            ),
-        ]),
-    );
 
     render_workspace_rows(app, terminal_runtimes, frame, area);
 }
@@ -708,8 +748,9 @@ fn render_workspace_rows(
     frame: &mut Frame,
     area: Rect,
 ) {
+    let layout = workspace_list_layout(app, area);
     let (cards, agent_rows) = if app.view.workspace_card_areas.is_empty() {
-        compute_workspace_list_areas(app, area)
+        (layout.cards, layout.agent_rows)
     } else {
         (
             app.view.workspace_card_areas.clone(),
@@ -718,6 +759,7 @@ fn render_workspace_rows(
     };
 
     render_agent_rows(app, terminal_runtimes, frame, &agent_rows);
+    render_agent_drop_indicator(app, frame, &agent_rows);
 
     for card in cards {
         let Some(ws) = app.workspaces.get(card.ws_idx) else {
@@ -732,18 +774,50 @@ fn render_workspace_rows(
         render_workspace_card(frame, card.rect, &name, &branch, selected, app);
     }
 
-    let ws_area = workspace_list_rect(app, area);
-    if !spaces_section_collapsed(app)
-        && ws_area != Rect::default()
-        && ws_area.height >= WORKSPACE_SECTION_FOOTER_ROWS
-    {
-        let footer = Rect::new(
-            ws_area.x,
-            ws_area.y + ws_area.height.saturating_sub(WORKSPACE_SECTION_FOOTER_ROWS),
-            ws_area.width,
-            WORKSPACE_SECTION_FOOTER_ROWS,
-        );
-        render_new_workspace_button(frame, footer, app);
+    if layout.new_button != Rect::default() {
+        render_new_workspace_button(frame, layout.new_button, app);
+    }
+}
+
+/// Marks where a dragged agent row would land. Space cards have no equivalent
+/// marker, but agent rows are three lines tall and identical in shape, so the
+/// drop slot is otherwise impossible to read.
+fn render_agent_drop_indicator(
+    app: &AppState,
+    frame: &mut Frame,
+    agent_rows: &[crate::app::state::AgentRowArea],
+) {
+    let Some(crate::app::state::DragTarget::AgentReorder {
+        ws_idx,
+        insert_idx: Some(insert_idx),
+        ..
+    }) = app.drag.as_ref().map(|drag| &drag.target)
+    else {
+        return;
+    };
+    let Some(ws) = app.workspaces.get(*ws_idx) else {
+        return;
+    };
+    let rows = agent_rows
+        .iter()
+        .filter(|area| area.ws_idx == *ws_idx)
+        .cloned()
+        .collect::<Vec<_>>();
+    let Some(row) = agent_drop_indicator_row(&rows, &ws.ordered_pane_ids(), *insert_idx) else {
+        return;
+    };
+    let Some(rect) = rows.first().map(|area| area.rect) else {
+        return;
+    };
+    let list = workspace_list_rect(app, app.view.sidebar_rect);
+    if list.height == 0 || row < list.y || row >= list.y + list.height {
+        return;
+    }
+
+    let style = Style::default().fg(app.palette.accent);
+    let buf = frame.buffer_mut();
+    for x in rect.x..rect.x + rect.width {
+        buf[(x, row)].set_symbol("─").set_style(style);
     }
 }
 
@@ -967,7 +1041,7 @@ fn render_agent_rows(
         return;
     }
 
-    let entries = agent_panel_entries_from(app, terminal_runtimes);
+    let entries = all_workspace_agent_entries(app, terminal_runtimes);
     let focused_agent = app.active.and_then(|ws_idx| {
         let ws = app.workspaces.get(ws_idx)?;
         ws.focused_pane_id()

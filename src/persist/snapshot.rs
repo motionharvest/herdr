@@ -60,6 +60,13 @@ pub struct WorkspaceSnapshot {
     pub tabs: Vec<TabSnapshot>,
     #[serde(default)]
     pub active_tab: usize,
+    /// Custom sidebar order for this space's agent rows, stored as positions in
+    /// the natural (tab, layout) pane order. Pane ids are reallocated on
+    /// restore, so positions are what survives. Empty means "no custom order",
+    /// and anything that isn't a permutation of the restored pane positions is
+    /// discarded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_order: Vec<usize>,
 }
 
 #[derive(Deserialize)]
@@ -152,6 +159,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             worktree_space: None,
             tabs: vec![tab],
             active_tab: 0,
+            agent_order: Vec::new(),
         }
     }
 }
@@ -290,7 +298,26 @@ fn capture_workspace(
             .map(|tab| capture_tab(tab, terminals, terminal_runtimes))
             .collect(),
         active_tab: ws.active_tab,
+        agent_order: capture_agent_order(ws),
     }
+}
+
+/// Translate the space's custom agent order into natural-order positions.
+/// Returns empty when the space has no custom order.
+fn capture_agent_order(ws: &Workspace) -> Vec<usize> {
+    if ws.agent_order.is_empty() {
+        return Vec::new();
+    }
+    let natural = ws.natural_pane_order();
+    let order = ws.ordered_pane_ids();
+    if order.len() != natural.len() {
+        return Vec::new();
+    }
+    order
+        .iter()
+        .map(|id| natural.iter().position(|natural_id| natural_id == id))
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 fn capture_tab(
@@ -608,6 +635,7 @@ mod tests {
                 custom_name: Some("pi-mono".to_string()),
                 identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
                 worktree_space: None,
+                agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     custom_name: Some("api".to_string()),
                     layout: LayoutSnapshot::Split {
@@ -1142,6 +1170,7 @@ mod tests {
                 custom_name: Some("fallback test".to_string()),
                 identity_cwd: PathBuf::from("/tmp"),
                 worktree_space: None,
+                agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     custom_name: None,
                     layout: LayoutSnapshot::Split {

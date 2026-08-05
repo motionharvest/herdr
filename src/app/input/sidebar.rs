@@ -4,8 +4,6 @@ use crate::app::state::{AppState, Mode, ViewLayout};
 
 use super::ScrollbarClickTarget;
 
-const SIDEBAR_FOOTER_ROWS: u16 = 3;
-
 impl AppState {
     pub(super) fn workspace_list_rect(&self) -> Rect {
         let sidebar = self.view.sidebar_rect;
@@ -94,17 +92,13 @@ impl AppState {
         );
     }
 
+    /// The `+ new` button, which trails the last list entry instead of sitting
+    /// at a fixed offset from the sidebar's bottom.
     pub(crate) fn sidebar_footer_rect(&self) -> Rect {
-        if crate::ui::spaces_section_collapsed(self) {
+        if self.sidebar_collapsed || crate::ui::spaces_section_collapsed(self) {
             return Rect::default();
         }
-        let ws_area = self.workspace_list_rect();
-        if ws_area == Rect::default() {
-            return Rect::default();
-        }
-        let height = SIDEBAR_FOOTER_ROWS.min(ws_area.height.max(1));
-        let y = ws_area.y + ws_area.height.saturating_sub(height);
-        Rect::new(ws_area.x, y, ws_area.width, height)
+        crate::ui::new_workspace_button_rect(self, self.view.sidebar_rect)
     }
 
     pub(crate) fn sidebar_new_button_rect(&self) -> Rect {
@@ -304,7 +298,12 @@ impl AppState {
     pub(super) fn workspace_drop_index_at_row(&self, row: u16) -> Option<usize> {
         let area = self.workspace_list_rect();
         let footer = self.sidebar_footer_rect();
-        if area == Rect::default() || row < area.y || row >= footer.y {
+        if area == Rect::default() || row < area.y || row >= area.y + area.height {
+            return None;
+        }
+        // The `+ new` button floats up with the list, so only its own rows are
+        // off limits; empty space below it still targets the bottom slot.
+        if footer != Rect::default() && row >= footer.y && row < footer.y + footer.height {
             return None;
         }
 
@@ -355,17 +354,78 @@ impl AppState {
         best.map(|(insert_idx, _)| insert_idx)
     }
 
-    pub(super) fn on_agent_panel_scope_toggle(&self, col: u16, row: u16) -> bool {
-        if self.sidebar_collapsed {
-            return false;
+    /// Fold a space's agent entries away, or bring them back. Clicking the
+    /// space card drives this.
+    pub(crate) fn toggle_workspace_agents(&mut self, ws_idx: usize) {
+        let Some(id) = self.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
+            return;
+        };
+        if crate::ui::workspace_agents_expanded(self, ws_idx) {
+            self.collapsed_agent_space_ids.insert(id);
+        } else {
+            self.collapsed_agent_space_ids.remove(&id);
+        }
+        self.workspace_scroll = crate::ui::normalized_workspace_scroll(
+            self,
+            self.view.sidebar_rect,
+            self.workspace_scroll,
+        );
+    }
+
+    /// Agent rows currently drawn for `ws_idx`, top to bottom.
+    fn agent_rows_for_workspace(&self, ws_idx: usize) -> Vec<crate::app::state::AgentRowArea> {
+        let agent_rows = if self.view.workspace_card_areas.is_empty() {
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).1
+        } else {
+            self.view.agent_row_areas.clone()
+        };
+        agent_rows
+            .into_iter()
+            .filter(|area| area.ws_idx == ws_idx)
+            .collect()
+    }
+
+    /// Where a dragged agent row would land in its space's list: an
+    /// insert-before position in the space's current agent order. `None` while
+    /// the cursor is outside that space's rows.
+    pub(super) fn agent_drop_index_at_row(&self, ws_idx: usize, row: u16) -> Option<usize> {
+        let rows = self.agent_rows_for_workspace(ws_idx);
+        let first = rows.first()?;
+        let last = rows.last()?;
+        // Dragging past either end of the space's block pins to that end
+        // instead of losing the drop.
+        if row < first.rect.y {
+            return self.agent_order_position(ws_idx, first.pane_id);
+        }
+        if row >= last.rect.y + last.rect.height {
+            return Some(self.agent_order_position(ws_idx, last.pane_id)? + 1);
         }
 
-        let rect = crate::ui::agent_scope_toggle_rect(self, self.view.sidebar_rect);
-        rect.width > 0
-            && col >= rect.x
-            && col < rect.x + rect.width
-            && row >= rect.y
-            && row < rect.y + rect.height
+        match rows
+            .iter()
+            .find(|area| row >= area.rect.y && row < area.rect.y + area.rect.height)
+        {
+            // Top half of a row drops above it, bottom half below.
+            Some(hovered) => {
+                let position = self.agent_order_position(ws_idx, hovered.pane_id)?;
+                let past_midpoint = row >= hovered.rect.y + hovered.rect.height / 2;
+                Some(position + usize::from(past_midpoint))
+            }
+            // A gap row belongs to the entry below it, so it is that entry's
+            // insert-above slot.
+            None => rows
+                .iter()
+                .find(|area| area.rect.y > row)
+                .and_then(|area| self.agent_order_position(ws_idx, area.pane_id)),
+        }
+    }
+
+    fn agent_order_position(&self, ws_idx: usize, pane_id: crate::layout::PaneId) -> Option<usize> {
+        self.workspaces
+            .get(ws_idx)?
+            .ordered_pane_ids()
+            .iter()
+            .position(|id| *id == pane_id)
     }
 
     pub(super) fn agent_detail_target_at(
@@ -621,53 +681,80 @@ mod tests {
     }
 
     #[test]
-    fn clicking_agent_scope_toggle_switches_scope() {
+    fn clicking_space_card_toggles_its_agent_entries() {
         let mut app = app_for_mouse_test();
-        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.state.ensure_test_terminals();
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
-        app.state.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
-        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 20);
-        app.state.view.workspace_card_areas =
-            crate::ui::compute_workspace_card_areas(&app.state, app.state.view.sidebar_rect);
-
-        let header = crate::ui::agent_scope_toggle_rect(&app.state, app.state.view.sidebar_rect);
-        assert_ne!(header, Rect::default());
-        assert_eq!(header.y, app.state.view.sidebar_rect.y);
-
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            header.x + 2,
-            header.y,
-        ));
-
-        assert_eq!(app.state.agent_panel_scope, AgentPanelScope::AllWorkspaces);
-        assert!(!app.state.spaces_collapsed);
-    }
-
-    #[test]
-    fn clicking_agent_scope_toggle_works_with_many_workspaces() {
-        let mut app = app_for_mouse_test();
-        app.state.workspaces = (0..6)
-            .map(|idx| Workspace::test_new(&format!("workspace-{idx}")))
-            .collect();
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-        app.state.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 24);
         app.state.view.workspace_card_areas =
             crate::ui::compute_workspace_card_areas(&app.state, app.state.view.sidebar_rect);
+        let card = app.state.view.workspace_card_areas[0].rect;
+        let second_id = app.state.workspaces[1].id.clone();
+        assert!(crate::ui::workspace_agents_expanded(&app.state, 0));
 
-        let header = crate::ui::agent_scope_toggle_rect(&app.state, app.state.view.sidebar_rect);
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            header.x + header.width.saturating_sub(2),
-            header.y,
+            card.x + 2,
+            card.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            card.x + 2,
+            card.y,
         ));
 
-        assert_eq!(app.state.agent_panel_scope, AgentPanelScope::AllWorkspaces);
+        assert_eq!(app.state.active, Some(0));
+        assert!(!crate::ui::workspace_agents_expanded(&app.state, 0));
+        // Only the clicked space folds; siblings keep their agents listed.
+        assert!(!app.state.collapsed_agent_space_ids.contains(&second_id));
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            card.x + 2,
+            card.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            card.x + 2,
+            card.y,
+        ));
+
+        assert!(crate::ui::workspace_agents_expanded(&app.state, 0));
+    }
+
+    #[test]
+    fn collapsed_space_drops_its_agent_rows_from_the_list() {
+        let mut app = app_for_mouse_test();
+        let ws = Workspace::test_new("one");
+        let root_pane = ws.tabs[0].root_pane;
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&root_pane]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .detected_agent = Some(crate::detect::Agent::Claude);
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+        let sidebar = app.state.view.sidebar_rect;
+
+        let expanded = crate::ui::compute_workspace_list_areas(&app.state, sidebar);
+        assert!(!expanded.1.is_empty());
+
+        app.state.toggle_workspace_agents(0);
+
+        let collapsed = crate::ui::compute_workspace_list_areas(&app.state, sidebar);
+        assert_eq!(collapsed.0.len(), 1);
+        assert!(collapsed.1.is_empty());
     }
 
     #[test]
@@ -1143,6 +1230,201 @@ mod tests {
             .map(|ws| ws.custom_name.clone().unwrap())
             .collect();
         assert_eq!(captured_names, vec!["b", "a", "c"]);
+    }
+
+    /// A space with `agents.len()` agent rows, one pane per tab, laid out in
+    /// the sidebar and ready for mouse events.
+    fn app_with_agent_rows(agents: &[(&str, Agent)]) -> crate::app::App {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("space");
+        let mut panes = vec![(0_usize, ws.tabs[0].root_pane, agents[0].1)];
+        for (name, agent) in &agents[1..] {
+            let tab_idx = ws.test_add_tab(Some(name));
+            let pane_id = ws.tabs[tab_idx].root_pane;
+            panes.push((tab_idx, pane_id, *agent));
+        }
+
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        for (tab_idx, pane_id, agent) in panes {
+            let terminal_id = app.state.workspaces[0].tabs[tab_idx].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(agent);
+        }
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 40);
+        let (cards, agent_rows) =
+            crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
+        app.state.view.workspace_card_areas = cards;
+        app.state.view.agent_row_areas = agent_rows;
+        app
+    }
+
+    fn agent_row_pane_ids(app: &crate::app::App) -> Vec<crate::layout::PaneId> {
+        app.state.workspaces[0]
+            .pane_details(&app.state.terminals)
+            .iter()
+            .map(|detail| detail.pane_id)
+            .collect()
+    }
+
+    #[test]
+    fn dragging_agent_row_reorders_the_list_without_touching_tabs_or_layout() {
+        let mut app = app_with_agent_rows(&[
+            ("one", Agent::Pi),
+            ("two", Agent::Claude),
+            ("three", Agent::Codex),
+        ]);
+        let natural = agent_row_pane_ids(&app);
+        assert_eq!(natural.len(), 3);
+        let tab_numbers: Vec<_> = app.state.workspaces[0]
+            .tabs
+            .iter()
+            .map(|tab| tab.number)
+            .collect();
+
+        let rows = app.state.view.agent_row_areas.clone();
+        let source = rows[0].rect;
+        // Past the bottom of the last row drops at the end of the list.
+        let target_row = rows[2].rect.y + rows[2].rect.height;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            source.x + 2,
+            source.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            source.x + 2,
+            target_row,
+        ));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::AgentReorder {
+                ws_idx: 0,
+                insert_idx: Some(3),
+                ..
+            })
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            source.x + 2,
+            target_row,
+        ));
+
+        assert_eq!(
+            agent_row_pane_ids(&app),
+            vec![natural[1], natural[2], natural[0]]
+        );
+        // Display order only: tabs and each tab's layout are untouched.
+        assert_eq!(
+            app.state.workspaces[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.number)
+                .collect::<Vec<_>>(),
+            tab_numbers
+        );
+        assert_eq!(app.state.workspaces[0].natural_pane_order(), natural);
+    }
+
+    #[test]
+    fn agent_drop_slots_cover_the_gaps_between_rows() {
+        let app = app_with_agent_rows(&[
+            ("one", Agent::Pi),
+            ("two", Agent::Claude),
+            ("three", Agent::Codex),
+        ]);
+        let rows = app.state.view.agent_row_areas.clone();
+        let gap_above_second = rows[1].rect.y - 1;
+        let above_everything = rows[0].rect.y.saturating_sub(4);
+        let below_everything = rows[2].rect.y + rows[2].rect.height + 4;
+
+        assert_eq!(
+            app.state.agent_drop_index_at_row(0, gap_above_second),
+            Some(1)
+        );
+        assert_eq!(
+            app.state.agent_drop_index_at_row(0, above_everything),
+            Some(0)
+        );
+        assert_eq!(
+            app.state.agent_drop_index_at_row(0, below_everything),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn clicking_agent_row_without_dragging_leaves_the_order_alone() {
+        let mut app = app_with_agent_rows(&[("one", Agent::Pi), ("two", Agent::Claude)]);
+        let natural = agent_row_pane_ids(&app);
+        let source = app.state.view.agent_row_areas[0].rect;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            source.x + 2,
+            source.y,
+        ));
+        // A one-row wobble inside the same entry stays a click.
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            source.x + 2,
+            source.y + 1,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            source.x + 2,
+            source.y + 1,
+        ));
+
+        assert!(app.state.drag.is_none());
+        assert!(app.state.workspaces[0].agent_order.is_empty());
+        assert_eq!(agent_row_pane_ids(&app), natural);
+    }
+
+    #[test]
+    fn reordered_agents_survive_a_session_snapshot() {
+        let mut app = app_with_agent_rows(&[
+            ("one", Agent::Pi),
+            ("two", Agent::Claude),
+            ("three", Agent::Codex),
+        ]);
+        let natural = agent_row_pane_ids(&app);
+        assert!(app.state.move_agent(0, natural[2], 0));
+
+        let snapshot = capture_snapshot(&app.state);
+        assert_eq!(snapshot.workspaces[0].agent_order, vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn closing_a_reordered_agents_pane_drops_it_from_the_order() {
+        let mut app = app_with_agent_rows(&[
+            ("one", Agent::Pi),
+            ("two", Agent::Claude),
+            ("three", Agent::Codex),
+        ]);
+        let natural = agent_row_pane_ids(&app);
+        assert!(app.state.move_agent(0, natural[2], 0));
+
+        // Closing the tab that owns the moved pane takes it out of the space.
+        app.state.workspaces[0].active_tab = 2;
+        app.state.workspaces[0].close_active_tab();
+
+        assert!(!app.state.workspaces[0]
+            .ordered_pane_ids()
+            .contains(&natural[2]));
+        assert_eq!(
+            agent_row_pane_ids(&app),
+            vec![natural[0], natural[1]],
+            "the surviving agents keep their natural order"
+        );
     }
 
     #[test]

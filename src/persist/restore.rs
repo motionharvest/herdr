@@ -317,6 +317,9 @@ fn restore_workspace(
     }
 
     let worktree_space = restored_worktree_space_membership(snap.worktree_space.clone());
+    let natural_pane_order: Vec<PaneId> =
+        tabs.iter().flat_map(|tab| tab.layout.pane_ids()).collect();
+    let agent_order = restored_agent_order(&snap.agent_order, &natural_pane_order);
 
     (
         Some(Workspace {
@@ -334,6 +337,7 @@ fn restore_workspace(
             worktree_space,
             public_pane_numbers,
             next_public_pane_number,
+            agent_order,
             active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
             tabs,
             #[cfg(test)]
@@ -342,6 +346,27 @@ fn restore_workspace(
         .map(|workspace| (workspace, terminals, terminal_runtimes)),
         failed_imports,
     )
+}
+
+/// Rebuild a space's custom agent order from saved natural-order positions.
+/// Panes that failed to restore shift every later position, so a saved order
+/// that isn't a permutation of the restored panes is dropped rather than
+/// applied to the wrong panes.
+fn restored_agent_order(saved: &[usize], natural_pane_order: &[PaneId]) -> Vec<PaneId> {
+    if saved.len() != natural_pane_order.len() {
+        return Vec::new();
+    }
+    let mut seen = HashSet::new();
+    if !saved
+        .iter()
+        .all(|position| *position < natural_pane_order.len() && seen.insert(*position))
+    {
+        return Vec::new();
+    }
+    saved
+        .iter()
+        .map(|position| natural_pane_order[*position])
+        .collect()
 }
 
 fn restored_worktree_space_membership(
@@ -798,6 +823,33 @@ mod tests {
     }
 
     #[test]
+    fn restored_agent_order_maps_saved_positions_onto_new_pane_ids() {
+        let panes = [
+            PaneId::from_raw(31),
+            PaneId::from_raw(32),
+            PaneId::from_raw(33),
+        ];
+
+        assert_eq!(
+            restored_agent_order(&[2, 0, 1], &panes),
+            vec![panes[2], panes[0], panes[1]]
+        );
+        // No saved order at all.
+        assert!(restored_agent_order(&[], &panes).is_empty());
+    }
+
+    #[test]
+    fn restored_agent_order_discards_orders_that_do_not_match_the_restored_panes() {
+        let panes = [PaneId::from_raw(41), PaneId::from_raw(42)];
+
+        // A pane failed to restore, so every saved position is suspect.
+        assert!(restored_agent_order(&[2, 0, 1], &panes).is_empty());
+        // Out of range, and duplicated.
+        assert!(restored_agent_order(&[0, 5], &panes).is_empty());
+        assert!(restored_agent_order(&[1, 1], &panes).is_empty());
+    }
+
+    #[test]
     fn prune_restored_node_collapses_missing_branch() {
         let keep = PaneId::from_raw(11);
         let missing = PaneId::from_raw(12);
@@ -1010,6 +1062,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
@@ -1085,6 +1138,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
@@ -1286,6 +1340,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd,
                 worktree_space: None,
+                agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),

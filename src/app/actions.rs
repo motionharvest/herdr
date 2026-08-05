@@ -1072,6 +1072,25 @@ impl AppState {
         self.ensure_workspace_visible(self.selected);
     }
 
+    /// Reorder a space's agent row in the sidebar. `insert_idx` is an
+    /// insert-before position in that space's current agent order. This is a
+    /// display order only: tabs and the pane layout stay put.
+    pub fn move_agent(
+        &mut self,
+        ws_idx: usize,
+        source_pane_id: crate::layout::PaneId,
+        insert_idx: usize,
+    ) -> bool {
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return false;
+        };
+        if !ws.move_agent(source_pane_id, insert_idx) {
+            return false;
+        }
+        self.mark_session_dirty();
+        true
+    }
+
     pub fn scroll_tabs_left(&mut self) {
         self.tab_scroll_follow_active = false;
         self.tab_scroll = self.tab_scroll.saturating_sub(1);

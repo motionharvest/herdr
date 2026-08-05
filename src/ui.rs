@@ -64,12 +64,13 @@ pub(crate) use self::{
     },
     settings::{settings_button_rects, settings_show_primary_action},
     sidebar::{
-        agent_panel_entries, agent_scope_toggle_rect, collapsed_sidebar_sections,
-        collapsed_sidebar_toggle_rect, compute_workspace_card_areas, compute_workspace_list_areas,
-        expanded_sidebar_toggle_rect, normalized_workspace_scroll, render_sidebar,
-        spaces_section_collapsed, spaces_section_header_rect, workspace_drop_indicator_row,
-        workspace_list_entries, workspace_list_rect, workspace_list_scroll_metrics,
-        workspace_list_scrollbar_rect, workspace_parent_group_state, WorkspaceListEntry,
+        agent_panel_entries, collapsed_sidebar_sections, collapsed_sidebar_toggle_rect,
+        compute_workspace_card_areas, compute_workspace_list_areas, expanded_sidebar_toggle_rect,
+        new_workspace_button_rect, normalized_workspace_scroll, render_sidebar,
+        spaces_section_collapsed, spaces_section_header_rect, workspace_agents_expanded,
+        workspace_drop_indicator_row, workspace_list_entries, workspace_list_rect,
+        workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
+        WorkspaceListEntry,
     },
 };
 pub(crate) use self::{
@@ -696,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_lists_agents_under_their_space_with_status_bar_and_header_toggle() {
+    fn sidebar_lists_agents_under_their_space_until_the_space_is_folded() {
         let mut app = crate::app::state::AppState::test_new();
         let ws = Workspace::test_new("one");
         let root_pane = ws.tabs[0].root_pane;
@@ -732,13 +733,13 @@ mod tests {
             assert_eq!(buffer[(agent_row.rect.x + 1, row)].symbol(), "▎");
         }
 
-        // Scope toggle is right-aligned on the header row.
-        let toggle = agent_scope_toggle_rect(&app, app.view.sidebar_rect);
-        assert_eq!(toggle.y, app.view.sidebar_rect.y);
-        let header_text: String = (toggle.x..toggle.x + toggle.width)
-            .map(|x| buffer[(x, toggle.y)].symbol().to_string())
-            .collect();
-        assert_eq!(header_text, "agents all");
+        // Folding the space drops its agent rows from the list.
+        assert!(workspace_agents_expanded(&app, card.ws_idx));
+        app.collapsed_agent_space_ids
+            .insert(app.workspaces[0].id.clone());
+        compute_view(&mut app, Rect::new(0, 0, 100, 24));
+        assert!(!workspace_agents_expanded(&app, card.ws_idx));
+        assert!(app.view.agent_row_areas.is_empty());
     }
 
     #[test]
