@@ -9,6 +9,8 @@
 - Sidebar agent rows now lead with the tab they belong to, with the pane's own name below it. The working directory and branch that used to sit there are still on the pane's title.
 - The space you are working in is now drawn as one outlined group in the sidebar: the box runs from the space card down around every agent listed under it, instead of marking only the focused agent row.
 - Space cards no longer repeat the git branch. It is already on the pane, where the work happens, so the card is just the space name.
+- Space cards show how many panes the space holds, right-aligned on the card in the accent color.
+- Clicking a space you are not in only switches to it; its agent list keeps the fold state you left it in. Clicking the space you are already in is what folds its agents open or closed.
 
 ## [0.7.1] - 2026-08-04
 

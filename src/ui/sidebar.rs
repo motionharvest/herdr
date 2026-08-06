@@ -793,12 +793,13 @@ fn render_workspace_rows(
         let selected = is_selected || is_active;
         let (state, seen) = ws.aggregate_state(&app.terminals);
         let name = workspace_card_label(app, terminal_runtimes, ws, card.indented, state, seen);
+        let panes = workspace_pane_count_label(ws);
         // A card inside the group outline stops at its name: the outline
         // supplies the enclosing box, so its own floor would only cut the
         // group in half.
         let open_bottom =
             outlined.is_some_and(|group| group.y == card.rect.y && group.height > card.rect.height);
-        render_workspace_card(frame, card.rect, &name, selected, open_bottom, app);
+        render_workspace_card(frame, card.rect, &name, &panes, selected, open_bottom, app);
     }
 
     render_space_group_outline(app, frame, area, outlined);
@@ -1012,10 +1013,21 @@ fn workspace_card_label(
     format!("{indent}{dot} {name}")
 }
 
+/// How many panes the space holds, as the card's right-aligned tally.
+pub(crate) fn workspace_pane_count_label(ws: &crate::workspace::Workspace) -> String {
+    let count = ws.natural_pane_order().len();
+    if count == 1 {
+        "1 pane".to_string()
+    } else {
+        format!("{count} panes")
+    }
+}
+
 fn render_workspace_card(
     frame: &mut Frame,
     rect: Rect,
     name: &str,
+    panes: &str,
     selected: bool,
     open_bottom: bool,
     app: &AppState,
@@ -1034,8 +1046,18 @@ fn render_workspace_card(
     };
     let border_style = Style::default().fg(border_color);
     let name_style = Style::default().fg(name_color).add_modifier(Modifier::BOLD);
+    let count_style = Style::default().fg(app.palette.accent);
     let inner_width = rect.width.saturating_sub(2) as usize;
-    let name = pad_to_width(&truncate_chars(name, inner_width), inner_width);
+    // The tally is right-aligned against the card's inner edge, so the name
+    // gives up the columns it needs — plus a space between them.
+    let panes = if panes.chars().count() + 2 <= inner_width {
+        panes
+    } else {
+        ""
+    };
+    let name_width = inner_width.saturating_sub(panes.chars().count());
+    let name_chars = name_width.saturating_sub(usize::from(!panes.is_empty()));
+    let name = pad_to_width(&truncate_chars(name, name_chars), name_width);
 
     let buf = frame.buffer_mut();
     let right = rect.x + rect.width.saturating_sub(1);
@@ -1064,6 +1086,7 @@ fn render_workspace_card(
         border_style,
         name_style,
     );
+    render_workspace_card_pane_count(buf, right, rect.y + 1, panes, count_style);
 
     if open_bottom {
         return;
@@ -1099,6 +1122,27 @@ fn render_workspace_card_compact(
             .set_style(name_style);
     }
     buf[(right, rect.y)].set_symbol("╮").set_style(border_style);
+}
+
+/// Writes the pane tally against the card's right inner edge, over the padding
+/// the name row already laid down.
+fn render_workspace_card_pane_count(
+    buf: &mut ratatui::buffer::Buffer,
+    right: u16,
+    y: u16,
+    panes: &str,
+    style: Style,
+) {
+    let width = panes.chars().count() as u16;
+    if width == 0 || right < width {
+        return;
+    }
+    let start_x = right - width;
+    for (idx, ch) in panes.chars().enumerate() {
+        buf[(start_x + idx as u16, y)]
+            .set_symbol(&ch.to_string())
+            .set_style(style);
+    }
 }
 
 fn render_workspace_card_text_row(
@@ -1341,6 +1385,29 @@ mod tests {
         // with a list stuck under it.
         let card_floor = card.y + card.height - 1;
         assert_eq!(buf[(card.x + 1, card_floor)].symbol(), " ");
+    }
+
+    #[test]
+    fn space_card_tallies_its_panes_right_aligned_in_the_accent_color() {
+        let area = Rect::new(0, 0, 28, 24);
+        let (app, terminal) = render_sidebar_list(area);
+        let card = compute_workspace_card_areas(&app, area)[0].rect;
+        let right = card.x + card.width - 1;
+        let label = "1 pane";
+        let buf = terminal.backend().buffer();
+        let row = card.y + 1;
+
+        let start_x = right - label.chars().count() as u16;
+        let rendered = (start_x..right)
+            .map(|x| buf[(x, row)].symbol())
+            .collect::<String>();
+        assert_eq!(rendered, label);
+        for x in start_x..right {
+            assert_eq!(buf[(x, row)].style().fg, Some(app.palette.accent));
+        }
+        // The space's own name still leads the row, with a gap before the tally.
+        assert_eq!(buf[(card.x + 1, row)].symbol(), "●");
+        assert_eq!(buf[(start_x - 1, row)].symbol(), " ");
     }
 
     #[test]

@@ -681,7 +681,42 @@ mod tests {
     }
 
     #[test]
-    fn clicking_space_card_toggles_its_agent_entries() {
+    fn clicking_an_inactive_space_switches_without_folding_its_agents() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 24);
+        app.state.view.workspace_card_areas =
+            crate::ui::compute_workspace_card_areas(&app.state, app.state.view.sidebar_rect);
+        // The second space is folded away and must stay that way when the user
+        // merely switches to it.
+        let second_id = app.state.workspaces[1].id.clone();
+        app.state.collapsed_agent_space_ids.insert(second_id);
+        let card = app.state.view.workspace_card_areas[1].rect;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            card.x + 2,
+            card.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            card.x + 2,
+            card.y,
+        ));
+
+        assert_eq!(app.state.active, Some(1));
+        assert!(!crate::ui::workspace_agents_expanded(&app.state, 1));
+        // The space that lost focus keeps its own agents listed.
+        assert!(crate::ui::workspace_agents_expanded(&app.state, 0));
+    }
+
+    #[test]
+    fn clicking_the_active_space_card_toggles_its_agent_entries() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
         app.state.ensure_test_terminals();

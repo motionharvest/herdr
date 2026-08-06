@@ -909,10 +909,15 @@ impl AppState {
                     Some(_) => {}
                     None => {
                         if let Some(press) = workspace_press {
+                            // Clicking away from the active space only switches
+                            // to it; its agent list keeps whatever fold state
+                            // the user left it in. Clicking the space you are
+                            // already in folds that list open or closed.
+                            let was_active = self.active == Some(press.ws_idx);
                             self.switch_workspace(press.ws_idx);
-                            // Clicking a space card also folds its agent list
-                            // open or closed.
-                            self.toggle_workspace_agents(press.ws_idx);
+                            if was_active {
+                                self.toggle_workspace_agents(press.ws_idx);
+                            }
                             self.mode = Mode::Terminal;
                             return None;
                         }
