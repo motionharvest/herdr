@@ -57,6 +57,28 @@ impl App {
         }
     }
 
+    /// Persist the picked "agent finished" sound.
+    ///
+    /// Picking a built-in also drops `done_path`, so the pick is what plays
+    /// instead of losing silently to a custom file left in the config.
+    pub(super) fn save_done_sound(&mut self, choice: &crate::app::state::DoneSoundChoice) {
+        let crate::app::state::DoneSoundChoice::Builtin(sound) = choice else {
+            return;
+        };
+        let key = sound.key;
+        if self.update_config_file("done sound", |content| {
+            let content = crate::config::upsert_section_value(
+                content,
+                "ui.sound",
+                "done",
+                &format!("\"{key}\""),
+            );
+            crate::config::remove_section_key(&content, "ui.sound", "done_path")
+        }) {
+            self.apply_config_from_disk(false);
+        }
+    }
+
     pub(super) fn save_toast_delivery(&mut self, delivery: crate::config::ToastDelivery) {
         let value = match delivery {
             crate::config::ToastDelivery::Off => "\"off\"",

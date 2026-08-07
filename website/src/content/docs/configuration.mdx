@@ -290,6 +290,7 @@ prompt_new_tab_name = true
 show_agent_labels_on_pane_borders = false
 agent_panel_scope = "all"
 accent = "cyan"
+notify_active_tab = false
 ```
 
 `sidebar_min_width` and `sidebar_max_width` control the expanded sidebar's resize bounds in columns. The defaults are 18 and 36.
@@ -329,6 +330,17 @@ delivery = "off"
 
 Popup notifications are for background attention. Herdr suppresses popups for the active tab.
 
+### Notify for the tab you are watching
+
+By default, Herdr stays quiet about the pane you are already looking at: when an agent in the active tab of a focused terminal finishes or asks for input, there is no sound, no popup, and no unseen marker in the sidebar.
+
+```toml
+[ui]
+notify_active_tab = true
+```
+
+Set `notify_active_tab = true` to get the same alerts for that pane as for background ones. This covers sounds, popups (whatever `[ui.toast] delivery` is set to), and the sidebar's unseen-agent highlight. In client/server setups, the server's config decides this.
+
 ## Sound
 
 Sound notifications are enabled by default and are played by the local Herdr client.
@@ -342,6 +354,30 @@ Herdr plays a done sound when an agent finishes and an attention sound when an a
 
 On macOS, Herdr uses `afplay`. On Linux, Herdr tries mp3-capable players in order: `paplay`, `pw-play`, `ffplay`, `mpg123`, then `mpv`. If no player is available, sound playback is skipped and Herdr logs a warning.
 
+### Choosing the finished sound
+
+Six sounds ship with Herdr for the moment an agent finishes:
+
+| `done` | what it sounds like |
+| --- | --- |
+| `chime` | the original Herdr chime — the default |
+| `bell` | a struck bell, ringing out |
+| `arpeggio` | three rising notes landing on a chord |
+| `ping` | one short, high blip |
+| `blip` | two quick wooden taps |
+| `knock` | two low taps, easy to ignore |
+
+```toml
+[ui.sound]
+done = "bell"
+```
+
+The easiest way to choose is the sound section of the settings panel: moving through the list plays each sound, and the row you press `enter` on (or click) is saved to your config and used from then on. Saving from the panel also clears any `done_path` left in the config, so the sound you picked is the one you hear.
+
+Naming a sound with `done` beats the catch-all `path` for finished notifications, and leaves the needs-input sound alone. An explicit `done_path` still outranks both.
+
+### Custom sound files
+
 Custom sounds must be mp3 files. Relative paths are resolved from the config file's directory.
 
 ```toml
@@ -351,7 +387,7 @@ done_path = "sounds/done.mp3"
 request_path = "sounds/request.mp3"
 ```
 
-`path` sets one sound for all sound notifications. `done_path` and `request_path` override only the finished and needs-input sounds.
+`path` sets one sound for all sound notifications. `done_path` and `request_path` override only the finished and needs-input sounds, and outrank both `path` and a `done` sound picked in settings.
 
 Per-agent sound overrides accept `default`, `on`, or `off`. Droid is muted by default.
 

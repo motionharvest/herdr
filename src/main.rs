@@ -240,6 +240,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)
 # accent = "cyan"
 
+# Also notify for the agent in the tab you are looking at.
+# By default Herdr stays quiet for the active tab of a focused terminal:
+# no sound, no popup, no sidebar marker. Set true to always be alerted.
+# notify_active_tab = false
+
 # Background notification popup delivery
 [ui.toast]
 # off = disable pop-up notifications
@@ -251,6 +256,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Play sounds when agents change state in background workspaces
 [ui.sound]
 # enabled = true
+# Which built-in sound plays when an agent finishes. The sound settings panel
+# writes this; pick a row there to hear each one.
+# chime | bell | arpeggio | ping | blip | knock
+# done = "chime"
 # Optional custom mp3 sound files. Relative paths are resolved from this config file's directory.
 # path = "sounds/notification.mp3"   # one mp3 file for all sound notifications
 # done_path = "sounds/done.mp3"      # overrides only finished notifications

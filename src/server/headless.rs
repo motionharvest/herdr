@@ -506,6 +506,7 @@ impl HeadlessServer {
             }
 
             self.drain_client_config_reload_request();
+            self.drain_sound_preview_request();
             self.stream_host_mouse_capture_mode();
 
             self.app.sync_headless_animation_timer(now);
@@ -1023,6 +1024,7 @@ impl HeadlessServer {
         crate::app::actions::active_tab_suppresses_notifications(
             is_active_tab,
             self.foreground_client_outer_focus(),
+            self.app.state.notify_active_tab,
         )
     }
 
@@ -1597,6 +1599,27 @@ impl HeadlessServer {
             changed |= self.handle_internal_event_with_forwarding(ev);
         }
         (had_event, changed)
+    }
+
+    /// Play a settings sound preview. The server has no speakers of its own in
+    /// the usual setup, so the foreground client plays it.
+    fn drain_sound_preview_request(&mut self) {
+        let Some(preview) = self.app.state.pending_sound_preview.take() else {
+            return;
+        };
+        if self.app.state.local_sound_playback {
+            match preview {
+                crate::sound::SoundPreview::Builtin(sound) => crate::sound::play_builtin(sound),
+                crate::sound::SoundPreview::ConfiguredDone => {
+                    crate::sound::play(crate::sound::Sound::Done, &self.app.state.sound)
+                }
+            }
+            return;
+        }
+        self.send_to_foreground_client(ServerMessage::Notify {
+            kind: protocol::NotifyKind::Sound,
+            message: preview.notify_message(),
+        });
     }
 
     fn drain_client_config_reload_request(&mut self) {
@@ -5950,6 +5973,44 @@ next_tab = ""
             other => panic!("expected ReloadSoundConfig, got {other:?}"),
         }
         assert!(!server.app.state.request_client_config_reload);
+    }
+
+    #[test]
+    fn sound_preview_request_is_played_by_the_foreground_client() {
+        let mut server = test_headless_server();
+        let (client_tx, client_control_rx, _client_rx) = test_client_writer();
+
+        server.clients.insert(
+            1,
+            ClientConnection::new(
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                1,
+                RenderEncoding::SemanticFrame,
+                Some(client_tx),
+            ),
+        );
+        server.foreground_client_id = Some(1);
+        server.app.state.pending_sound_preview = Some(crate::sound::SoundPreview::Builtin(
+            crate::sound::done_sound_by_key("bell").expect("bell should be a built-in sound"),
+        ));
+
+        server.drain_sound_preview_request();
+
+        match read_server_message(
+            client_control_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("sound preview message"),
+        ) {
+            ServerMessage::Notify { kind, message } => {
+                assert_eq!(kind, protocol::NotifyKind::Sound);
+                assert_eq!(message, "preview bell");
+            }
+            other => panic!("expected Notify, got {other:?}"),
+        }
+        assert_eq!(server.app.state.pending_sound_preview, None);
     }
 
     #[test]

@@ -1061,6 +1061,34 @@ impl SelectionListState {
     }
 }
 
+/// One row in the settings "done sound" picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DoneSoundChoice {
+    /// The mp3 configured through `ui.sound.done_path` or `ui.sound.path`.
+    CustomFile(std::path::PathBuf),
+    /// A sound shipped inside the binary.
+    Builtin(&'static crate::sound::BuiltinSound),
+}
+
+impl DoneSoundChoice {
+    pub fn label(&self) -> String {
+        match self {
+            Self::CustomFile(path) => path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.display().to_string()),
+            Self::Builtin(sound) => sound.key.to_string(),
+        }
+    }
+
+    pub fn description(&self) -> &str {
+        match self {
+            Self::CustomFile(_) => "your own mp3, set in the config file",
+            Self::Builtin(sound) => sound.description,
+        }
+    }
+}
+
 pub struct SettingsState {
     /// Which section tab is active.
     pub section: SettingsSection,
@@ -1479,6 +1507,12 @@ pub struct AppState {
     pub accent: Color,
     pub sound: SoundConfig,
     pub local_sound_playback: bool,
+    /// Sound the settings picker wants auditioned. Drained by the server loop,
+    /// which plays it locally or asks the foreground client to.
+    pub pending_sound_preview: Option<crate::sound::SoundPreview>,
+    /// Notify even for the agent in the tab you are looking at.
+    /// See `[ui] notify_active_tab`.
+    pub notify_active_tab: bool,
     pub toast_config: ToastConfig,
     pub keybinds: Keybinds,
     /// Frame counter for spinner animations (wraps around).
@@ -1515,6 +1549,36 @@ impl AppState {
 
     pub fn sound_enabled(&self) -> bool {
         self.sound.enabled
+    }
+
+    /// Rows of the settings "done sound" picker. A custom mp3 from
+    /// `ui.sound.done_path` or `ui.sound.path` leads the list when set,
+    /// because it is what actually plays.
+    pub fn done_sound_choices(&self) -> Vec<DoneSoundChoice> {
+        let custom = self
+            .sound
+            .path_for(crate::sound::Sound::Done)
+            .map(DoneSoundChoice::CustomFile);
+        custom
+            .into_iter()
+            .chain(
+                crate::sound::DONE_SOUNDS
+                    .iter()
+                    .map(DoneSoundChoice::Builtin),
+            )
+            .collect()
+    }
+
+    /// Index into [`AppState::done_sound_choices`] of the sound in use.
+    pub fn selected_done_sound_index(&self) -> usize {
+        if self.sound.done_sound_overridden_by_path() {
+            return 0;
+        }
+        let key = self.sound.done_sound().key;
+        crate::sound::DONE_SOUNDS
+            .iter()
+            .position(|sound| sound.key == key)
+            .unwrap_or(0)
     }
 
     pub fn toast_delivery(&self) -> ToastDelivery {
@@ -1821,6 +1885,8 @@ impl AppState {
                 ..SoundConfig::default()
             },
             local_sound_playback: false,
+            pending_sound_preview: None,
+            notify_active_tab: false,
             toast_config: ToastConfig::default(),
             keybinds: Keybinds::default(),
             spinner_tick: 0,

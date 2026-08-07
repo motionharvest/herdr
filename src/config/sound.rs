@@ -10,6 +10,10 @@ use super::io::resolve_config_relative_path;
 #[serde(default)]
 pub struct SoundConfig {
     pub enabled: bool,
+    /// Which built-in sound plays when an agent finishes, by key
+    /// (`chime`, `bell`, …). The settings panel writes this. Naming a sound
+    /// here beats the catch-all `path`, but `done_path` still wins over both.
+    pub done: Option<String>,
     /// Optional mp3 file path used for all notification sounds.
     /// Relative paths are resolved from the config file's directory.
     pub path: Option<PathBuf>,
@@ -62,8 +66,26 @@ impl SoundConfig {
         !matches!(self.agents.for_agent(agent), AgentSoundSetting::Off)
     }
 
+    /// The built-in sound that plays when an agent finishes. Unknown names
+    /// fall back to the default; `diagnostics` reports them.
+    pub fn done_sound(&self) -> crate::sound::BuiltinSound {
+        self.done
+            .as_deref()
+            .and_then(|key| crate::sound::done_sound_by_key(key.trim()))
+            .copied()
+            .unwrap_or_else(|| *crate::sound::default_done_sound())
+    }
+
+    /// True when a custom mp3 overrides the picked done sound.
+    pub fn done_sound_overridden_by_path(&self) -> bool {
+        self.path_for(crate::sound::Sound::Done).is_some()
+    }
+
     pub fn path_for(&self, sound: crate::sound::Sound) -> Option<PathBuf> {
         let path = match sound {
+            // A named done sound outranks the catch-all `path`, so picking one
+            // in settings takes effect without rewriting the rest of the config.
+            crate::sound::Sound::Done if self.done.is_some() => self.done_path.as_ref(),
             crate::sound::Sound::Done => self.done_path.as_ref().or(self.path.as_ref()),
             crate::sound::Sound::Request => self.request_path.as_ref().or(self.path.as_ref()),
         }?;
@@ -73,6 +95,21 @@ impl SoundConfig {
 
     pub fn diagnostics(&self) -> Vec<String> {
         let mut diagnostics = Vec::new();
+        if let Some(done) = self
+            .done
+            .as_deref()
+            .filter(|key| crate::sound::done_sound_by_key(key.trim()).is_none())
+        {
+            let known = crate::sound::DONE_SOUNDS
+                .iter()
+                .map(|sound| sound.key)
+                .collect::<Vec<_>>()
+                .join(", ");
+            diagnostics.push(format!(
+                "unknown sound: ui.sound.done = {done}; expected one of {known}; using {}",
+                crate::sound::default_done_sound().key
+            ));
+        }
         for (field, path) in [
             ("ui.sound.path", self.path.as_ref()),
             ("ui.sound.done_path", self.done_path.as_ref()),
@@ -143,6 +180,7 @@ impl Default for SoundConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            done: None,
             path: None,
             done_path: None,
             request_path: None,
@@ -231,6 +269,86 @@ done_path = "sounds/done.mp3"
             config.ui.sound.path_for(crate::sound::Sound::Request),
             Some(config_root.join("sounds/all.mp3"))
         );
+    }
+
+    #[test]
+    fn done_sound_defaults_to_the_original_chime_and_parses_a_pick() {
+        let default_config = Config::default();
+        assert_eq!(default_config.ui.sound.done, None);
+        assert_eq!(
+            default_config.ui.sound.done_sound().key,
+            crate::sound::default_done_sound().key
+        );
+
+        let config: Config = toml::from_str(
+            r#"
+[ui.sound]
+done = "bell"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.ui.sound.done_sound().key, "bell");
+        assert!(config.collect_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn picked_done_sound_outranks_the_catch_all_path() {
+        let config: Config = toml::from_str(
+            r#"
+[ui.sound]
+done = "ping"
+path = "sounds/all.mp3"
+"#,
+        )
+        .unwrap();
+
+        // The pick wins for "done"...
+        assert_eq!(config.ui.sound.path_for(crate::sound::Sound::Done), None);
+        assert_eq!(config.ui.sound.done_sound().key, "ping");
+        // ...and leaves the request sound alone.
+        assert!(config
+            .ui
+            .sound
+            .path_for(crate::sound::Sound::Request)
+            .is_some());
+    }
+
+    #[test]
+    fn done_path_still_outranks_a_picked_done_sound() {
+        let config: Config = toml::from_str(
+            r#"
+[ui.sound]
+done = "ping"
+done_path = "/tmp/herdr-custom.mp3"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.ui.sound.path_for(crate::sound::Sound::Done),
+            Some(PathBuf::from("/tmp/herdr-custom.mp3"))
+        );
+        assert!(config.ui.sound.done_sound_overridden_by_path());
+    }
+
+    #[test]
+    fn unknown_done_sound_falls_back_with_a_diagnostic() {
+        let config: Config = toml::from_str(
+            r#"
+[ui.sound]
+done = "foghorn"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.ui.sound.done_sound().key,
+            crate::sound::default_done_sound().key
+        );
+        assert!(config
+            .collect_diagnostics()
+            .iter()
+            .any(|diag| diag.contains("ui.sound.done = foghorn") && diag.contains("chime")));
     }
 
     #[test]

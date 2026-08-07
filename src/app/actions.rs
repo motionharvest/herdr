@@ -27,8 +27,9 @@ fn is_background_completion_transition(prev_state: AgentState, new_state: AgentS
 pub fn active_tab_suppresses_notifications(
     is_active_tab: bool,
     outer_terminal_focus: Option<bool>,
+    notify_active_tab: bool,
 ) -> bool {
-    is_active_tab && outer_terminal_focus != Some(false)
+    !notify_active_tab && is_active_tab && outer_terminal_focus != Some(false)
 }
 
 pub fn notification_sound_for_state_change(
@@ -2437,8 +2438,12 @@ impl AppState {
         change: &EffectiveStateChange,
     ) -> Option<bool> {
         let is_active_tab = self.pane_is_in_active_tab(ws_idx, pane_id);
-        let suppress_active_tab_notifications =
-            active_tab_suppresses_notifications(is_active_tab, self.outer_terminal_focus);
+        let suppress_active_tab_notifications = active_tab_suppresses_notifications(
+            is_active_tab,
+            self.outer_terminal_focus,
+            self.notify_active_tab,
+        );
+        let suppress_active_tab_toast = is_active_tab && !self.notify_active_tab;
         let pane = self.workspaces[ws_idx]
             .tabs
             .iter_mut()
@@ -2468,7 +2473,7 @@ impl AppState {
             if let (Some(agent_label), Some(kind)) = (
                 change.agent_label.as_deref(),
                 notification_toast_for_state_change(
-                    is_active_tab,
+                    suppress_active_tab_toast,
                     change.previous_state,
                     change.state,
                 ),
@@ -4277,11 +4282,75 @@ mod tests {
     }
 
     #[test]
+    fn notify_active_tab_keeps_active_tab_completion_unseen() {
+        let mut state = app_with_workspaces(&["active"]);
+        state.active = Some(0);
+        state.outer_terminal_focus = Some(true);
+        state.notify_active_tab = true;
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let terminal_id = state.workspaces[0]
+            .panes
+            .get(&pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Working;
+        state.workspaces[0].panes.get_mut(&pane_id).unwrap().seen = true;
+
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_idle: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+
+        let pane = state.workspaces[0].panes.get(&pane_id).unwrap();
+        assert!(!pane.seen);
+    }
+
+    #[test]
+    fn notify_active_tab_sets_herdr_toast_for_active_tab() {
+        let mut state = app_with_workspaces(&["active"]);
+        state.active = Some(0);
+        state.outer_terminal_focus = Some(true);
+        state.notify_active_tab = true;
+        state.toast_config.delivery = crate::config::ToastDelivery::Herdr;
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Blocked,
+            visible_blocker: false,
+            visible_idle: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+
+        assert!(state.toast.is_some());
+    }
+
+    #[test]
     fn active_tab_suppression_preserves_unknown_focus_behavior() {
-        assert!(active_tab_suppresses_notifications(true, None));
-        assert!(active_tab_suppresses_notifications(true, Some(true)));
-        assert!(!active_tab_suppresses_notifications(true, Some(false)));
-        assert!(!active_tab_suppresses_notifications(false, None));
+        assert!(active_tab_suppresses_notifications(true, None, false));
+        assert!(active_tab_suppresses_notifications(true, Some(true), false));
+        assert!(!active_tab_suppresses_notifications(
+            true,
+            Some(false),
+            false
+        ));
+        assert!(!active_tab_suppresses_notifications(false, None, false));
+    }
+
+    #[test]
+    fn notify_active_tab_disables_active_tab_suppression() {
+        assert!(!active_tab_suppresses_notifications(true, None, true));
+        assert!(!active_tab_suppresses_notifications(true, Some(true), true));
     }
 
     #[test]

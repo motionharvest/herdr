@@ -1025,6 +1025,21 @@ fn handle_notify_with_notifiers(
 ) {
     match kind {
         NotifyKind::Sound => {
+            // A settings preview names the sound to audition, which is not
+            // necessarily the one this client has configured.
+            if let Some(preview) = message.strip_prefix("preview ") {
+                let Some(sound) = crate::sound::done_sound_by_key(preview) else {
+                    warn!(
+                        message = message,
+                        "received unknown sound preview from server"
+                    );
+                    return;
+                };
+                if sound_config.enabled {
+                    crate::sound::play_builtin(sound);
+                }
+                return;
+            }
             let Some(sound) = sound_from_notify_message(message) else {
                 warn!(
                     message = message,
@@ -1680,6 +1695,25 @@ mod tests {
     #[test]
     fn sound_from_notify_message_rejects_unknown_payloads() {
         assert_eq!(sound_from_notify_message("toast"), None);
+        assert_eq!(sound_from_notify_message("preview bell"), None);
+    }
+
+    #[test]
+    fn sound_preview_messages_name_a_built_in_sound() {
+        let preview =
+            crate::sound::SoundPreview::Builtin(crate::sound::done_sound_by_key("bell").unwrap());
+        assert_eq!(preview.notify_message(), "preview bell");
+        assert_eq!(
+            crate::sound::SoundPreview::ConfiguredDone.notify_message(),
+            "agent done"
+        );
+
+        let key = preview
+            .notify_message()
+            .strip_prefix("preview ")
+            .map(str::to_string)
+            .unwrap();
+        assert_eq!(crate::sound::done_sound_by_key(&key).unwrap().key, "bell");
     }
 
     #[test]

@@ -13,7 +13,6 @@ use tracing::warn;
 const DISABLE_SOUND_ENV: &str = "HERDR_DISABLE_SOUND";
 
 static SOUND_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-static SOUND_DONE: &[u8] = include_bytes!("../assets/sounds/done.mp3");
 static SOUND_REQUEST: &[u8] = include_bytes!("../assets/sounds/request.mp3");
 
 /// Which notification sound to play.
@@ -25,31 +24,118 @@ pub enum Sound {
     Request,
 }
 
+/// One of the sounds shipped inside the binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltinSound {
+    /// Config value and stable identity, e.g. `bell`.
+    pub key: &'static str,
+    /// One-line description shown in the settings picker.
+    pub description: &'static str,
+    bytes: &'static [u8],
+}
+
+/// Built-in choices for the "agent finished" sound, in picker order.
+/// The first entry is the default, and is the chime Herdr has always used.
+pub static DONE_SOUNDS: &[BuiltinSound] = &[
+    BuiltinSound {
+        key: "chime",
+        description: "the original Herdr chime",
+        bytes: include_bytes!("../assets/sounds/done.mp3"),
+    },
+    BuiltinSound {
+        key: "bell",
+        description: "a struck bell, ringing out",
+        bytes: include_bytes!("../assets/sounds/bell.mp3"),
+    },
+    BuiltinSound {
+        key: "arpeggio",
+        description: "three rising notes landing on a chord",
+        bytes: include_bytes!("../assets/sounds/arpeggio.mp3"),
+    },
+    BuiltinSound {
+        key: "ping",
+        description: "one short, high blip",
+        bytes: include_bytes!("../assets/sounds/ping.mp3"),
+    },
+    BuiltinSound {
+        key: "blip",
+        description: "two quick wooden taps",
+        bytes: include_bytes!("../assets/sounds/blip.mp3"),
+    },
+    BuiltinSound {
+        key: "knock",
+        description: "two low taps, easy to ignore",
+        bytes: include_bytes!("../assets/sounds/knock.mp3"),
+    },
+];
+
+/// The done sound used when nothing is configured.
+pub fn default_done_sound() -> &'static BuiltinSound {
+    &DONE_SOUNDS[0]
+}
+
+/// Look up a built-in done sound by its config key.
+pub fn done_sound_by_key(key: &str) -> Option<&'static BuiltinSound> {
+    DONE_SOUNDS.iter().find(|sound| sound.key == key)
+}
+
+/// What a settings preview should play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoundPreview {
+    /// A specific built-in, whatever the config currently says.
+    Builtin(&'static BuiltinSound),
+    /// The done sound the config resolves to right now, custom file included.
+    ConfiguredDone,
+}
+
+impl SoundPreview {
+    /// Wire form used to ask a client to play this preview.
+    pub fn notify_message(self) -> String {
+        match self {
+            Self::Builtin(sound) => format!("preview {}", sound.key),
+            Self::ConfiguredDone => "agent done".to_string(),
+        }
+    }
+}
+
 /// Play a notification sound in a background thread.
 /// Silently does nothing if no audio player is available.
 pub fn play(sound: Sound, config: &crate::config::SoundConfig) {
+    let builtin = match sound {
+        Sound::Done => config.done_sound(),
+        Sound::Request => BuiltinSound {
+            key: "request",
+            description: "agent needs input",
+            bytes: SOUND_REQUEST,
+        },
+    };
+    play_with_override(builtin, config.path_for(sound));
+}
+
+/// Play a specific built-in, ignoring the configured done sound.
+/// Custom sound file paths are ignored too — this is what makes the settings
+/// picker audition the sound under the cursor rather than the saved one.
+pub fn play_builtin(sound: &'static BuiltinSound) {
+    play_with_override(*sound, None);
+}
+
+fn play_with_override(builtin: BuiltinSound, custom_path: Option<PathBuf>) {
     if sound_playback_disabled_by_env() {
         return;
     }
 
-    let custom_path = config.path_for(sound);
     std::thread::spawn(move || {
         if let Some(path) = custom_path {
             match play_file(&path) {
                 Ok(()) => return,
                 Err(err) => {
-                    warn!(path = %path.display(), sound = ?sound, err = %err, "custom sound playback failed, falling back to built-in sound")
+                    warn!(path = %path.display(), sound = builtin.key, err = %err, "custom sound playback failed, falling back to built-in sound")
                 }
             }
         }
 
-        let data = match sound {
-            Sound::Done => SOUND_DONE,
-            Sound::Request => SOUND_REQUEST,
-        };
-
-        if let Err(err) = play_bytes(data) {
-            warn!(sound = ?sound, err = %err, "sound playback failed");
+        if let Err(err) = play_bytes(builtin.bytes) {
+            warn!(sound = builtin.key, err = %err, "sound playback failed");
         }
     });
 }

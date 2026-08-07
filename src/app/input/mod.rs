@@ -285,6 +285,7 @@ impl App {
                 match action {
                     SettingsAction::SaveTheme(name) => self.save_theme(&name),
                     SettingsAction::SaveSound(enabled) => self.save_sound(enabled),
+                    SettingsAction::SaveDoneSound(choice) => self.save_done_sound(&choice),
                     SettingsAction::SaveToastDelivery(delivery) => {
                         self.save_toast_delivery(delivery)
                     }

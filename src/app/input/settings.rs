@@ -3,11 +3,53 @@ use ratatui::layout::Rect;
 
 use crate::{
     app::{
-        state::{AppState, ExperimentSetting, SettingsSection, THEME_NAMES},
+        state::{AppState, DoneSoundChoice, ExperimentSetting, SettingsSection, THEME_NAMES},
         App, Mode,
     },
     config::ToastDelivery,
 };
+
+/// Rows of the Sound section: the two alert toggle rows, then one row per
+/// done sound. Kept next to the renderer's row offsets in `ui::settings`.
+fn sound_row_count(state: &AppState) -> usize {
+    2 + state.done_sound_choices().len()
+}
+
+/// Index of the row the Sound section opens on: the live alert toggle.
+fn sound_selected_index(state: &AppState) -> usize {
+    usize::from(!state.sound_enabled())
+}
+
+/// Selecting a done sound row auditions it, the way moving through the theme
+/// list repaints the UI. Saving is a separate keypress.
+fn preview_selected_done_sound(state: &mut AppState) {
+    let Some(choice) = sound_choice_at(state, state.settings.list.selected) else {
+        return;
+    };
+    if !state.sound_enabled() {
+        return;
+    }
+    state.pending_sound_preview = Some(match choice {
+        DoneSoundChoice::Builtin(sound) => crate::sound::SoundPreview::Builtin(sound),
+        DoneSoundChoice::CustomFile(_) => crate::sound::SoundPreview::ConfiguredDone,
+    });
+}
+
+/// The done sound on row `idx`, or None for the two alert toggle rows.
+fn sound_choice_at(state: &AppState, idx: usize) -> Option<DoneSoundChoice> {
+    let choice_idx = idx.checked_sub(2)?;
+    state.done_sound_choices().into_iter().nth(choice_idx)
+}
+
+fn sound_row_action(state: &mut AppState, idx: usize) -> Option<SettingsAction> {
+    match sound_choice_at(state, idx) {
+        Some(choice) => {
+            preview_selected_done_sound(state);
+            Some(SettingsAction::SaveDoneSound(choice))
+        }
+        None => Some(SettingsAction::SaveSound(idx == 0)),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 // The shared `Save` verb is semantic: these actions persist settings.
@@ -15,6 +57,7 @@ use crate::{
 pub(super) enum SettingsAction {
     SaveTheme(String),
     SaveSound(bool),
+    SaveDoneSound(DoneSoundChoice),
     SaveToastDelivery(ToastDelivery),
     SaveAgentBorderLabels(bool),
     SavePaneHistory(bool),
@@ -43,6 +86,7 @@ impl App {
             match action {
                 SettingsAction::SaveTheme(name) => self.save_theme(&name),
                 SettingsAction::SaveSound(enabled) => self.save_sound(enabled),
+                SettingsAction::SaveDoneSound(choice) => self.save_done_sound(&choice),
                 SettingsAction::SaveToastDelivery(delivery) => self.save_toast_delivery(delivery),
                 SettingsAction::SaveAgentBorderLabels(enabled) => {
                     self.save_agent_border_labels(enabled)
@@ -132,6 +176,13 @@ fn apply_settings(state: &mut AppState) -> Option<SettingsAction> {
             super::modal::leave_modal(state);
             Some(SettingsAction::SaveTheme(theme_name))
         }
+        // "apply" saves whatever row is highlighted, so auditioning a sound and
+        // then clicking the button keeps it instead of quietly discarding it.
+        SettingsSection::Sound => {
+            let action = sound_row_action(state, state.settings.list.selected);
+            super::modal::leave_modal(state);
+            action
+        }
         SettingsSection::Integrations if integrations_need_install(state) => {
             Some(SettingsAction::InstallRecommendedIntegrations)
         }
@@ -162,7 +213,7 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::Sound;
-                state.settings.list.selected = usize::from(!state.sound_enabled());
+                state.settings.list.selected = sound_selected_index(state);
             }
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 state.settings.section = SettingsSection::Experiments;
@@ -175,12 +226,22 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             },
         },
         SettingsSection::Sound => match key.code {
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
-                state.settings.list.selected = 1 - state.settings.list.selected.min(1);
+            KeyCode::Up | KeyCode::Char('k') => {
+                let previous = state.settings.list.selected;
+                state.settings.list.move_prev();
+                if state.settings.list.selected != previous {
+                    preview_selected_done_sound(state);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let previous = state.settings.list.selected;
+                state.settings.list.move_next(sound_row_count(state));
+                if state.settings.list.selected != previous {
+                    preview_selected_done_sound(state);
+                }
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
-                let enabled = state.settings.list.selected == 0;
-                return Some(SettingsAction::SaveSound(enabled));
+                return sound_row_action(state, state.settings.list.selected);
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::Toast;
@@ -207,7 +268,7 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 state.settings.section = SettingsSection::Sound;
-                state.settings.list.selected = usize::from(!state.sound_enabled());
+                state.settings.list.selected = sound_selected_index(state);
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::PaneLabels;
@@ -302,7 +363,7 @@ pub(crate) fn open_settings_at(state: &mut AppState, section: SettingsSection) {
     state.settings.section = section;
     state.settings.list.selected = match section {
         SettingsSection::Theme => current_theme_index(&state.theme_name),
-        SettingsSection::Sound => usize::from(!state.sound_enabled()),
+        SettingsSection::Sound => sound_selected_index(state),
         SettingsSection::Toast => toast_delivery_index(state.toast_delivery()),
         SettingsSection::PaneLabels => usize::from(!state.agent_border_labels_enabled()),
         SettingsSection::Experiments => 0,
@@ -372,9 +433,13 @@ impl AppState {
                 (idx < THEME_NAMES.len()).then_some(idx)
             }
             SettingsSection::Sound => {
-                let list_y = area.y + 3;
-                if row >= list_y && row < list_y + 2 {
-                    Some((row - list_y) as usize)
+                let alerts_y = area.y + crate::ui::SOUND_ALERT_ROWS_OFFSET;
+                let choices_y = area.y + crate::ui::SOUND_CHOICE_ROWS_OFFSET;
+                if row >= alerts_y && row < alerts_y + 2 {
+                    Some((row - alerts_y) as usize)
+                } else if row >= choices_y {
+                    let idx = 2 + (row - choices_y) as usize;
+                    (idx < sound_row_count(self)).then_some(idx)
                 } else {
                     None
                 }
@@ -414,7 +479,7 @@ impl AppState {
                     self.settings.section = section;
                     self.settings.list.select(match section {
                         SettingsSection::Theme => current_theme_index(&self.theme_name),
-                        SettingsSection::Sound => usize::from(!self.sound_enabled()),
+                        SettingsSection::Sound => sound_selected_index(self),
                         SettingsSection::Toast => toast_delivery_index(self.toast_delivery()),
                         SettingsSection::PaneLabels => {
                             usize::from(!self.agent_border_labels_enabled())
@@ -431,10 +496,7 @@ impl AppState {
                             preview_selected_theme(self);
                             None
                         }
-                        SettingsSection::Sound => {
-                            let enabled = idx == 0;
-                            Some(SettingsAction::SaveSound(enabled))
-                        }
+                        SettingsSection::Sound => sound_row_action(self, idx),
                         SettingsSection::Toast => {
                             let delivery = toast_delivery_for_index(idx);
                             Some(SettingsAction::SaveToastDelivery(delivery))
@@ -528,6 +590,150 @@ mod tests {
         assert_eq!(action, Some(SettingsAction::SaveSound(true)));
         assert!(!state.sound.enabled);
         assert_eq!(state.mode, Mode::Settings);
+    }
+
+    #[test]
+    fn settings_sound_selection_previews_the_sound_under_the_cursor() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.sound.enabled = true;
+        open_settings_at(&mut state, SettingsSection::Sound);
+        assert_eq!(state.settings.list.selected, 0);
+        assert_eq!(state.pending_sound_preview, None);
+
+        // Down twice: past the alert toggles and onto the first done sound.
+        for _ in 0..2 {
+            update_settings_state(
+                &mut state,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+            );
+        }
+
+        assert_eq!(state.settings.list.selected, 2);
+        assert_eq!(
+            state.pending_sound_preview,
+            Some(crate::sound::SoundPreview::Builtin(
+                crate::sound::default_done_sound()
+            ))
+        );
+
+        state.pending_sound_preview = None;
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+
+        assert_eq!(
+            state.pending_sound_preview,
+            Some(crate::sound::SoundPreview::Builtin(
+                crate::sound::done_sound_by_key("bell").expect("bell should be a built-in sound")
+            ))
+        );
+    }
+
+    #[test]
+    fn settings_sound_enter_saves_the_selected_done_sound() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.sound.enabled = true;
+        open_settings_at(&mut state, SettingsSection::Sound);
+        state.settings.list.selected = 3;
+
+        let action = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+
+        assert_eq!(
+            action,
+            Some(SettingsAction::SaveDoneSound(DoneSoundChoice::Builtin(
+                crate::sound::done_sound_by_key("bell").expect("bell should be a built-in sound")
+            )))
+        );
+        assert_eq!(state.mode, Mode::Settings);
+    }
+
+    #[test]
+    fn settings_sound_apply_button_saves_the_highlighted_sound() {
+        let mut app = app_for_mouse_test();
+        app.state.sound.enabled = true;
+        open_settings_at(&mut app.state, SettingsSection::Sound);
+        app.state.settings.list.select(3);
+
+        let inner = app.state.settings_inner_rect();
+        let (apply, _close) = crate::ui::settings_button_rects(inner, SettingsSection::Sound, true);
+        let apply = apply.expect("sound section shows an apply button");
+        let action = app.state.handle_settings_mouse(mouse(
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            apply.x + 1,
+            apply.y,
+        ));
+
+        assert_eq!(
+            action,
+            Some(SettingsAction::SaveDoneSound(DoneSoundChoice::Builtin(
+                crate::sound::done_sound_by_key("bell").expect("bell should be a built-in sound")
+            )))
+        );
+        assert_ne!(app.state.mode, Mode::Settings);
+    }
+
+    #[test]
+    fn settings_sound_selection_stays_silent_when_alerts_are_off() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.sound.enabled = false;
+        open_settings_at(&mut state, SettingsSection::Sound);
+
+        for _ in 0..3 {
+            update_settings_state(
+                &mut state,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+            );
+        }
+
+        assert_eq!(state.pending_sound_preview, None);
+    }
+
+    #[test]
+    fn settings_sound_mouse_click_saves_and_previews_a_done_sound() {
+        let mut app = app_for_mouse_test();
+        app.state.sound.enabled = true;
+        open_settings_at(&mut app.state, SettingsSection::Sound);
+
+        let area = app.state.settings_content_rect();
+        let action = app.state.handle_settings_mouse(mouse(
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            area.x + 2,
+            area.y + crate::ui::SOUND_CHOICE_ROWS_OFFSET + 1,
+        ));
+
+        assert_eq!(
+            action,
+            Some(SettingsAction::SaveDoneSound(DoneSoundChoice::Builtin(
+                crate::sound::done_sound_by_key("bell").expect("bell should be a built-in sound")
+            )))
+        );
+        assert_eq!(app.state.settings.list.selected, 3);
+        assert_eq!(
+            app.state.pending_sound_preview,
+            Some(crate::sound::SoundPreview::Builtin(
+                crate::sound::done_sound_by_key("bell").expect("bell should be a built-in sound")
+            ))
+        );
+    }
+
+    #[test]
+    fn settings_sound_mouse_click_still_toggles_alerts() {
+        let mut app = app_for_mouse_test();
+        app.state.sound.enabled = false;
+        open_settings_at(&mut app.state, SettingsSection::Sound);
+
+        let area = app.state.settings_content_rect();
+        let action = app.state.handle_settings_mouse(mouse(
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            area.x + 2,
+            area.y + crate::ui::SOUND_ALERT_ROWS_OFFSET,
+        ));
+
+        assert_eq!(action, Some(SettingsAction::SaveSound(true)));
     }
 
     #[test]

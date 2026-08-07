@@ -531,6 +531,8 @@ impl App {
             accent: crate::config::parse_color(&config.ui.accent),
             sound: config.ui.sound.clone(),
             local_sound_playback: true,
+            pending_sound_preview: None,
+            notify_active_tab: config.ui.notify_active_tab,
             toast_config: config.ui.toast.clone(),
             keybinds: config.keybinds(),
             spinner_tick: 0,
@@ -1215,6 +1217,7 @@ impl App {
                     self.state.request_client_config_reload = true;
                 }
                 self.state.sound = config.ui.sound.clone();
+                self.state.notify_active_tab = config.ui.notify_active_tab;
                 self.state.toast_config = config.ui.toast.clone();
             }
         }
@@ -1847,6 +1850,33 @@ mod tests {
         let app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
 
         assert!(!app.state.redraw_on_focus_gained);
+    }
+
+    #[test]
+    fn saving_a_done_sound_persists_it_and_drops_a_stale_custom_file() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("save-done-sound");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[ui.sound]\nenabled = true\ndone_path = \"/tmp/herdr-old.mp3\"\n",
+        )
+        .unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        app.save_done_sound(&state::DoneSoundChoice::Builtin(
+            crate::sound::done_sound_by_key("bell").expect("bell should be a built-in sound"),
+        ));
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("done = \"bell\""), "{saved}");
+        assert!(!saved.contains("done_path"), "{saved}");
+        assert_eq!(app.state.sound.done.as_deref(), Some("bell"));
+        assert_eq!(app.state.sound.done_sound().key, "bell");
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

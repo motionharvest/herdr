@@ -187,6 +187,7 @@ impl App {
                         crate::app::actions::active_tab_suppresses_notifications(
                             is_active_tab,
                             self.state.outer_terminal_focus,
+                            self.state.notify_active_tab,
                         );
                     let Some(kind) = crate::app::actions::notification_toast_for_state_change(
                         suppress_active_tab_notifications,

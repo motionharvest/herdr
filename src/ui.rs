@@ -62,7 +62,10 @@ pub(crate) use self::{
         open_existing_worktree_visible_start, remove_worktree_button_rects,
         remove_worktree_popup_rect, rename_button_rects,
     },
-    settings::{settings_button_rects, settings_show_primary_action},
+    settings::{
+        settings_button_rects, settings_show_primary_action, SOUND_ALERT_ROWS_OFFSET,
+        SOUND_CHOICE_ROWS_OFFSET,
+    },
     sidebar::{
         agent_panel_entries, collapsed_sidebar_sections, collapsed_sidebar_toggle_rect,
         compute_workspace_card_areas, compute_workspace_list_areas, expanded_sidebar_toggle_rect,

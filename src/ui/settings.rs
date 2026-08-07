@@ -95,15 +95,7 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
             render_settings_theme(app, frame, content_area);
         }
         SettingsSection::Sound => {
-            render_settings_toggle(
-                frame,
-                content_area,
-                p,
-                "sound alerts",
-                "play sounds when agents change state in background",
-                app.sound_enabled(),
-                app.settings.list.selected,
-            );
+            render_settings_sound(app, frame, content_area);
         }
         SettingsSection::Toast => {
             render_modal_choice_list(
@@ -382,6 +374,80 @@ fn render_settings_toggle(
     );
 }
 
+/// Row offsets inside the Sound section's content area. `app::input::settings`
+/// hit-tests clicks against these, so the two must move together.
+pub(crate) const SOUND_ALERT_ROWS_OFFSET: u16 = 2;
+pub(crate) const SOUND_CHOICE_ROWS_OFFSET: u16 = 6;
+
+fn render_settings_sound(app: &AppState, frame: &mut Frame, area: Rect) {
+    let p = &app.palette;
+
+    super::widgets::render_modal_description(
+        frame,
+        Rect::new(area.x, area.y, area.width, 1),
+        "play sounds when agents change state in background",
+        Style::default().fg(p.overlay1),
+    );
+
+    let mut rows = vec![
+        ("sound alerts: on".to_string(), app.sound_enabled()),
+        ("sound alerts: off".to_string(), !app.sound_enabled()),
+    ];
+
+    let header_y = area.y + SOUND_CHOICE_ROWS_OFFSET - 1;
+    if header_y < area.y + area.height {
+        let header = if app.sound_enabled() {
+            "done sound — selecting one plays it"
+        } else {
+            "done sound — turn sound alerts on to hear these"
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!(" {header}"),
+                Style::default().fg(p.overlay1),
+            )),
+            Rect::new(area.x, header_y, area.width, 1),
+        );
+    }
+
+    let active_idx = app.selected_done_sound_index();
+    rows.extend(
+        app.done_sound_choices()
+            .into_iter()
+            .enumerate()
+            .map(|(idx, choice)| {
+                (
+                    format!("{} — {}", choice.label(), choice.description()),
+                    idx == active_idx,
+                )
+            }),
+    );
+
+    for (idx, (text, active)) in rows.into_iter().enumerate() {
+        let offset = if idx < 2 {
+            SOUND_ALERT_ROWS_OFFSET + idx as u16
+        } else {
+            SOUND_CHOICE_ROWS_OFFSET + (idx - 2) as u16
+        };
+        if offset >= area.height {
+            continue;
+        }
+        let style = if idx == app.settings.list.selected {
+            Style::default()
+                .bg(p.surface0)
+                .fg(p.text)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.subtext0)
+        };
+        let marker = if active { " ✓" } else { "" };
+        frame.render_widget(
+            Paragraph::new(format!(" {text}{marker}")).style(style),
+            Rect::new(area.x, area.y + offset, area.width, 1),
+        );
+    }
+}
+
 fn render_settings_experiments(app: &AppState, frame: &mut Frame, area: Rect) {
     let p = &app.palette;
     let [desc_area, _, list_area] = Layout::vertical([
@@ -421,6 +487,98 @@ mod tests {
     use super::*;
     use crate::app::{state::SettingsSection, Mode};
     use ratatui::{backend::TestBackend, Terminal};
+
+    fn rendered_settings(app: &AppState) -> String {
+        let mut terminal =
+            Terminal::new(TestBackend::new(90, 26)).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| render_settings_overlay(app, frame, Rect::new(0, 0, 90, 26)))
+            .expect("settings overlay should render");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn sound_section_lists_every_done_sound_and_marks_the_active_one() {
+        let mut app = AppState::test_new();
+        app.sound.enabled = true;
+        app.sound.done = Some("bell".to_string());
+        app.settings.section = SettingsSection::Sound;
+        app.mode = Mode::Settings;
+
+        let rendered = rendered_settings(&app);
+
+        for sound in crate::sound::DONE_SOUNDS {
+            assert!(
+                rendered.contains(sound.key),
+                "expected {} in the picker: {rendered}",
+                sound.key
+            );
+        }
+        assert!(rendered.contains("bell — a struck bell, ringing out ✓"));
+        assert!(rendered.contains("done sound — selecting one plays it"));
+    }
+
+    #[test]
+    fn sound_section_leads_with_a_configured_custom_file() {
+        let mut app = AppState::test_new();
+        app.sound.enabled = true;
+        app.sound.done_path = Some(std::path::PathBuf::from("/tmp/herdr-test/fanfare.mp3"));
+        app.settings.section = SettingsSection::Sound;
+        app.mode = Mode::Settings;
+
+        let rendered = rendered_settings(&app);
+
+        assert!(rendered.contains("fanfare.mp3 — your own mp3, set in the config file ✓"));
+    }
+
+    #[test]
+    fn sound_section_fits_a_custom_file_and_every_built_in_on_a_short_terminal() {
+        let mut app = AppState::test_new();
+        app.sound.enabled = true;
+        app.sound.done_path = Some(std::path::PathBuf::from("/tmp/herdr-test/fanfare.mp3"));
+        app.settings.section = SettingsSection::Sound;
+        app.mode = Mode::Settings;
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| render_settings_overlay(&app, frame, Rect::new(0, 0, 80, 24)))
+            .expect("settings overlay should render");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("fanfare.mp3"));
+        let last = crate::sound::DONE_SOUNDS
+            .last()
+            .expect("there is at least one built-in sound");
+        assert!(
+            rendered.contains(last.description),
+            "the last sound row was clipped: {rendered}"
+        );
+    }
+
+    #[test]
+    fn sound_section_says_previews_are_muted_when_alerts_are_off() {
+        let mut app = AppState::test_new();
+        app.sound.enabled = false;
+        app.settings.section = SettingsSection::Sound;
+        app.mode = Mode::Settings;
+
+        let rendered = rendered_settings(&app);
+
+        assert!(rendered.contains("done sound — turn sound alerts on to hear these"));
+    }
 
     #[test]
     fn experiments_pane_history_uses_settings_checkmark_marker() {

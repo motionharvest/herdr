@@ -398,6 +398,10 @@ pub struct UiConfig {
     /// Accent color for highlights, borders, and navigation UI.
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
     pub accent: String,
+    /// Also notify for the agent you are currently looking at. When false
+    /// (the default), Herdr suppresses sounds, popups, and the sidebar
+    /// unseen marker for panes in the active tab of the focused terminal.
+    pub notify_active_tab: bool,
     /// Optional visual toast notifications for background workspace events.
     pub toast: ToastConfig,
     /// Play sounds when agents change state in background workspaces.
@@ -581,6 +585,7 @@ impl Default for UiConfig {
             show_agent_labels_on_pane_borders: true,
             agent_panel_scope: AgentPanelScopeConfig::All,
             accent: "cyan".into(),
+            notify_active_tab: false,
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
         }
@@ -1012,6 +1017,19 @@ redraw_on_focus_gained = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.redraw_on_focus_gained);
+    }
+
+    #[test]
+    fn notify_active_tab_defaults_off_and_parses() {
+        let default_config = Config::default();
+        assert!(!default_config.ui.notify_active_tab);
+
+        let toml = r#"
+[ui]
+notify_active_tab = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.ui.notify_active_tab);
     }
 
     #[test]
