@@ -65,6 +65,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # The action adds the target to `stable`, but rust-toolchain.toml pins
+      # cargo to a specific channel, so the cross target has to be added to the
+      # pinned toolchain too. Without this the build fails with E0463 on `core`.
+      - name: Add target to pinned toolchain
+        run: rustup target add ${{ matrix.target }}
+
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
@@ -146,6 +152,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      # The action adds the target to `stable`, but rust-toolchain.toml pins
+      # cargo to a specific channel, so the cross target has to be added to the
+      # pinned toolchain too. Without this the build fails with E0463 on `core`.
+      - name: Add target to pinned toolchain
+        run: rustup target add ${{ matrix.target }}
 
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
