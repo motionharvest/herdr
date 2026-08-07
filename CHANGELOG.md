@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.7.3] - 2026-08-07
+
 ### Added
 - The sound an agent plays when it finishes is now a choice of six: the original chime, plus a bell, an arpeggio, a ping, a blip, and a knock. Pick one in the sound section of the settings panel — moving through the list plays each sound, and the row you press `enter` on is saved to `[ui.sound] done` and used from then on. Saving also clears any stale `done_path`, so the sound you picked is the one you hear.
 - Added `[ui] notify_active_tab = true` for being alerted about the agent you are already looking at. Herdr normally stays silent for the active tab of a focused terminal; with this on, a finished or blocked agent in that tab plays its sound, raises its popup, and lights up in the sidebar like a background one.
