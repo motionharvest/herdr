@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.7.5] - 2026-08-08
+
 ### Fixed
 - Claude Code panes no longer stay stuck on "working" after the agent has finished. Claude's end-of-turn summary reports leftover background shells (`✻ Brewed for 6m 33s · 3 shells still running`), and Herdr read that as work in progress — so a pane where the agent had started a dev server stayed "working" for as long as the server ran, which for a dev server is forever. The live footer, `esc to interrupt` and the spinner, is what marks a turn as in flight; a turn that has ended now reads idle whatever it left running behind it.
 - The sidebar's spaces and agents list now stays where you scrolled it. Every render reset the scroll offset to the top, so with enough spaces and agents to overflow the window the list snapped back before you saw it move — and an animating agent repaints several times a second, so the wheel looked dead.
