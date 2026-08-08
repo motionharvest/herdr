@@ -198,7 +198,10 @@ fn compute_view_internal(
     } else {
         (Rect::default(), main_area)
     };
-    app.workspace_scroll = 0;
+    // Keep where the sidebar is scrolled across frames — this runs on every
+    // render, so resetting here would snap the list back to the top between
+    // wheel notches. Re-clamp instead, in case the sidebar just got shorter.
+    app.workspace_scroll = normalized_workspace_scroll(app, sidebar_rect, app.workspace_scroll);
 
     let tab_bar_view = app
         .active

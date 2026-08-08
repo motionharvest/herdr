@@ -4,6 +4,14 @@
 
 ### Fixed
 - Claude Code panes no longer stay stuck on "working" after the agent has finished. Claude's end-of-turn summary reports leftover background shells (`✻ Brewed for 6m 33s · 3 shells still running`), and Herdr read that as work in progress — so a pane where the agent had started a dev server stayed "working" for as long as the server ran, which for a dev server is forever. The live footer, `esc to interrupt` and the spinner, is what marks a turn as in flight; a turn that has ended now reads idle whatever it left running behind it.
+- The sidebar's spaces and agents list now stays where you scrolled it. Every render reset the scroll offset to the top, so with enough spaces and agents to overflow the window the list snapped back before you saw it move — and an animating agent repaints several times a second, so the wheel looked dead.
+- Scrolling the sidebar now stops with the last entry at the bottom of the list instead of continuing until a single entry is left on screen.
+- The sidebar's scroll limit and scrollbar thumb no longer wobble as you scroll. Entries are different heights, and measuring the viewport from wherever the list happened to sit changed the limit from notch to notch.
+
+### Changed
+- The sidebar's `+ new` button now pins to the bottom of the sidebar once the list is long enough to scroll, instead of trailing whichever entry landed last on screen. Lists short enough to fit still keep the button tucked under the last entry.
+- The agent status bar only bounces while an agent is working, and that bounce now runs four cells past the top and bottom of the bar — resting a beat at each end — so its gradient sweeps off and back instead of snapping around on the last row. A finished-but-unlooked-at agent and a blocked one now pulse in place — the whole bar breathing between its color and a dim wash — because they are waiting on you, not going anywhere.
+- The focused agent's tab name in the sidebar now reads in the same accent as the selected space's name, so the sidebar's highlights agree with each other.
 
 ## [0.7.4] - 2026-08-07
 

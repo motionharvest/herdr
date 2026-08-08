@@ -1169,6 +1169,113 @@ mod tests {
         assert!(!app.state.collapsed_space_keys.contains("repo-key"));
     }
 
+    /// A sidebar whose spaces and agents are taller than the window.
+    fn app_with_overflowing_sidebar() -> crate::app::App {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = (0..3)
+            .map(|idx| {
+                let mut ws = Workspace::test_new(&format!("space{idx}"));
+                for tab in 1..4 {
+                    ws.test_add_tab(Some(&format!("tab{tab}")));
+                }
+                ws
+            })
+            .collect();
+        app.state.ensure_test_terminals();
+        for ws_idx in 0..app.state.workspaces.len() {
+            for tab_idx in 0..app.state.workspaces[ws_idx].tabs.len() {
+                let pane = app.state.workspaces[ws_idx].tabs[tab_idx].root_pane;
+                let terminal_id = app.state.workspaces[ws_idx].tabs[tab_idx].panes[&pane]
+                    .attached_terminal_id
+                    .clone();
+                app.state
+                    .terminals
+                    .get_mut(&terminal_id)
+                    .unwrap()
+                    .detected_agent = Some(Agent::Claude);
+            }
+        }
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 30);
+        let (cards, agent_rows) =
+            crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
+        app.state.view.workspace_card_areas = cards;
+        app.state.view.agent_row_areas = agent_rows;
+        app
+    }
+
+    #[test]
+    fn wheel_over_an_agent_row_scrolls_the_sidebar_both_ways() {
+        let mut app = app_with_overflowing_sidebar();
+        let row = app
+            .state
+            .view
+            .agent_row_areas
+            .first()
+            .expect("the list should show agent rows")
+            .rect;
+
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, row.x + 2, row.y + 1));
+        assert_eq!(app.state.workspace_scroll, 1, "wheel down should scroll");
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, row.x + 2, row.y + 1));
+        assert_eq!(app.state.workspace_scroll, 2);
+
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, row.x + 2, row.y + 1));
+        assert_eq!(app.state.workspace_scroll, 1, "wheel up should scroll back");
+
+        // Scrolling the list must not double as changing which space is active.
+        assert_eq!(app.state.selected, 0);
+        assert_eq!(app.state.active, Some(0));
+    }
+
+    #[test]
+    fn sidebar_scroll_survives_the_next_render() {
+        let mut app = app_with_overflowing_sidebar();
+        let area = Rect::new(0, 0, 106, 30);
+        crate::ui::compute_view(&mut app.state, area);
+        let row = crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect)
+            .1
+            .first()
+            .expect("the list should show agent rows")
+            .rect;
+
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, row.x + 2, row.y + 1));
+        let scrolled = app.state.workspace_scroll;
+        assert!(scrolled > 0, "the wheel should have scrolled the list");
+
+        // Frames are drawn constantly — an animating agent alone repaints
+        // several times a second — so a scroll offset that does not survive a
+        // render is a scroll offset the user never sees.
+        crate::ui::compute_view(&mut app.state, area);
+
+        assert_eq!(app.state.workspace_scroll, scrolled);
+    }
+
+    #[test]
+    fn wheel_over_an_agent_row_stops_at_the_end_of_the_list() {
+        let mut app = app_with_overflowing_sidebar();
+        let row = app
+            .state
+            .view
+            .agent_row_areas
+            .first()
+            .expect("the list should show agent rows")
+            .rect;
+        let max = crate::ui::workspace_list_scroll_metrics(
+            &app.state,
+            crate::ui::workspace_list_rect(&app.state, app.state.view.sidebar_rect),
+        )
+        .max_offset_from_bottom;
+
+        for _ in 0..max + 5 {
+            app.handle_mouse(mouse(MouseEventKind::ScrollDown, row.x + 2, row.y + 1));
+        }
+
+        assert_eq!(app.state.workspace_scroll, max);
+    }
+
     #[test]
     fn wheel_workspace_selection_follows_grouped_visual_order_without_scrollbar() {
         let mut app = app_for_mouse_test();

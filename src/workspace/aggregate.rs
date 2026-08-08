@@ -41,6 +41,14 @@ impl Tab {
         })
     }
 
+    pub fn has_blocked_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
+        self.panes.values().any(|pane| {
+            terminals
+                .get(&pane.attached_terminal_id)
+                .is_some_and(|terminal| terminal.state == AgentState::Blocked)
+        })
+    }
+
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
         self.layout
             .pane_ids()
@@ -111,6 +119,10 @@ impl Workspace {
         self.tabs
             .iter()
             .any(|tab| tab.has_unseen_idle_pane(terminals))
+    }
+
+    pub fn has_blocked_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
+        self.tabs.iter().any(|tab| tab.has_blocked_pane(terminals))
     }
 
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {

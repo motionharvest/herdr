@@ -18,13 +18,30 @@ const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 3;
 pub(crate) const AGENT_PANEL_ENTRY_CONTENT_ROWS: u16 = 3;
 /// Status glyph drawn down the left edge of an agent entry.
 const AGENT_STATUS_BAR_GLYPH: &str = "▎";
-/// `spinner_tick` advances 8 per animation frame, so 16 moves the status bar's
-/// lit cell about every 256ms — a bounce the eye can follow, not a flicker.
-const AGENT_STATUS_BAR_TICKS_PER_STEP: u32 = 16;
+/// `spinner_tick` advances once per animation frame at ~60fps, so 8 moves the
+/// status bar's lit cell about every 128ms — with the overshoot below, a glide
+/// across the bar rather than three abrupt hops.
+const AGENT_STATUS_BAR_TICKS_PER_STEP: u32 = 8;
+/// How far past each end of the bar the lit cell travels. It turns around out
+/// of sight, so the gradient keeps sweeping off the top and bottom instead of
+/// snapping back the moment it lands on the last row.
+const AGENT_STATUS_BAR_BOUNCE_OVERSHOOT: i32 = 4;
+/// Extra steps the lit cell holds at each end of its travel before turning
+/// back — a beat of rest, so the sweep does not read as a continuous rattle.
+const AGENT_STATUS_BAR_BOUNCE_END_HOLD: u32 = 1;
 /// How far a bar cell fades toward the sidebar background, by how many rows it
-/// sits from the lit one. The far end stays dim but legible — fading it all the
-/// way out would make the bar look two cells tall instead of three.
-const AGENT_STATUS_BAR_TRAIL_FADE: [f32; 3] = [0.0, 0.35, 0.62];
+/// sits from the lit one. The falloff eases out over the whole overshoot on
+/// purpose: it has to stay readable a full overshoot past the bar, so every
+/// step shifts all three cells and the wave reads as passing through and out
+/// rather than stalling flat while the highlight is out of sight.
+const AGENT_STATUS_BAR_TRAIL_FADE: [f32; 7] = [0.0, 0.2, 0.38, 0.53, 0.66, 0.77, 0.86];
+/// Ticks per step of the pulse, and steps from full color to dim. One frame per
+/// step keeps the breath smooth; six steps each way is a ~1.5s cycle.
+const AGENT_STATUS_BAR_PULSE_TICKS_PER_STEP: u32 = 8;
+const AGENT_STATUS_BAR_PULSE_STEPS: u32 = 6;
+/// How far a pulsing bar fades at the bottom of its breath. Matches the dimmest
+/// cell of the bounce so the two animations read as the same material.
+const AGENT_STATUS_BAR_PULSE_FADE: f32 = 0.62;
 /// Rows a space card occupies: top border, its name, bottom border.
 const WORKSPACE_CARD_ROWS: u16 = 3;
 
@@ -297,12 +314,7 @@ pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested:
         return requested;
     }
 
-    let entry_count = workspace_list_entries(app).len();
-    if entry_count == 0 {
-        0
-    } else {
-        requested.min(entry_count.saturating_sub(1))
-    }
+    requested.min(workspace_list_max_scroll(app, ws_area))
 }
 
 pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
@@ -427,19 +439,23 @@ pub(crate) fn workspace_list_body_rect(app: &AppState, area: Rect, has_scrollbar
     Rect::new(area.x, body_y, body_width, body_height)
 }
 
-fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
+/// How many entries fit when the list is packed against the bottom of the
+/// viewport. Measuring from the end keeps the scroll limit still: entries are
+/// different heights, so counting from wherever the list happens to be
+/// scrolled makes the limit — and the scrollbar thumb — wobble as you scroll.
+fn workspace_list_trailing_fit(app: &AppState, area: Rect) -> usize {
     let body = workspace_list_body_rect(app, area, false);
     if body.width == 0 || body.height == 0 {
         return 0;
     }
 
-    let mut used_rows = 0u16;
-    let mut visible = 0usize;
     let entries = workspace_list_entries(app);
-    for (idx, entry) in entries.iter().enumerate().skip(scroll) {
+    let mut used_rows = 0u16;
+    let mut fits = 0usize;
+    for idx in (0..entries.len()).rev() {
         let Some(row_height) = entry_row_height(
             app,
-            entry,
+            &entries[idx],
             idx.checked_sub(1).and_then(|prev| entries.get(prev)),
             entries.get(idx + 1),
         ) else {
@@ -449,28 +465,32 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
             break;
         }
         used_rows = used_rows.saturating_add(row_height);
-        visible += 1;
+        fits += 1;
     }
-    visible
+    fits
+}
+
+/// Furthest the list can scroll: the last entry lands at the bottom of the
+/// viewport rather than the list sliding off the top.
+pub(crate) fn workspace_list_max_scroll(app: &AppState, area: Rect) -> usize {
+    workspace_list_entries(app)
+        .len()
+        .saturating_sub(workspace_list_trailing_fit(app, area))
 }
 
 pub(crate) fn workspace_list_scroll_metrics(
     app: &AppState,
     area: Rect,
 ) -> crate::pane::ScrollMetrics {
-    let entries = workspace_list_entries(app);
-    let total_rows = entries.len();
-    let scroll = app.workspace_scroll.min(total_rows.saturating_sub(1));
-    let viewport_rows = workspace_list_visible_count(app, area, scroll);
-    let max_offset_from_bottom = total_rows.saturating_sub(viewport_rows);
-    let offset_from_bottom = total_rows
-        .saturating_sub(scroll)
-        .saturating_sub(viewport_rows);
+    let max_offset_from_bottom = workspace_list_max_scroll(app, area);
+    let scroll = app.workspace_scroll.min(max_offset_from_bottom);
 
     crate::pane::ScrollMetrics {
-        offset_from_bottom,
+        offset_from_bottom: max_offset_from_bottom.saturating_sub(scroll),
         max_offset_from_bottom,
-        viewport_rows,
+        // The count that fits at the bottom, so thumb size stays put while
+        // scrolling instead of breathing with each entry's height.
+        viewport_rows: workspace_list_trailing_fit(app, area),
     }
 }
 
@@ -558,25 +578,37 @@ fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
     WorkspaceListLayout {
         cards,
         agent_rows,
-        new_button: new_workspace_button_rect_below(app, ws_area, row_y),
+        new_button: new_workspace_button_rect_below(
+            app,
+            ws_area,
+            row_y,
+            should_show_scrollbar(metrics),
+        ),
     }
 }
 
-/// The `+ new` button hugs the bottom of the list rather than the panel: it
-/// follows the last entry down and stops once it reaches the sidebar's floor.
-fn new_workspace_button_rect_below(app: &AppState, ws_area: Rect, list_bottom: u16) -> Rect {
+/// Where the `+ new` button sits. A list short enough to fit lets the button
+/// hug the last entry, but once the list scrolls the button pins to the
+/// sidebar's floor: it has to stay put and stay reachable while the entries
+/// above it move.
+fn new_workspace_button_rect_below(
+    app: &AppState,
+    ws_area: Rect,
+    list_bottom: u16,
+    list_scrolls: bool,
+) -> Rect {
     if spaces_section_collapsed(app) || ws_area.height < WORKSPACE_SECTION_FOOTER_ROWS {
         return Rect::default();
     }
     // A gap row keeps the button off the last entry and leaves room for the
     // reorder drop indicator.
     let floor = ws_area.y + ws_area.height.saturating_sub(WORKSPACE_SECTION_FOOTER_ROWS);
-    Rect::new(
-        ws_area.x,
-        list_bottom.saturating_add(1).min(floor),
-        ws_area.width,
-        WORKSPACE_SECTION_FOOTER_ROWS,
-    )
+    let y = if list_scrolls {
+        floor
+    } else {
+        list_bottom.saturating_add(1).min(floor)
+    };
+    Rect::new(ws_area.x, y, ws_area.width, WORKSPACE_SECTION_FOOTER_ROWS)
 }
 
 pub(crate) fn compute_workspace_list_areas(
@@ -1227,11 +1259,11 @@ fn render_agent_rows(
             )
         };
         let text_width = rect.width.saturating_sub(5) as usize;
-        // The pane you are typing into reads in the same color its own chrome
-        // uses when focused, so the sidebar and the pane agree.
+        // The pane you are typing into reads in the accent, matching the
+        // selected space's name so the sidebar highlights agree.
         let name_style = if is_focused_pane {
             Style::default()
-                .fg(app.palette.focused_pane_border())
+                .fg(app.palette.accent)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(app.palette.text)
@@ -1273,32 +1305,80 @@ fn render_agent_rows(
     }
 }
 
-/// Whether an entry's status bar animates. Live states — working, and finished
-/// but not yet looked at — move; settled ones hold still so a quiet sidebar
-/// stays quiet. These are also the states that keep the animation timer
-/// running, so the bar only bounces when frames are actually ticking.
-fn agent_status_bar_animates(state: AgentState, seen: bool) -> bool {
-    matches!(state, AgentState::Working) || (matches!(state, AgentState::Idle) && !seen)
+/// How an entry's status bar moves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AgentBarMotion {
+    /// A lit cell walking down the bar and back — work in progress.
+    Bounce,
+    /// The whole bar breathing between its color and a dim wash — a state that
+    /// wants your eye but is not moving anywhere.
+    Pulse,
+    /// Settled: one flat color.
+    Still,
 }
 
-/// Which row of the bar is lit, bouncing top to bottom and back:
-/// rows 0, 1, 2, 1, 0, … one step at a time.
-fn agent_status_bar_lit_row(tick: u32, rows: usize) -> usize {
-    if rows <= 1 {
+/// How an entry's status bar animates. Work in progress bounces because it is
+/// going somewhere; states that are waiting on you — finished but unlooked-at,
+/// or blocked — pulse in place. Everything settled holds still so a quiet
+/// sidebar stays quiet. Anything that is not [`AgentBarMotion::Still`] also
+/// keeps the animation timer running, so the bar only moves when frames tick.
+fn agent_status_bar_motion(state: AgentState, seen: bool) -> AgentBarMotion {
+    match state {
+        AgentState::Working => AgentBarMotion::Bounce,
+        AgentState::Blocked => AgentBarMotion::Pulse,
+        AgentState::Idle if !seen => AgentBarMotion::Pulse,
+        _ => AgentBarMotion::Still,
+    }
+}
+
+/// Which row of the bar is lit, bouncing top to bottom and back one step at a
+/// time. The travel runs [`AGENT_STATUS_BAR_BOUNCE_OVERSHOOT`] past both ends,
+/// so the result can sit outside `0..rows` — off the bar, with only the tail of
+/// its gradient still showing — and rests at each extreme for
+/// [`AGENT_STATUS_BAR_BOUNCE_END_HOLD`] extra steps before heading back.
+fn agent_status_bar_lit_row(tick: u32, rows: usize) -> i32 {
+    let first = -AGENT_STATUS_BAR_BOUNCE_OVERSHOOT;
+    let last = rows as i32 - 1 + AGENT_STATUS_BAR_BOUNCE_OVERSHOOT;
+    let span = last - first;
+    if span <= 0 {
         return 0;
     }
-    let period = (rows - 1) * 2;
-    let phase = (tick / AGENT_STATUS_BAR_TICKS_PER_STEP) as usize % period;
-    if phase < rows {
+    let span = span as u32;
+    let hold = AGENT_STATUS_BAR_BOUNCE_END_HOLD;
+    // One lap: rest at the top, walk down, rest at the bottom, walk back up.
+    // Each rest is `hold` steps longer than the step the walk would have spent
+    // on that end anyway.
+    let period = 2 * (span + hold);
+    let phase = (tick / AGENT_STATUS_BAR_TICKS_PER_STEP) % period;
+    let offset = if phase <= hold {
+        0
+    } else if phase < hold + span {
+        phase - hold
+    } else if phase <= 2 * hold + span {
+        span
+    } else {
+        span - (phase - (2 * hold + span))
+    };
+    first + offset as i32
+}
+
+/// How far a pulsing bar has faded at `tick`: a triangle wave running from the
+/// full state color down to [`AGENT_STATUS_BAR_PULSE_FADE`] and back.
+fn agent_status_bar_pulse_fade(tick: u32) -> f32 {
+    let steps = AGENT_STATUS_BAR_PULSE_STEPS;
+    let period = steps * 2;
+    let phase = (tick / AGENT_STATUS_BAR_PULSE_TICKS_PER_STEP) % period;
+    let distance = if phase <= steps {
         phase
     } else {
         period - phase
-    }
+    };
+    AGENT_STATUS_BAR_PULSE_FADE * (distance as f32 / steps as f32)
 }
 
-/// Color for each row of an entry's status bar: the lit row keeps the state
-/// color, and rows fade toward the sidebar background the further they sit
-/// from it.
+/// Color for each row of an entry's status bar. A bouncing bar keeps the state
+/// color on the lit row and fades the rows around it; a pulsing bar fades all
+/// three together; a still one is flat.
 fn agent_status_bar_styles(
     state: AgentState,
     seen: bool,
@@ -1306,23 +1386,29 @@ fn agent_status_bar_styles(
     app: &AppState,
 ) -> [Color; AGENT_PANEL_ENTRY_CONTENT_ROWS as usize] {
     let rows = AGENT_PANEL_ENTRY_CONTENT_ROWS as usize;
-    if !agent_status_bar_animates(state, seen) {
-        return [color; AGENT_PANEL_ENTRY_CONTENT_ROWS as usize];
-    }
-
-    let lit = agent_status_bar_lit_row(app.spinner_tick, rows);
     let mut styles = [color; AGENT_PANEL_ENTRY_CONTENT_ROWS as usize];
-    for (row, style) in styles.iter_mut().enumerate() {
-        let distance = row.abs_diff(lit);
-        let fade = AGENT_STATUS_BAR_TRAIL_FADE
-            .get(distance)
-            .copied()
-            .unwrap_or_else(|| {
-                *AGENT_STATUS_BAR_TRAIL_FADE
-                    .last()
-                    .expect("the fade table is not empty")
-            });
-        *style = fade_toward_background(color, fade, app);
+    match agent_status_bar_motion(state, seen) {
+        AgentBarMotion::Still => {}
+        AgentBarMotion::Pulse => {
+            let faded =
+                fade_toward_background(color, agent_status_bar_pulse_fade(app.spinner_tick), app);
+            styles = [faded; AGENT_PANEL_ENTRY_CONTENT_ROWS as usize];
+        }
+        AgentBarMotion::Bounce => {
+            let lit = agent_status_bar_lit_row(app.spinner_tick, rows);
+            for (row, style) in styles.iter_mut().enumerate() {
+                let distance = (row as i32 - lit).unsigned_abs() as usize;
+                let fade = AGENT_STATUS_BAR_TRAIL_FADE
+                    .get(distance)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        *AGENT_STATUS_BAR_TRAIL_FADE
+                            .last()
+                            .expect("the fade table is not empty")
+                    });
+                *style = fade_toward_background(color, fade, app);
+            }
+        }
     }
     styles
 }
@@ -1478,7 +1564,9 @@ mod tests {
 
     #[test]
     fn working_status_bar_lights_one_cell_and_fades_the_rest() {
-        let lit_top = status_bar_colors(AgentState::Working, true, 0);
+        // The bounce starts above the bar, so pick the tick it reaches the top
+        // row rather than assuming it begins there.
+        let lit_top = status_bar_colors(AgentState::Working, true, tick_with_lit_row(0));
         let mut app_color = crate::app::state::AppState::test_new();
         app_color.palette = crate::app::state::Palette::catppuccin();
         let working = app_color.palette.yellow;
@@ -1497,29 +1585,105 @@ mod tests {
         );
     }
 
-    #[test]
-    fn working_status_bar_walks_down_then_back_up() {
-        let step = AGENT_STATUS_BAR_TICKS_PER_STEP;
-        let lit_row_of = |tick: u32| {
-            let colors = status_bar_colors(AgentState::Working, true, tick);
-            colors
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| {
-                    luminance_of(**a)
-                        .partial_cmp(&luminance_of(**b))
-                        .expect("bar colors have comparable luminance")
-                })
-                .map(|(row, _)| row)
-                .expect("the bar has rows")
-        };
+    /// First tick at which the bounce's lit cell sits on `position`.
+    fn tick_with_lit_row(position: i32) -> u32 {
+        let rows = AGENT_PANEL_ENTRY_CONTENT_ROWS as usize;
+        (0..u32::MAX)
+            .map(|i| i * AGENT_STATUS_BAR_TICKS_PER_STEP)
+            .find(|tick| agent_status_bar_lit_row(*tick, rows) == position)
+            .unwrap_or_else(|| panic!("the bounce should pass through {position}"))
+    }
 
-        // Down the bar one cell at a time, then back up the same way.
-        assert_eq!(lit_row_of(0), 0);
-        assert_eq!(lit_row_of(step), 1);
-        assert_eq!(lit_row_of(step * 2), 2);
-        assert_eq!(lit_row_of(step * 3), 1);
-        assert_eq!(lit_row_of(step * 4), 0);
+    #[test]
+    fn working_status_bar_walks_down_then_back_up_overshooting_both_ends() {
+        let rows = AGENT_PANEL_ENTRY_CONTENT_ROWS as usize;
+        let step = AGENT_STATUS_BAR_TICKS_PER_STEP;
+        let travel: Vec<i32> = (0..22)
+            .map(|i| agent_status_bar_lit_row(i * step, rows))
+            .collect();
+
+        // Four steps above the bar, down through its three rows, four steps
+        // below, and back — one cell at a time, turning around out of sight and
+        // resting a beat at each end.
+        assert_eq!(
+            travel,
+            vec![-4, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 6, 5, 4, 3, 2, 1, 0, -1, -2, -3,]
+        );
+        assert_eq!(
+            agent_status_bar_lit_row(22 * step, rows),
+            travel[0],
+            "the travel should repeat without a stutter at the wrap"
+        );
+    }
+
+    #[test]
+    fn working_status_bar_rests_a_beat_at_each_end_of_its_travel() {
+        let rows = AGENT_PANEL_ENTRY_CONTENT_ROWS as usize;
+        let step = AGENT_STATUS_BAR_TICKS_PER_STEP;
+        let hold = AGENT_STATUS_BAR_BOUNCE_END_HOLD;
+
+        for end in [
+            -AGENT_STATUS_BAR_BOUNCE_OVERSHOOT,
+            rows as i32 - 1 + AGENT_STATUS_BAR_BOUNCE_OVERSHOOT,
+        ] {
+            let arrives = tick_with_lit_row(end);
+            for beat in 0..=hold {
+                assert_eq!(
+                    agent_status_bar_lit_row(arrives + beat * step, rows),
+                    end,
+                    "the travel should rest at {end} for {} steps",
+                    hold + 1
+                );
+            }
+            assert_ne!(
+                agent_status_bar_lit_row(arrives + (hold + 1) * step, rows),
+                end,
+                "the rest at {end} should last one beat, not stall"
+            );
+        }
+    }
+
+    #[test]
+    fn working_status_bar_keeps_its_gradient_while_the_highlight_is_off_the_end() {
+        let mut app_color = crate::app::state::AppState::test_new();
+        app_color.palette = crate::app::state::Palette::catppuccin();
+        let working = app_color.palette.yellow;
+
+        // Furthest above the bar: no cell is at full color, and the gradient
+        // still leans toward the top row the highlight is heading back to. It
+        // has to stay readable out here, or the overshoot is invisible.
+        let above = status_bar_colors(
+            AgentState::Working,
+            true,
+            tick_with_lit_row(-AGENT_STATUS_BAR_BOUNCE_OVERSHOOT),
+        );
+        assert!(
+            above.iter().all(|color| *color != working),
+            "the highlight has left the bar, so no cell is fully lit: {above:?}"
+        );
+        assert!(
+            luminance_of(above[0]) > luminance_of(above[1])
+                && luminance_of(above[1]) > luminance_of(above[2]),
+            "the gradient should still point off the top: {above:?}"
+        );
+
+        // Furthest below it, the same gradient runs the other way.
+        let below = status_bar_colors(
+            AgentState::Working,
+            true,
+            tick_with_lit_row(
+                AGENT_PANEL_ENTRY_CONTENT_ROWS as i32 - 1 + AGENT_STATUS_BAR_BOUNCE_OVERSHOOT,
+            ),
+        );
+        assert!(
+            below.iter().all(|color| *color != working),
+            "the highlight has left the bottom, so no cell is fully lit: {below:?}"
+        );
+        assert!(
+            luminance_of(below[2]) > luminance_of(below[1])
+                && luminance_of(below[1]) > luminance_of(below[0]),
+            "the gradient should still point off the bottom: {below:?}"
+        );
     }
 
     #[test]
@@ -1534,13 +1698,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn finished_but_unseen_status_bar_animates() {
-        let colors = status_bar_colors(AgentState::Idle, false, 0);
-        assert_ne!(
-            colors[0], colors[2],
-            "a finished agent you have not looked at should still bounce: {colors:?}"
+    /// Every cell of a pulsing bar shares one color that dims and brightens
+    /// again, instead of a cell walking down the bar.
+    fn assert_pulses(state: AgentState, seen: bool) {
+        let step = AGENT_STATUS_BAR_PULSE_TICKS_PER_STEP;
+        let dimmest = AGENT_STATUS_BAR_PULSE_STEPS * step;
+        for tick in [0, step, dimmest, dimmest + step] {
+            let colors = status_bar_colors(state, seen, tick);
+            assert_eq!(
+                colors[0], colors[1],
+                "a pulsing bar is one flat color at tick {tick}: {colors:?}"
+            );
+            assert_eq!(colors[1], colors[2]);
+        }
+
+        let bright = status_bar_colors(state, seen, 0);
+        let mid = status_bar_colors(state, seen, step);
+        let dim = status_bar_colors(state, seen, dimmest);
+        assert!(
+            luminance_of(bright[0]) > luminance_of(mid[0]),
+            "the pulse should dim as it runs: {bright:?} -> {mid:?}"
         );
+        assert!(
+            luminance_of(mid[0]) > luminance_of(dim[0]),
+            "the pulse should reach its dimmest mid-cycle: {mid:?} -> {dim:?}"
+        );
+        assert_eq!(
+            status_bar_colors(state, seen, dimmest * 2),
+            bright,
+            "the pulse should come back up to full color"
+        );
+    }
+
+    #[test]
+    fn finished_but_unseen_status_bar_pulses() {
+        assert_pulses(AgentState::Idle, false);
+    }
+
+    #[test]
+    fn blocked_status_bar_pulses() {
+        assert_pulses(AgentState::Blocked, true);
     }
 
     fn luminance_of(color: Color) -> f32 {
@@ -2011,6 +2208,119 @@ mod tests {
         );
     }
 
+    /// Spaces holding `pane_counts[i]` agent panes each.
+    fn app_with_agents(pane_counts: &[usize]) -> AppState {
+        let mut app = AppState::test_new();
+        app.workspaces = pane_counts
+            .iter()
+            .enumerate()
+            .map(|(idx, panes)| {
+                let mut ws = Workspace::test_new(&format!("space{idx}"));
+                for tab in 1..*panes {
+                    ws.test_add_tab(Some(&format!("tab{tab}")));
+                }
+                ws
+            })
+            .collect();
+        app.ensure_test_terminals();
+        for ws_idx in 0..app.workspaces.len() {
+            for tab_idx in 0..app.workspaces[ws_idx].tabs.len() {
+                let pane = app.workspaces[ws_idx].tabs[tab_idx].root_pane;
+                let terminal_id = app.workspaces[ws_idx].tabs[tab_idx].panes[&pane]
+                    .attached_terminal_id
+                    .clone();
+                app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+            }
+        }
+        app.active = Some(0);
+        app.selected = 0;
+        app
+    }
+
+    #[test]
+    fn overflowing_list_pins_the_new_button_to_the_sidebar_floor() {
+        let area = Rect::new(0, 0, 26, 30);
+        let mut app = app_with_agents(&[3, 4, 3]);
+        let floor = area.y + area.height - WORKSPACE_SECTION_FOOTER_ROWS;
+        let max = workspace_list_max_scroll(&app, workspace_list_rect(&app, area));
+        assert!(max > 0, "this list should overflow the sidebar");
+
+        // Wherever the list is scrolled, the button stays on the floor rather
+        // than trailing whichever entry happens to be last on screen.
+        for scroll in 0..=max {
+            app.workspace_scroll = scroll;
+            assert_eq!(
+                new_workspace_button_rect(&app, area).y,
+                floor,
+                "button drifted at scroll {scroll}"
+            );
+        }
+    }
+
+    #[test]
+    fn short_list_keeps_the_new_button_under_the_last_entry() {
+        let area = Rect::new(0, 0, 26, 40);
+        let app = app_with_agents(&[1]);
+        let floor = area.y + area.height - WORKSPACE_SECTION_FOOTER_ROWS;
+        let rows = compute_workspace_list_areas(&app, area).1;
+        let last = rows.last().expect("the space lists its agent").rect;
+
+        let button = new_workspace_button_rect(&app, area);
+        assert!(
+            button.y < floor,
+            "a list this short should let the button hug the entries: {button:?}"
+        );
+        assert!(button.y > last.y, "the button belongs below the last entry");
+    }
+
+    #[test]
+    fn scroll_limit_and_viewport_hold_still_while_scrolling() {
+        let area = Rect::new(0, 0, 26, 30);
+        let mut app = app_with_agents(&[3, 4, 3]);
+        let ws_area = workspace_list_rect(&app, area);
+        let first = workspace_list_scroll_metrics(&app, ws_area);
+        assert!(should_show_scrollbar(first));
+
+        // Entries are different heights; measuring the viewport from wherever
+        // the list sits would make the limit and the thumb wobble per notch.
+        for scroll in 0..=first.max_offset_from_bottom {
+            app.workspace_scroll = scroll;
+            let metrics = workspace_list_scroll_metrics(&app, ws_area);
+            assert_eq!(metrics.max_offset_from_bottom, first.max_offset_from_bottom);
+            assert_eq!(metrics.viewport_rows, first.viewport_rows);
+            assert_eq!(
+                metrics.offset_from_bottom,
+                first.max_offset_from_bottom - scroll
+            );
+        }
+    }
+
+    #[test]
+    fn scrolling_stops_with_the_last_entry_in_view() {
+        let area = Rect::new(0, 0, 26, 30);
+        let mut app = app_with_agents(&[3, 4, 3]);
+        let ws_area = workspace_list_rect(&app, area);
+        let entries = workspace_list_entries(&app);
+        let last_pane = match entries.last().expect("the list has entries") {
+            WorkspaceListEntry::Agent { pane_id, .. } => *pane_id,
+            other => panic!("expected the list to end on an agent, got {other:?}"),
+        };
+
+        // Asking to scroll past the end lands on the offset that puts the last
+        // entry at the bottom, not on a nearly empty list.
+        app.workspace_scroll = normalized_workspace_scroll(&app, area, entries.len() * 2);
+        assert_eq!(
+            app.workspace_scroll,
+            workspace_list_max_scroll(&app, ws_area)
+        );
+        let rows = compute_workspace_list_areas(&app, area).1;
+        assert_eq!(
+            rows.last().map(|row| row.pane_id),
+            Some(last_pane),
+            "the end of the list should be reachable"
+        );
+    }
+
     #[test]
     fn compact_space_group_scroll_offset_can_start_inside_group() {
         let mut app = AppState::test_new();
@@ -2019,11 +2329,14 @@ mod tests {
             workspace_with_worktree_space("one", Some("repo-key"), "/repo/herdr-one"),
             workspace_with_worktree_space("two", Some("repo-key"), "/repo/herdr-two"),
         ];
-        let area = Rect::new(0, 0, 30, 20);
+        // Short enough that one card fills the list, so scrolling to the end
+        // starts the render inside the group.
+        let area = Rect::new(0, 0, 30, 7);
         app.workspace_scroll = normalized_workspace_scroll(&app, area, 2);
 
         let (cards, headers) = compute_workspace_list_areas(&app, area);
 
+        assert_eq!(app.workspace_scroll, 2);
         assert!(headers.is_empty());
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].ws_idx, 2);

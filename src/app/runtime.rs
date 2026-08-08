@@ -325,11 +325,13 @@ impl App {
                 .is_some_and(|ws| {
                     ws.has_working_pane(&self.state.terminals)
                         || ws.has_unseen_idle_pane(&self.state.terminals)
+                        || ws.has_blocked_pane(&self.state.terminals)
                 }),
             crate::app::state::AgentPanelScope::AllWorkspaces => {
                 self.state.workspaces.iter().any(|ws| {
                     ws.has_working_pane(&self.state.terminals)
                         || ws.has_unseen_idle_pane(&self.state.terminals)
+                        || ws.has_blocked_pane(&self.state.terminals)
                 })
             }
         }
