@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Claude Code panes no longer stay stuck on "working" after the agent has finished. Claude's end-of-turn summary reports leftover background shells (`✻ Brewed for 6m 33s · 3 shells still running`), and Herdr read that as work in progress — so a pane where the agent had started a dev server stayed "working" for as long as the server ran, which for a dev server is forever. The live footer, `esc to interrupt` and the spinner, is what marks a turn as in flight; a turn that has ended now reads idle whatever it left running behind it.
+
 ## [0.7.4] - 2026-08-07
 
 ### Changed

@@ -142,7 +142,12 @@ fn has_running_status_line(content_above_prompt: &str) -> bool {
         return false;
     };
 
-    is_background_agent_wait_line(line) || is_still_running_status_line(line)
+    // Only a line describing what the agent is doing *now* counts. Claude's
+    // end-of-turn summary also mentions leftover background work
+    // ("✻ Brewed for 6m 33s · 3 shells still running"), and a dev server the
+    // agent started never exits — reading that as working pinned the pane to
+    // "working" forever while it sat waiting for input.
+    is_background_agent_wait_line(line)
 }
 
 fn is_background_agent_wait_line(line: &str) -> bool {
@@ -170,36 +175,6 @@ fn is_background_agent_wait_line(line: &str) -> bool {
     }
 
     rest == "background agent to finish" || rest == "background agents to finish"
-}
-
-fn is_still_running_status_line(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    let words: Vec<&str> = lower.split_whitespace().collect();
-
-    for (index, word) in words.iter().enumerate() {
-        let Ok(count) = word.parse::<u32>() else {
-            continue;
-        };
-        if count == 0 {
-            continue;
-        }
-
-        if matches!(
-            words.get(index + 1..index + 4),
-            Some(["shell" | "shells", "still", "running"])
-        ) {
-            return true;
-        }
-
-        if matches!(
-            words.get(index + 1..index + 5),
-            Some(["local", "agent" | "agents", "still", "running"])
-        ) {
-            return true;
-        }
-    }
-
-    false
 }
 
 fn has_claude_yes_no_choice(content: &str) -> bool {
@@ -345,20 +320,48 @@ mod tests {
     }
 
     #[test]
-    fn shell_still_running_status_line_is_working() {
-        let content = prompt_box_below(
-            "● Started. I'll tell you when it finishes.\n\n✻ Crunched for 7s · 1 shell still running",
+    fn finished_turn_leaving_shells_running_is_idle() {
+        // Claude's end-of-turn summary reports leftover background shells, and
+        // the dev servers an agent starts never exit — so reading that line as
+        // working pinned the pane to "working" for as long as the servers ran,
+        // while it sat there waiting for input. Shape taken from a real pane.
+        let content = format!(
+            "{}   Opus 5  high  ⎇ shared-navigation\n  ⏵⏵ auto mode on · 3 shells · ← for agents\n",
+            prompt_box_below(
+                "● The preview is serving the real blog.\n\n  Nothing is pushed.\n\n✻ Brewed for 6m 33s · 3 shells still running",
+            )
         );
+
+        assert_eq!(detect(&content), AgentState::Idle);
+        assert!(!has_working_chrome(&content));
+        assert!(!is_ambiguous(&content), "the prompt box is the evidence");
+    }
+
+    #[test]
+    fn shell_still_running_while_the_turn_runs_is_working() {
+        // The live footer is what says the turn is in flight, background
+        // shells or not.
+        let content = prompt_box_below("✻ Brewing… (esc to interrupt) · 1 shell still running");
 
         assert_eq!(detect(&content), AgentState::Working);
         assert!(has_working_chrome(&content));
     }
 
     #[test]
-    fn local_agent_still_running_status_line_is_working() {
+    fn finished_turn_leaving_local_agents_running_is_idle() {
         let content = prompt_box_below(
             "● Hey. What do you want to work on?\n\n✻ Worked for 4s · 2 local agents still running",
         );
+
+        assert_eq!(detect(&content), AgentState::Idle);
+        assert!(!has_working_chrome(&content));
+    }
+
+    #[test]
+    fn waiting_on_background_agents_is_still_working() {
+        // Unlike the summary line, this one is the live footer: the turn is
+        // parked until those agents come back.
+        let content = prompt_box_below("Waiting for 2 background agents to finish");
 
         assert_eq!(detect(&content), AgentState::Working);
         assert!(has_working_chrome(&content));
