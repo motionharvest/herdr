@@ -1194,7 +1194,7 @@ fn selection_fg_for_bg(bg: Color, p: &Palette) -> Color {
         .unwrap_or_else(|| panel_contrast_fg(p))
 }
 
-fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
+pub(super) fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
     fn channel(base: u8, target: u8, amount: f32) -> u8 {
         (f32::from(base) + (f32::from(target) - f32::from(base)) * amount).round() as u8
     }
@@ -1217,7 +1217,7 @@ fn relative_luminance(color: Rgb) -> f32 {
     0.2126 * channel(color.0) + 0.7152 * channel(color.1) + 0.0722 * channel(color.2)
 }
 
-fn color_to_rgb(color: Color) -> Option<Rgb> {
+pub(super) fn color_to_rgb(color: Color) -> Option<Rgb> {
     match color {
         Color::Reset => None,
         Color::Black => Some((0, 0, 0)),

@@ -1,6 +1,6 @@
 use ratatui::{
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
     Frame,
@@ -18,6 +18,13 @@ const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 3;
 pub(crate) const AGENT_PANEL_ENTRY_CONTENT_ROWS: u16 = 3;
 /// Status glyph drawn down the left edge of an agent entry.
 const AGENT_STATUS_BAR_GLYPH: &str = "▎";
+/// `spinner_tick` advances 8 per animation frame, so 16 moves the status bar's
+/// lit cell about every 256ms — a bounce the eye can follow, not a flicker.
+const AGENT_STATUS_BAR_TICKS_PER_STEP: u32 = 16;
+/// How far a bar cell fades toward the sidebar background, by how many rows it
+/// sits from the lit one. The far end stays dim but legible — fading it all the
+/// way out would make the bar look two cells tall instead of three.
+const AGENT_STATUS_BAR_TRAIL_FADE: [f32; 3] = [0.0, 0.35, 0.62];
 /// Rows a space card occupies: top border, its name, bottom border.
 const WORKSPACE_CARD_ROWS: u16 = 3;
 
@@ -1210,11 +1217,15 @@ fn render_agent_rows(
         };
         // Status is shown as a vertical bar running down the entry's left edge
         // instead of a bullet. It is inset by two so it clears the space
-        // outline's edge with a column to spare.
-        let bar = Span::styled(
-            format!("  {AGENT_STATUS_BAR_GLYPH} "),
-            Style::default().fg(color),
-        );
+        // outline's edge with a column to spare. On live entries the lit cell
+        // walks up and down the bar, so a busy agent reads as busy at a glance.
+        let bar_rows = agent_status_bar_styles(entry.state, entry.seen, color, app);
+        let bar = |row: usize| {
+            Span::styled(
+                format!("  {AGENT_STATUS_BAR_GLYPH} "),
+                Style::default().fg(bar_rows[row]),
+            )
+        };
         let text_width = rect.width.saturating_sub(5) as usize;
         // The pane you are typing into reads in the same color its own chrome
         // uses when focused, so the sidebar and the pane agree.
@@ -1231,11 +1242,11 @@ fn render_agent_rows(
             frame,
             Rect::new(rect.x, rect.y, rect.width, 1),
             Line::from(vec![
-                bar.clone(),
+                bar(0),
                 Span::styled(truncate_chars(&entry.tab_name, text_width), name_style),
             ]),
         );
-        let mut title_spans = vec![bar.clone()];
+        let mut title_spans = vec![bar(1)];
         super::panes::push_title_name_spans(
             &mut title_spans,
             &truncate_chars(&title, text_width),
@@ -1252,7 +1263,7 @@ fn render_agent_rows(
             frame,
             Rect::new(rect.x, rect.y + 2, rect.width, 1),
             Line::from(vec![
-                bar,
+                bar(2),
                 Span::styled(
                     truncate_chars(&status_line, text_width),
                     Style::default().fg(app.palette.overlay0),
@@ -1260,6 +1271,77 @@ fn render_agent_rows(
             ]),
         );
     }
+}
+
+/// Whether an entry's status bar animates. Live states — working, and finished
+/// but not yet looked at — move; settled ones hold still so a quiet sidebar
+/// stays quiet. These are also the states that keep the animation timer
+/// running, so the bar only bounces when frames are actually ticking.
+fn agent_status_bar_animates(state: AgentState, seen: bool) -> bool {
+    matches!(state, AgentState::Working) || (matches!(state, AgentState::Idle) && !seen)
+}
+
+/// Which row of the bar is lit, bouncing top to bottom and back:
+/// rows 0, 1, 2, 1, 0, … one step at a time.
+fn agent_status_bar_lit_row(tick: u32, rows: usize) -> usize {
+    if rows <= 1 {
+        return 0;
+    }
+    let period = (rows - 1) * 2;
+    let phase = (tick / AGENT_STATUS_BAR_TICKS_PER_STEP) as usize % period;
+    if phase < rows {
+        phase
+    } else {
+        period - phase
+    }
+}
+
+/// Color for each row of an entry's status bar: the lit row keeps the state
+/// color, and rows fade toward the sidebar background the further they sit
+/// from it.
+fn agent_status_bar_styles(
+    state: AgentState,
+    seen: bool,
+    color: Color,
+    app: &AppState,
+) -> [Color; AGENT_PANEL_ENTRY_CONTENT_ROWS as usize] {
+    let rows = AGENT_PANEL_ENTRY_CONTENT_ROWS as usize;
+    if !agent_status_bar_animates(state, seen) {
+        return [color; AGENT_PANEL_ENTRY_CONTENT_ROWS as usize];
+    }
+
+    let lit = agent_status_bar_lit_row(app.spinner_tick, rows);
+    let mut styles = [color; AGENT_PANEL_ENTRY_CONTENT_ROWS as usize];
+    for (row, style) in styles.iter_mut().enumerate() {
+        let distance = row.abs_diff(lit);
+        let fade = AGENT_STATUS_BAR_TRAIL_FADE
+            .get(distance)
+            .copied()
+            .unwrap_or_else(|| {
+                *AGENT_STATUS_BAR_TRAIL_FADE
+                    .last()
+                    .expect("the fade table is not empty")
+            });
+        *style = fade_toward_background(color, fade, app);
+    }
+    styles
+}
+
+/// Mix `color` toward the sidebar background. `amount` of 0 keeps the color and
+/// 1 reaches the background; terminals that gave us a color we cannot mix
+/// numerically keep the original.
+fn fade_toward_background(color: Color, amount: f32, app: &AppState) -> Color {
+    if amount <= 0.0 {
+        return color;
+    }
+    let Some(rgb) = super::panes::color_to_rgb(color) else {
+        return color;
+    };
+    let Some(background) = super::panes::color_to_rgb(app.palette.panel_bg) else {
+        return color;
+    };
+    let (r, g, b) = super::panes::mix_rgb(rgb, background, amount.clamp(0.0, 1.0));
+    Color::Rgb(r, g, b)
 }
 
 /// Second entry row: the pane's human name plus the harness, e.g.
@@ -1346,6 +1428,124 @@ mod tests {
             .draw(|frame| render_workspace_rows(&app, &runtimes, frame, area))
             .unwrap();
         (app, terminal)
+    }
+
+    /// Foreground colors of one agent entry's three status bar cells, top to
+    /// bottom, with the pane in `state` and the animation at `tick`.
+    fn status_bar_colors(state: AgentState, seen: bool, tick: u32) -> Vec<Color> {
+        let area = Rect::new(0, 0, 28, 24);
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("herdr");
+        let pane = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        app.terminals.get_mut(&terminal_id).unwrap().state = state;
+        app.workspaces[0].tabs[0].panes.get_mut(&pane).unwrap().seen = seen;
+        app.active = Some(0);
+        app.selected = 0;
+        app.spinner_tick = tick;
+
+        let runtimes = TerminalRuntimeRegistry::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.x + area.width, area.y + area.height)).unwrap();
+        terminal
+            .draw(|frame| render_workspace_rows(&app, &runtimes, frame, area))
+            .unwrap();
+
+        let row = compute_workspace_list_areas(&app, area)
+            .1
+            .first()
+            .expect("the space's agent should have a row")
+            .rect;
+        let buf = terminal.backend().buffer();
+        (0..AGENT_PANEL_ENTRY_CONTENT_ROWS)
+            .map(|offset| {
+                let y = row.y + offset;
+                let x = (row.x..row.x + row.width)
+                    .find(|x| buf[(*x, y)].symbol() == AGENT_STATUS_BAR_GLYPH)
+                    .unwrap_or_else(|| panic!("row {y} should draw the status bar glyph"));
+                buf[(x, y)]
+                    .style()
+                    .fg
+                    .expect("the bar cell should be styled")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn working_status_bar_lights_one_cell_and_fades_the_rest() {
+        let lit_top = status_bar_colors(AgentState::Working, true, 0);
+        let mut app_color = crate::app::state::AppState::test_new();
+        app_color.palette = crate::app::state::Palette::catppuccin();
+        let working = app_color.palette.yellow;
+
+        // Top cell is the state color, and each cell below it is dimmer.
+        assert_eq!(lit_top[0], working);
+        assert_ne!(lit_top[1], working);
+        assert_ne!(lit_top[2], lit_top[1]);
+        assert!(
+            luminance_of(lit_top[0]) > luminance_of(lit_top[1]),
+            "the cell next to the lit one should be dimmer: {lit_top:?}"
+        );
+        assert!(
+            luminance_of(lit_top[1]) > luminance_of(lit_top[2]),
+            "the far cell should be the dimmest: {lit_top:?}"
+        );
+    }
+
+    #[test]
+    fn working_status_bar_walks_down_then_back_up() {
+        let step = AGENT_STATUS_BAR_TICKS_PER_STEP;
+        let lit_row_of = |tick: u32| {
+            let colors = status_bar_colors(AgentState::Working, true, tick);
+            colors
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| {
+                    luminance_of(**a)
+                        .partial_cmp(&luminance_of(**b))
+                        .expect("bar colors have comparable luminance")
+                })
+                .map(|(row, _)| row)
+                .expect("the bar has rows")
+        };
+
+        // Down the bar one cell at a time, then back up the same way.
+        assert_eq!(lit_row_of(0), 0);
+        assert_eq!(lit_row_of(step), 1);
+        assert_eq!(lit_row_of(step * 2), 2);
+        assert_eq!(lit_row_of(step * 3), 1);
+        assert_eq!(lit_row_of(step * 4), 0);
+    }
+
+    #[test]
+    fn settled_status_bar_holds_still() {
+        for tick in [0, AGENT_STATUS_BAR_TICKS_PER_STEP] {
+            let colors = status_bar_colors(AgentState::Idle, true, tick);
+            assert_eq!(
+                colors[0], colors[1],
+                "an idle agent's bar should be one flat color: {colors:?}"
+            );
+            assert_eq!(colors[1], colors[2]);
+        }
+    }
+
+    #[test]
+    fn finished_but_unseen_status_bar_animates() {
+        let colors = status_bar_colors(AgentState::Idle, false, 0);
+        assert_ne!(
+            colors[0], colors[2],
+            "a finished agent you have not looked at should still bounce: {colors:?}"
+        );
+    }
+
+    fn luminance_of(color: Color) -> f32 {
+        let (r, g, b) = super::super::panes::color_to_rgb(color).expect("bar colors are rgb");
+        0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)
     }
 
     #[test]

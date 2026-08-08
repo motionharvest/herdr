@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- The status bar down the left edge of a sidebar agent row now animates while the agent is live: the lit cell walks down the three rows and back up, one row at a time, with the cells behind it fading toward the background. Working and finished-but-unseen agents bounce; settled ones hold a flat bar, so a quiet sidebar stays still.
+
 ## [0.7.3] - 2026-08-07
 
 ### Added
