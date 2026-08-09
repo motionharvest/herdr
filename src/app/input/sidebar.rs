@@ -365,6 +365,7 @@ impl AppState {
         } else {
             self.collapsed_agent_space_ids.remove(&id);
         }
+        self.mark_session_dirty();
         self.workspace_scroll = crate::ui::normalized_workspace_scroll(
             self,
             self.view.sidebar_rect,
@@ -1060,6 +1061,41 @@ mod tests {
         ));
 
         assert!(!app.state.spaces_collapsed);
+    }
+
+    #[test]
+    fn folding_the_spaces_section_queues_a_session_save() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("a")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let sidebar = app.state.view.sidebar_rect;
+        app.state.session_dirty = false;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            sidebar.x + 2,
+            sidebar.y,
+        ));
+
+        assert!(app.state.spaces_collapsed);
+        assert!(app.state.session_dirty);
+    }
+
+    #[test]
+    fn folding_a_space_agent_list_queues_a_session_save() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("a")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.session_dirty = false;
+
+        app.state.toggle_workspace_agents(0);
+
+        assert!(!crate::ui::workspace_agents_expanded(&app.state, 0));
+        assert!(app.state.session_dirty);
     }
 
     #[test]

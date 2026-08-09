@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+- The sidebar now opens folded the way you left it. Collapsing the sidebar to its narrow strip, folding the spaces section shut, or folding a space's agent list away was forgotten as soon as Herdr restarted, so every session started with everything expanded again. All three folds are saved with the rest of the session now. Folds recorded for spaces that did not come back are dropped rather than left in the session file forever.
+
+### Changed
+- The agent pane you are typing into now reads as a filled band in the sidebar: the two lines under its name sit on a muted surface with their text inverted, so the eye lands on the whole row instead of on one tinted word. The tab name stays off the band and keeps the accent, heading the row the way a selected space's name heads its card, and the animating status bar down the left edge stays clear of it so it keeps reading in its own state color.
+
 ## [0.7.5] - 2026-08-08
 
 ### Fixed

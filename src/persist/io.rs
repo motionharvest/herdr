@@ -209,6 +209,9 @@ mod tests {
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_agent_space_ids: std::collections::HashSet::new(),
+            sidebar_collapsed: false,
+            spaces_collapsed: false,
         }
     }
 

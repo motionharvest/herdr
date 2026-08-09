@@ -476,11 +476,13 @@ impl AppState {
                 if in_sidebar {
                     if self.on_sidebar_toggle(mouse.column, mouse.row) {
                         self.sidebar_collapsed = !self.sidebar_collapsed;
+                        self.mark_session_dirty();
                         return None;
                     }
 
                     if self.on_spaces_section_header(mouse.column, mouse.row) {
                         self.spaces_collapsed = !self.spaces_collapsed;
+                        self.mark_session_dirty();
                         return None;
                     }
 

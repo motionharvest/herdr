@@ -39,6 +39,9 @@ const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 const SIDEBAR_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
+/// Even split between the sidebar's spaces and agent sections, used until a
+/// saved session or a drag says otherwise.
+const DEFAULT_SIDEBAR_SECTION_SPLIT: f32 = 0.5;
 const PANE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_COPY_HIGHLIGHT_DURATION: Duration = Duration::from_millis(500);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
@@ -187,6 +190,62 @@ fn auto_updates_enabled(_no_session: bool) -> bool {
     false
 }
 
+/// The sidebar's shape as it comes back from a saved session: how wide it is,
+/// where its two sections split, and which of them the user left folded away.
+/// Restored as one unit so a new session opens the panel the way it was left,
+/// rather than resetting every fold to expanded.
+struct RestoredSidebar {
+    width: u16,
+    width_source: state::SidebarWidthSource,
+    section_split: f32,
+    collapsed: bool,
+    spaces_collapsed: bool,
+    collapsed_space_keys: std::collections::HashSet<String>,
+    collapsed_agent_space_ids: std::collections::HashSet<String>,
+}
+
+impl RestoredSidebar {
+    /// The shape a session with nothing saved starts in: config width, even
+    /// split, everything expanded.
+    fn from_config(config: &Config) -> Self {
+        Self {
+            width: config.ui.sidebar_width,
+            width_source: state::SidebarWidthSource::ConfigDefault,
+            section_split: DEFAULT_SIDEBAR_SECTION_SPLIT,
+            collapsed: false,
+            spaces_collapsed: false,
+            collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_agent_space_ids: std::collections::HashSet::new(),
+        }
+    }
+
+    fn from_snapshot(snap: &crate::persist::SessionSnapshot, config: &Config) -> Self {
+        Self {
+            width: snap.sidebar_width.unwrap_or(config.ui.sidebar_width),
+            width_source: if snap.sidebar_width.is_some() {
+                state::SidebarWidthSource::Persisted
+            } else {
+                state::SidebarWidthSource::ConfigDefault
+            },
+            section_split: snap
+                .sidebar_section_split
+                .unwrap_or(DEFAULT_SIDEBAR_SECTION_SPLIT),
+            collapsed: snap.sidebar_collapsed,
+            spaces_collapsed: snap.spaces_collapsed,
+            collapsed_space_keys: snap.collapsed_space_keys.clone(),
+            collapsed_agent_space_ids: snap.collapsed_agent_space_ids.clone(),
+        }
+    }
+
+    /// Drop folds recorded for spaces that did not come back. Space ids are
+    /// minted fresh when a space is created, so a stale id can never match a
+    /// later space — it would only sit in the session file forever.
+    fn prune_to_workspaces(&mut self, workspaces: &[crate::workspace::Workspace]) {
+        self.collapsed_agent_space_ids
+            .retain(|id| workspaces.iter().any(|ws| &ws.id == id));
+    }
+}
+
 fn agent_panel_scope_from_config(
     scope: crate::config::AgentPanelScopeConfig,
 ) -> state::AgentPanelScope {
@@ -268,25 +327,14 @@ impl App {
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
         let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let (
-            workspaces,
-            active,
-            selected,
-            _restored_agent_panel_scope,
-            sidebar_width,
-            sidebar_width_source,
-            sidebar_section_split,
-            collapsed_space_keys,
-        ) = if no_session {
+        let (workspaces, active, selected, _restored_agent_panel_scope, mut sidebar) = if no_session
+        {
             (
                 Vec::new(),
                 None,
                 0,
                 state::AgentPanelScope::CurrentWorkspace,
-                config.ui.sidebar_width,
-                state::SidebarWidthSource::ConfigDefault,
-                0.5_f32,
-                std::collections::HashSet::new(),
+                RestoredSidebar::from_config(config),
             )
         } else if let Some(snap) = crate::persist::load() {
             let history = config
@@ -309,40 +357,15 @@ impl App {
             );
             restored_terminals = terminals;
             restored_terminal_runtimes = terminal_runtimes.into();
+            let sidebar = RestoredSidebar::from_snapshot(&snap, config);
             if ws.is_empty() {
                 crate::logging::session_restored(0, "empty");
-                (
-                    Vec::new(),
-                    None,
-                    0,
-                    snap.agent_panel_scope,
-                    snap.sidebar_width.unwrap_or(config.ui.sidebar_width),
-                    if snap.sidebar_width.is_some() {
-                        state::SidebarWidthSource::Persisted
-                    } else {
-                        state::SidebarWidthSource::ConfigDefault
-                    },
-                    snap.sidebar_section_split.unwrap_or(0.5),
-                    snap.collapsed_space_keys,
-                )
+                (Vec::new(), None, 0, snap.agent_panel_scope, sidebar)
             } else {
                 crate::logging::session_restored(ws.len(), "ok");
                 let active = snap.active.filter(|&i| i < ws.len());
                 let selected = snap.selected.min(ws.len().saturating_sub(1));
-                (
-                    ws,
-                    active,
-                    selected,
-                    snap.agent_panel_scope,
-                    snap.sidebar_width.unwrap_or(config.ui.sidebar_width),
-                    if snap.sidebar_width.is_some() {
-                        state::SidebarWidthSource::Persisted
-                    } else {
-                        state::SidebarWidthSource::ConfigDefault
-                    },
-                    snap.sidebar_section_split.unwrap_or(0.5),
-                    snap.collapsed_space_keys,
-                )
+                (ws, active, selected, snap.agent_panel_scope, sidebar)
             }
         } else {
             (
@@ -350,12 +373,10 @@ impl App {
                 None,
                 0,
                 state::AgentPanelScope::CurrentWorkspace,
-                config.ui.sidebar_width,
-                state::SidebarWidthSource::ConfigDefault,
-                0.5_f32,
-                std::collections::HashSet::new(),
+                RestoredSidebar::from_config(config),
             )
         };
+        sidebar.prune_to_workspaces(&workspaces);
 
         let agent_panel_scope = agent_panel_scope_from_config(config.ui.agent_panel_scope);
 
@@ -435,8 +456,8 @@ impl App {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory,
-            collapsed_space_keys,
-            collapsed_agent_space_ids: std::collections::HashSet::new(),
+            collapsed_space_keys: sidebar.collapsed_space_keys,
+            collapsed_agent_space_ids: sidebar.collapsed_agent_space_ids,
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -496,15 +517,15 @@ impl App {
             prefix_code,
             prefix_mods,
             default_sidebar_width: config.ui.sidebar_width,
-            sidebar_width,
+            sidebar_width: sidebar.width,
             sidebar_min_width,
             sidebar_max_width,
             mobile_width_threshold: config.ui.mobile_width_threshold,
-            sidebar_width_source,
+            sidebar_width_source: sidebar.width_source,
             sidebar_width_auto: false,
-            sidebar_collapsed: false,
-            spaces_collapsed: false,
-            sidebar_section_split,
+            sidebar_collapsed: sidebar.collapsed,
+            spaces_collapsed: sidebar.spaces_collapsed,
+            sidebar_section_split: sidebar.section_split,
             agent_panel_scope,
             mouse_capture: config.ui.mouse_capture,
             right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
@@ -671,6 +692,9 @@ impl App {
             app.state.sidebar_section_split = split;
         }
         app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
+        app.state.collapsed_agent_space_ids = snapshot.collapsed_agent_space_ids.clone();
+        app.state.sidebar_collapsed = snapshot.sidebar_collapsed;
+        app.state.spaces_collapsed = snapshot.spaces_collapsed;
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
         } else {
@@ -3776,5 +3800,61 @@ last_pane = "prefix+tab"
             &input[events[1].start..events[1].start + events[1].len],
             b"a"
         );
+    }
+
+    fn snapshot_with_sidebar_folds(
+        space_ids: &[&str],
+        sidebar_collapsed: bool,
+        spaces_collapsed: bool,
+    ) -> crate::persist::SessionSnapshot {
+        crate::persist::SessionSnapshot {
+            version: 3,
+            workspaces: Vec::new(),
+            active: None,
+            selected: 0,
+            agent_panel_scope: state::AgentPanelScope::CurrentWorkspace,
+            sidebar_width: Some(29),
+            sidebar_section_split: Some(0.4),
+            collapsed_space_keys: std::collections::HashSet::from(["repo-key".to_string()]),
+            collapsed_agent_space_ids: space_ids.iter().map(|id| (*id).to_string()).collect(),
+            sidebar_collapsed,
+            spaces_collapsed,
+        }
+    }
+
+    #[test]
+    fn restored_sidebar_carries_folds_from_the_session_file() {
+        let snapshot = snapshot_with_sidebar_folds(&["space-a"], true, true);
+
+        let sidebar = RestoredSidebar::from_snapshot(&snapshot, &Config::default());
+
+        assert_eq!(sidebar.width, 29);
+        assert_eq!(sidebar.section_split, 0.4);
+        assert!(sidebar.collapsed);
+        assert!(sidebar.spaces_collapsed);
+        assert!(sidebar.collapsed_space_keys.contains("repo-key"));
+        assert!(sidebar.collapsed_agent_space_ids.contains("space-a"));
+    }
+
+    #[test]
+    fn sidebar_with_nothing_saved_opens_fully_expanded() {
+        let sidebar = RestoredSidebar::from_config(&Config::default());
+
+        assert!(!sidebar.collapsed);
+        assert!(!sidebar.spaces_collapsed);
+        assert!(sidebar.collapsed_agent_space_ids.is_empty());
+    }
+
+    #[test]
+    fn restored_sidebar_drops_agent_folds_for_spaces_that_did_not_come_back() {
+        let snapshot = snapshot_with_sidebar_folds(&["space-a", "gone"], false, false);
+        let mut sidebar = RestoredSidebar::from_snapshot(&snapshot, &Config::default());
+        let mut workspace = Workspace::test_new("one");
+        workspace.id = "space-a".to_string();
+
+        sidebar.prune_to_workspaces(&[workspace]);
+
+        assert!(sidebar.collapsed_agent_space_ids.contains("space-a"));
+        assert!(!sidebar.collapsed_agent_space_ids.contains("gone"));
     }
 }

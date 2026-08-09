@@ -840,6 +840,7 @@ pub(super) fn execute_navigate_action_in_context(
         NavigateAction::EnterResizeMode => state.mode = Mode::Resize,
         NavigateAction::ToggleSidebar => {
             state.sidebar_collapsed = !state.sidebar_collapsed;
+            state.mark_session_dirty();
             leave_navigate_mode(state);
         }
         NavigateAction::CyclePaneNext => {

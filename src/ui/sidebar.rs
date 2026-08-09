@@ -18,6 +18,19 @@ const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 3;
 pub(crate) const AGENT_PANEL_ENTRY_CONTENT_ROWS: u16 = 3;
 /// Status glyph drawn down the left edge of an agent entry.
 const AGENT_STATUS_BAR_GLYPH: &str = "▎";
+/// Text color on the focused agent row's muted band. Black rather than a
+/// palette tone: the band is a midtone in every theme, light and dark, so the
+/// inverted text has to read against both.
+const AGENT_ROW_INVERTED_FG: Color = Color::Black;
+/// Where an agent row's labels start, measured from the row's left edge: two
+/// columns of inset, the status bar, and the column the band's opening cap
+/// shares with the air after the bar.
+const AGENT_ROW_LABEL_X: u16 = 4;
+/// Half blocks closing either end of the focused row's band. Each fills the
+/// half of its cell that faces the label, so the band gains half a column of
+/// padding on each side instead of a full one.
+const AGENT_ROW_BAND_CAP_LEFT: &str = "▐";
+const AGENT_ROW_BAND_CAP_RIGHT: &str = "▌";
 /// `spinner_tick` advances once per animation frame at ~60fps, so 8 moves the
 /// status bar's lit cell about every 128ms — with the overshoot below, a glide
 /// across the bar rather than three abrupt hops.
@@ -1210,6 +1223,14 @@ fn pad_to_width(text: &str, width: usize) -> String {
     format!("{text:<width$}")
 }
 
+/// How wide an agent row's labels run: from [`AGENT_ROW_LABEL_X`] to two
+/// columns short of the row's right edge, which the band's closing cap and the
+/// space outline own. Focused or not, every row measures the same, so a label
+/// never re-truncates as focus moves.
+fn agent_row_label_width(rect: Rect) -> u16 {
+    rect.width.saturating_sub(AGENT_ROW_LABEL_X + 2)
+}
+
 fn render_agent_rows(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -1247,6 +1268,16 @@ fn render_agent_rows(
             AgentState::Idle => app.palette.overlay0,
             AgentState::Unknown => app.palette.overlay0,
         };
+        // The pane you are typing into reads as a filled band — the muted
+        // surface behind its labels, their text inverted to sit on it — so the
+        // eye lands on the row rather than on one tinted word. The tab name on
+        // top stays off the band and carries the accent instead, so it heads
+        // the row the way a selected space's name heads its card. The status
+        // bar is left off too: it animates in its own state color and has to
+        // stay legible against the sidebar, not against a wash behind it.
+        if is_focused_pane {
+            fill_agent_row_band(frame, rect, app.palette.overlay0);
+        }
         // Status is shown as a vertical bar running down the entry's left edge
         // instead of a bullet. It is inset by two so it clears the space
         // outline's edge with a column to spare. On live entries the lit cell
@@ -1258,8 +1289,8 @@ fn render_agent_rows(
                 Style::default().fg(bar_rows[row]),
             )
         };
-        let text_width = rect.width.saturating_sub(5) as usize;
-        // The pane you are typing into reads in the accent, matching the
+        let text_width = agent_row_label_width(rect) as usize;
+        // The name keeps the accent even on the filled band, matching the
         // selected space's name so the sidebar highlights agree.
         let name_style = if is_focused_pane {
             Style::default()
@@ -1267,6 +1298,13 @@ fn render_agent_rows(
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(app.palette.text)
+        };
+        // Everything under the name inverts against the band; off the band it
+        // keeps its usual dim tones.
+        let (title_fg, status_fg) = if is_focused_pane {
+            (AGENT_ROW_INVERTED_FG, AGENT_ROW_INVERTED_FG)
+        } else {
+            (app.palette.overlay1, app.palette.overlay0)
         };
         // The tab is what the row is really about, so it leads; the pane's own
         // name sits under it.
@@ -1282,9 +1320,9 @@ fn render_agent_rows(
         super::panes::push_title_name_spans(
             &mut title_spans,
             &truncate_chars(&title, text_width),
-            Style::default().fg(app.palette.overlay1),
-            Style::default().fg(app.palette.overlay1),
-            Style::default().fg(app.palette.overlay1),
+            Style::default().fg(title_fg),
+            Style::default().fg(title_fg),
+            Style::default().fg(title_fg),
         );
         render_sidebar_line(
             frame,
@@ -1298,10 +1336,15 @@ fn render_agent_rows(
                 bar(2),
                 Span::styled(
                     truncate_chars(&status_line, text_width),
-                    Style::default().fg(app.palette.overlay0),
+                    Style::default().fg(status_fg),
                 ),
             ]),
         );
+        // Last, because the bar's own trailing column and the labels' line both
+        // run over where the left cap sits.
+        if is_focused_pane {
+            cap_agent_row_band(frame, rect, app.palette.overlay0);
+        }
     }
 }
 
@@ -1461,6 +1504,62 @@ fn render_sidebar_line(frame: &mut Frame, rect: Rect, line: Line<'_>) {
         return;
     }
     frame.render_widget(Paragraph::new(line), rect);
+}
+
+/// Paints the focused agent row's band. It covers the labels only: it starts
+/// past the status bar's column, so the bar keeps animating against the plain
+/// sidebar, and stops short of the right edge so the outline and the band's cap
+/// have their columns. The lines drawn on top only set foregrounds, so this
+/// background shows through behind their text and past the end of it.
+fn fill_agent_row_band(frame: &mut Frame, rect: Rect, bg: Color) {
+    let Some(band) = agent_row_band_rect(rect) else {
+        return;
+    };
+    let style = Style::default().bg(bg);
+    let buf = frame.buffer_mut();
+    for y in band.y..band.y + band.height {
+        for x in band.x..band.x + band.width {
+            buf[(x, y)].set_symbol(" ");
+            buf[(x, y)].set_style(style);
+        }
+    }
+}
+
+/// Closes the band with a half block at each end, drawn in the band's own color
+/// against the sidebar behind it. Half a cell of color on either side is the
+/// padding the label wants; a whole column would be too much air.
+fn cap_agent_row_band(frame: &mut Frame, rect: Rect, color: Color) {
+    let Some(band) = agent_row_band_rect(rect) else {
+        return;
+    };
+    let style = Style::default().fg(color);
+    let buf = frame.buffer_mut();
+    for y in band.y..band.y + band.height {
+        for (x, cap) in [
+            (band.x - 1, AGENT_ROW_BAND_CAP_LEFT),
+            (band.x + band.width, AGENT_ROW_BAND_CAP_RIGHT),
+        ] {
+            buf[(x, y)].set_symbol(cap);
+            buf[(x, y)].set_style(style);
+        }
+    }
+}
+
+/// The solid part of the focused row's band — the label columns, without the
+/// half-block caps that sit just outside either end. The top line stays off the
+/// band: the tab name reads as the row's heading, so it sits on the sidebar in
+/// the accent rather than inside a filled block.
+fn agent_row_band_rect(rect: Rect) -> Option<Rect> {
+    let width = agent_row_label_width(rect);
+    if width == 0 || rect.height < 2 {
+        return None;
+    }
+    Some(Rect::new(
+        rect.x + AGENT_ROW_LABEL_X,
+        rect.y + 1,
+        width,
+        rect.height - 1,
+    ))
 }
 
 fn sidebar_state_dot(state: AgentState, seen: bool, app: &AppState) -> (&'static str, Style) {
@@ -1782,6 +1881,76 @@ mod tests {
         // with a list stuck under it.
         let card_floor = card.y + card.height - 1;
         assert_eq!(buf[(card.x + 1, card_floor)].symbol(), " ");
+    }
+
+    #[test]
+    fn focused_agent_row_fills_a_muted_band_with_inverted_text_under_an_accent_name() {
+        let area = Rect::new(0, 0, 28, 24);
+        let (app, terminal) = render_sidebar_list(area);
+        let row = compute_workspace_list_areas(&app, area)
+            .1
+            .last()
+            .expect("the space's agent should have a row")
+            .rect;
+        let buf = terminal.backend().buffer();
+
+        // The band covers the two lines under the name, starts past the status
+        // bar, and stops inside the space outline.
+        let band = agent_row_band_rect(row).expect("the row is wide enough for a band");
+        assert_eq!(band.y, row.y + 1);
+        assert_eq!(band.height, row.height - 1);
+        for x in band.x - 1..=band.x + band.width {
+            assert_ne!(
+                buf[(x, row.y)].style().bg,
+                Some(app.palette.overlay0),
+                "the name row stays off the band at ({x}, {})",
+                row.y
+            );
+        }
+        for y in band.y..band.y + band.height {
+            for x in band.x..band.x + band.width {
+                assert_eq!(
+                    buf[(x, y)].style().bg,
+                    Some(app.palette.overlay0),
+                    "band at ({x}, {y})"
+                );
+            }
+            for x in row.x..band.x - 1 {
+                assert_ne!(
+                    buf[(x, y)].style().bg,
+                    Some(app.palette.overlay0),
+                    "the status bar's columns stay off the band at ({x}, {y})"
+                );
+            }
+            assert_ne!(
+                buf[(row.x + row.width - 1, y)].style().bg,
+                Some(app.palette.overlay0),
+                "the outline column at row {y} stays clear of the band"
+            );
+
+            // Half blocks pad either end, drawn in the band's color rather than
+            // filling their whole cell with it.
+            for (x, cap) in [
+                (band.x - 1, AGENT_ROW_BAND_CAP_LEFT),
+                (band.x + band.width, AGENT_ROW_BAND_CAP_RIGHT),
+            ] {
+                assert_eq!(buf[(x, y)].symbol(), cap, "cap at ({x}, {y})");
+                assert_eq!(buf[(x, y)].style().fg, Some(app.palette.overlay0));
+                assert_ne!(buf[(x, y)].style().bg, Some(app.palette.overlay0));
+            }
+        }
+
+        // The name keeps the accent; the two lines under it invert.
+        let name_x = row.x + AGENT_ROW_LABEL_X;
+        assert_eq!(buf[(name_x, row.y)].style().fg, Some(app.palette.accent));
+        assert_eq!(
+            buf[(name_x, row.y + 1)].style().fg,
+            Some(AGENT_ROW_INVERTED_FG)
+        );
+        assert_eq!(
+            buf[(name_x, row.y + 2)].style().fg,
+            Some(AGENT_ROW_INVERTED_FG)
+        );
     }
 
     #[test]

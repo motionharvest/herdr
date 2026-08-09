@@ -25,17 +25,7 @@ impl App {
         if self.state.workspaces.is_empty() {
             crate::persist::clear();
         } else {
-            let snap = crate::persist::capture(
-                &self.state.workspaces,
-                &self.state.terminals,
-                &self.terminal_runtimes,
-                self.state.active,
-                self.state.selected,
-                self.state.agent_panel_scope,
-                self.state.sidebar_width,
-                self.state.sidebar_section_split,
-                self.state.collapsed_space_keys.clone(),
-            );
+            let snap = crate::persist::capture(&self.state, &self.terminal_runtimes);
             let history = self.persist_pane_history.then(|| {
                 crate::persist::capture_history(&self.state.workspaces, &self.terminal_runtimes)
             });

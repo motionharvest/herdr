@@ -28,6 +28,16 @@ pub struct SessionSnapshot {
     pub sidebar_section_split: Option<f32>,
     #[serde(default)]
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    /// Ids of the spaces whose agent rows are folded away in the agent
+    /// section. Space ids are themselves persisted, so they survive restore.
+    #[serde(default)]
+    pub collapsed_agent_space_ids: std::collections::HashSet<String>,
+    /// Whether the sidebar itself is folded to its narrow strip.
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
+    /// Whether the spaces section is folded to its header row.
+    #[serde(default)]
+    pub spaces_collapsed: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -182,6 +192,12 @@ struct RawSessionSnapshot {
     sidebar_section_split: Option<f32>,
     #[serde(default)]
     collapsed_space_keys: std::collections::HashSet<String>,
+    #[serde(default)]
+    collapsed_agent_space_ids: std::collections::HashSet<String>,
+    #[serde(default)]
+    sidebar_collapsed: bool,
+    #[serde(default)]
+    spaces_collapsed: bool,
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -198,6 +214,9 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
         sidebar_width: raw.sidebar_width,
         sidebar_section_split: raw.sidebar_section_split,
         collapsed_space_keys: raw.collapsed_space_keys,
+        collapsed_agent_space_ids: raw.collapsed_agent_space_ids,
+        sidebar_collapsed: raw.sidebar_collapsed,
+        spaces_collapsed: raw.spaces_collapsed,
     })
 }
 
@@ -249,31 +268,25 @@ fn first_pane_id_in_layout(layout: &LayoutSnapshot) -> Option<u32> {
 
 /// Capture the current app state into a serializable snapshot.
 pub fn capture(
-    workspaces: &[Workspace],
-    terminals: &std::collections::HashMap<
-        crate::terminal::TerminalId,
-        crate::terminal::TerminalState,
-    >,
+    state: &crate::app::state::AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
-    active: Option<usize>,
-    selected: usize,
-    agent_panel_scope: crate::app::state::AgentPanelScope,
-    sidebar_width: u16,
-    sidebar_section_split: f32,
-    collapsed_space_keys: std::collections::HashSet<String>,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
-        workspaces: workspaces
+        workspaces: state
+            .workspaces
             .iter()
-            .map(|workspace| capture_workspace(workspace, terminals, terminal_runtimes))
+            .map(|workspace| capture_workspace(workspace, &state.terminals, terminal_runtimes))
             .collect(),
-        active,
-        selected,
-        agent_panel_scope,
-        sidebar_width: Some(sidebar_width),
-        sidebar_section_split: Some(sidebar_section_split),
-        collapsed_space_keys,
+        active: state.active,
+        selected: state.selected,
+        agent_panel_scope: state.agent_panel_scope,
+        sidebar_width: Some(state.sidebar_width),
+        sidebar_section_split: Some(state.sidebar_section_split),
+        collapsed_space_keys: state.collapsed_space_keys.clone(),
+        collapsed_agent_space_ids: state.collapsed_agent_space_ids.clone(),
+        sidebar_collapsed: state.sidebar_collapsed,
+        spaces_collapsed: state.spaces_collapsed,
     }
 }
 
@@ -536,17 +549,7 @@ mod tests {
         state: &AppState,
         terminal_runtimes: &TerminalRuntimeRegistry,
     ) -> SessionSnapshot {
-        capture(
-            &state.workspaces,
-            &state.terminals,
-            terminal_runtimes,
-            state.active,
-            state.selected,
-            state.agent_panel_scope,
-            state.sidebar_width,
-            state.sidebar_section_split,
-            state.collapsed_space_keys.clone(),
-        )
+        capture(state, terminal_runtimes)
     }
 
     fn capture_history_from_state_with_runtimes(
@@ -574,6 +577,9 @@ mod tests {
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_agent_space_ids: std::collections::HashSet::new(),
+            sidebar_collapsed: false,
+            spaces_collapsed: false,
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored = parse_snapshot(&json).unwrap();
@@ -657,6 +663,9 @@ mod tests {
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_agent_space_ids: std::collections::HashSet::new(),
+            sidebar_collapsed: false,
+            spaces_collapsed: false,
             version: SNAPSHOT_VERSION,
         };
 
@@ -851,6 +860,53 @@ mod tests {
         assert_eq!(snapshot.sidebar_section_split, Some(0.4));
         assert_eq!(snapshot.agent_panel_scope, AgentPanelScope::AllWorkspaces);
         assert!(snapshot.collapsed_space_keys.contains("repo-key"));
+    }
+
+    #[test]
+    fn capture_contract_tracks_sidebar_folds() {
+        let mut state = state_with_workspaces(&["one"]);
+        let space_id = state.workspaces[0].id.clone();
+        state.sidebar_collapsed = true;
+        state.spaces_collapsed = true;
+        state.collapsed_agent_space_ids.insert(space_id.clone());
+
+        let snapshot = capture_from_state(&state);
+
+        assert!(snapshot.sidebar_collapsed);
+        assert!(snapshot.spaces_collapsed);
+        assert!(snapshot.collapsed_agent_space_ids.contains(&space_id));
+    }
+
+    #[test]
+    fn sidebar_folds_survive_a_round_trip_through_json() {
+        let mut state = state_with_workspaces(&["one"]);
+        let space_id = state.workspaces[0].id.clone();
+        state.sidebar_collapsed = true;
+        state.spaces_collapsed = true;
+        state.collapsed_agent_space_ids.insert(space_id.clone());
+
+        let json = serde_json::to_string(&capture_from_state(&state)).unwrap();
+        let restored = parse_snapshot(&json).unwrap();
+
+        assert!(restored.sidebar_collapsed);
+        assert!(restored.spaces_collapsed);
+        assert!(restored.collapsed_agent_space_ids.contains(&space_id));
+    }
+
+    #[test]
+    fn session_file_without_sidebar_folds_reads_as_everything_expanded() {
+        let json = r#"{
+            "version": 3,
+            "workspaces": [],
+            "active": null,
+            "selected": 0
+        }"#;
+
+        let restored = parse_snapshot(json).unwrap();
+
+        assert!(!restored.sidebar_collapsed);
+        assert!(!restored.spaces_collapsed);
+        assert!(restored.collapsed_agent_space_ids.is_empty());
     }
 
     #[test]
@@ -1192,6 +1248,9 @@ mod tests {
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_agent_space_ids: std::collections::HashSet::new(),
+            sidebar_collapsed: false,
+            spaces_collapsed: false,
         };
 
         let json = serde_json::to_string(&snap).unwrap();
