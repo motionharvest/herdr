@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.7.6] - 2026-08-09
+
 ### Fixed
 - The sidebar now opens folded the way you left it. Collapsing the sidebar to its narrow strip, folding the spaces section shut, or folding a space's agent list away was forgotten as soon as Herdr restarted, so every session started with everything expanded again. All three folds are saved with the rest of the session now. Folds recorded for spaces that did not come back are dropped rather than left in the session file forever.
 
