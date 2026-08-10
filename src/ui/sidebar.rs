@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use super::scrollbar::should_show_scrollbar;
+use super::widgets::panel_contrast_fg;
 use crate::app::state::AgentPanelScope;
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
@@ -18,10 +19,6 @@ const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 3;
 pub(crate) const AGENT_PANEL_ENTRY_CONTENT_ROWS: u16 = 3;
 /// Status glyph drawn down the left edge of an agent entry.
 const AGENT_STATUS_BAR_GLYPH: &str = "▎";
-/// Text color on the focused agent row's muted band. Black rather than a
-/// palette tone: the band is a midtone in every theme, light and dark, so the
-/// inverted text has to read against both.
-const AGENT_ROW_INVERTED_FG: Color = Color::Black;
 /// Where an agent row's labels start, measured from the row's left edge: two
 /// columns of inset, the status bar, and the column the band's opening cap
 /// shares with the air after the bar.
@@ -845,13 +842,13 @@ fn render_workspace_rows(
         let selected = is_selected || is_active;
         let (state, seen) = ws.aggregate_state(&app.terminals);
         let name = workspace_card_label(app, terminal_runtimes, ws, card.indented, state, seen);
-        let panes = workspace_pane_count_label(ws);
+        let agents = workspace_agent_count_label(ws, &app.terminals);
         // A card inside the group outline stops at its name: the outline
         // supplies the enclosing box, so its own floor would only cut the
         // group in half.
         let open_bottom =
             outlined.is_some_and(|group| group.y == card.rect.y && group.height > card.rect.height);
-        render_workspace_card(frame, card.rect, &name, &panes, selected, open_bottom, app);
+        render_workspace_card(frame, card.rect, &name, &agents, selected, open_bottom, app);
     }
 
     render_space_group_outline(app, frame, area, outlined);
@@ -1065,13 +1062,20 @@ fn workspace_card_label(
     format!("{indent}{dot} {name}")
 }
 
-/// How many panes the space holds, as the card's right-aligned tally.
-pub(crate) fn workspace_pane_count_label(ws: &crate::workspace::Workspace) -> String {
-    let count = ws.natural_pane_order().len();
-    if count == 1 {
-        "1 pane".to_string()
-    } else {
-        format!("{count} panes")
+/// How many agents the space holds, as the card's right-aligned tally. It
+/// counts exactly the rows the card lists when expanded, so the tally also
+/// answers whether there is anything under the card worth opening.
+pub(crate) fn workspace_agent_count_label(
+    ws: &crate::workspace::Workspace,
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+) -> String {
+    match ws.pane_details(terminals).len() {
+        0 => "no agents".to_string(),
+        1 => "1 agent".to_string(),
+        count => format!("{count} agents"),
     }
 }
 
@@ -1079,7 +1083,7 @@ fn render_workspace_card(
     frame: &mut Frame,
     rect: Rect,
     name: &str,
-    panes: &str,
+    agents: &str,
     selected: bool,
     open_bottom: bool,
     app: &AppState,
@@ -1102,13 +1106,13 @@ fn render_workspace_card(
     let inner_width = rect.width.saturating_sub(2) as usize;
     // The tally is right-aligned against the card's inner edge, so the name
     // gives up the columns it needs — plus a space between them.
-    let panes = if panes.chars().count() + 2 <= inner_width {
-        panes
+    let agents = if agents.chars().count() + 2 <= inner_width {
+        agents
     } else {
         ""
     };
-    let name_width = inner_width.saturating_sub(panes.chars().count());
-    let name_chars = name_width.saturating_sub(usize::from(!panes.is_empty()));
+    let name_width = inner_width.saturating_sub(agents.chars().count());
+    let name_chars = name_width.saturating_sub(usize::from(!agents.is_empty()));
     let name = pad_to_width(&truncate_chars(name, name_chars), name_width);
 
     let buf = frame.buffer_mut();
@@ -1138,7 +1142,7 @@ fn render_workspace_card(
         border_style,
         name_style,
     );
-    render_workspace_card_pane_count(buf, right, rect.y + 1, panes, count_style);
+    render_workspace_card_agent_count(buf, right, rect.y + 1, agents, count_style);
 
     if open_bottom {
         return;
@@ -1176,21 +1180,21 @@ fn render_workspace_card_compact(
     buf[(right, rect.y)].set_symbol("╮").set_style(border_style);
 }
 
-/// Writes the pane tally against the card's right inner edge, over the padding
+/// Writes the agent tally against the card's right inner edge, over the padding
 /// the name row already laid down.
-fn render_workspace_card_pane_count(
+fn render_workspace_card_agent_count(
     buf: &mut ratatui::buffer::Buffer,
     right: u16,
     y: u16,
-    panes: &str,
+    agents: &str,
     style: Style,
 ) {
-    let width = panes.chars().count() as u16;
+    let width = agents.chars().count() as u16;
     if width == 0 || right < width {
         return;
     }
     let start_x = right - width;
-    for (idx, ch) in panes.chars().enumerate() {
+    for (idx, ch) in agents.chars().enumerate() {
         buf[(start_x + idx as u16, y)]
             .set_symbol(&ch.to_string())
             .set_style(style);
@@ -1268,15 +1272,17 @@ fn render_agent_rows(
             AgentState::Idle => app.palette.overlay0,
             AgentState::Unknown => app.palette.overlay0,
         };
-        // The pane you are typing into reads as a filled band — the muted
-        // surface behind its labels, their text inverted to sit on it — so the
-        // eye lands on the row rather than on one tinted word. The tab name on
-        // top stays off the band and carries the accent instead, so it heads
-        // the row the way a selected space's name heads its card. The status
-        // bar is left off too: it animates in its own state color and has to
-        // stay legible against the sidebar, not against a wash behind it.
+        // The pane you are typing into reads as a filled band — its labels
+        // knocked out of the accent — so the eye lands on the row rather than
+        // on one tinted word. The band takes the same color as the outline
+        // around the space, so focus reads as one mark at two scales: the space
+        // you are in, and the agent inside it. The tab name on top stays off
+        // the band and carries the accent as text instead, so it heads the row
+        // the way a selected space's name heads its card. The status bar is
+        // left off too: it animates in its own state color and has to stay
+        // legible against the sidebar, not against a wash behind it.
         if is_focused_pane {
-            fill_agent_row_band(frame, rect, app.palette.overlay0);
+            fill_agent_row_band(frame, rect, app.palette.focused_pane_border());
         }
         // Status is shown as a vertical bar running down the entry's left edge
         // instead of a bullet. It is inset by two so it clears the space
@@ -1299,10 +1305,12 @@ fn render_agent_rows(
         } else {
             Style::default().fg(app.palette.text)
         };
-        // Everything under the name inverts against the band; off the band it
-        // keeps its usual dim tones.
+        // Everything under the name is knocked out of the band in the panel's
+        // own background tone, the way an active tab's label sits on its accent
+        // fill; off the band it keeps its usual dim tones.
         let (title_fg, status_fg) = if is_focused_pane {
-            (AGENT_ROW_INVERTED_FG, AGENT_ROW_INVERTED_FG)
+            let knockout = panel_contrast_fg(&app.palette);
+            (knockout, knockout)
         } else {
             (app.palette.overlay1, app.palette.overlay0)
         };
@@ -1343,7 +1351,7 @@ fn render_agent_rows(
         // Last, because the bar's own trailing column and the labels' line both
         // run over where the left cap sits.
         if is_focused_pane {
-            cap_agent_row_band(frame, rect, app.palette.overlay0);
+            cap_agent_row_band(frame, rect, app.palette.focused_pane_border());
         }
     }
 }
@@ -1884,7 +1892,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_agent_row_fills_a_muted_band_with_inverted_text_under_an_accent_name() {
+    fn focused_agent_row_fills_an_accent_band_with_knocked_out_text_under_an_accent_name() {
         let area = Rect::new(0, 0, 28, 24);
         let (app, terminal) = render_sidebar_list(area);
         let row = compute_workspace_list_areas(&app, area)
@@ -1893,6 +1901,8 @@ mod tests {
             .expect("the space's agent should have a row")
             .rect;
         let buf = terminal.backend().buffer();
+        // The band wears the space outline's color, so focus reads as one mark.
+        let band_color = app.palette.focused_pane_border();
 
         // The band covers the two lines under the name, starts past the status
         // bar, and stops inside the space outline.
@@ -1902,7 +1912,7 @@ mod tests {
         for x in band.x - 1..=band.x + band.width {
             assert_ne!(
                 buf[(x, row.y)].style().bg,
-                Some(app.palette.overlay0),
+                Some(band_color),
                 "the name row stays off the band at ({x}, {})",
                 row.y
             );
@@ -1911,21 +1921,27 @@ mod tests {
             for x in band.x..band.x + band.width {
                 assert_eq!(
                     buf[(x, y)].style().bg,
-                    Some(app.palette.overlay0),
+                    Some(band_color),
                     "band at ({x}, {y})"
                 );
             }
             for x in row.x..band.x - 1 {
                 assert_ne!(
                     buf[(x, y)].style().bg,
-                    Some(app.palette.overlay0),
+                    Some(band_color),
                     "the status bar's columns stay off the band at ({x}, {y})"
                 );
             }
+            let outline_x = row.x + row.width - 1;
             assert_ne!(
-                buf[(row.x + row.width - 1, y)].style().bg,
-                Some(app.palette.overlay0),
+                buf[(outline_x, y)].style().bg,
+                Some(band_color),
                 "the outline column at row {y} stays clear of the band"
+            );
+            assert_eq!(
+                buf[(outline_x, y)].style().fg,
+                Some(band_color),
+                "the space outline at row {y} matches the band's color"
             );
 
             // Half blocks pad either end, drawn in the band's color rather than
@@ -1935,31 +1951,27 @@ mod tests {
                 (band.x + band.width, AGENT_ROW_BAND_CAP_RIGHT),
             ] {
                 assert_eq!(buf[(x, y)].symbol(), cap, "cap at ({x}, {y})");
-                assert_eq!(buf[(x, y)].style().fg, Some(app.palette.overlay0));
-                assert_ne!(buf[(x, y)].style().bg, Some(app.palette.overlay0));
+                assert_eq!(buf[(x, y)].style().fg, Some(band_color));
+                assert_ne!(buf[(x, y)].style().bg, Some(band_color));
             }
         }
 
-        // The name keeps the accent; the two lines under it invert.
+        // The name keeps the accent as text; the two lines under it knock out
+        // of the band.
+        let knockout = panel_contrast_fg(&app.palette);
         let name_x = row.x + AGENT_ROW_LABEL_X;
         assert_eq!(buf[(name_x, row.y)].style().fg, Some(app.palette.accent));
-        assert_eq!(
-            buf[(name_x, row.y + 1)].style().fg,
-            Some(AGENT_ROW_INVERTED_FG)
-        );
-        assert_eq!(
-            buf[(name_x, row.y + 2)].style().fg,
-            Some(AGENT_ROW_INVERTED_FG)
-        );
+        assert_eq!(buf[(name_x, row.y + 1)].style().fg, Some(knockout));
+        assert_eq!(buf[(name_x, row.y + 2)].style().fg, Some(knockout));
     }
 
     #[test]
-    fn space_card_tallies_its_panes_right_aligned_in_the_accent_color() {
+    fn space_card_tallies_its_agents_right_aligned_in_the_accent_color() {
         let area = Rect::new(0, 0, 28, 24);
         let (app, terminal) = render_sidebar_list(area);
         let card = compute_workspace_card_areas(&app, area)[0].rect;
         let right = card.x + card.width - 1;
-        let label = "1 pane";
+        let label = "1 agent";
         let buf = terminal.backend().buffer();
         let row = card.y + 1;
 
@@ -1974,6 +1986,36 @@ mod tests {
         // The space's own name still leads the row, with a gap before the tally.
         assert_eq!(buf[(card.x + 1, row)].symbol(), "●");
         assert_eq!(buf[(start_x - 1, row)].symbol(), " ");
+    }
+
+    /// The tally has to match the rows the card lists when expanded, and those
+    /// are agents — a shell pane sitting beside an agent adds a pane but no row.
+    #[test]
+    fn space_card_tally_counts_agents_not_panes() {
+        let mut app = crate::app::state::AppState::test_new();
+        let mut workspace = Workspace::test_new("herdr");
+        let agent_pane = workspace.tabs[0].root_pane;
+        workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let agent_terminal = app.workspaces[0].tabs[0].panes[&agent_pane]
+            .attached_terminal_id
+            .clone();
+
+        assert_eq!(
+            workspace_agent_count_label(&app.workspaces[0], &app.terminals),
+            "no agents"
+        );
+
+        app.terminals
+            .get_mut(&agent_terminal)
+            .unwrap()
+            .detected_agent = Some(Agent::Claude);
+
+        assert_eq!(
+            workspace_agent_count_label(&app.workspaces[0], &app.terminals),
+            "1 agent"
+        );
     }
 
     #[test]
