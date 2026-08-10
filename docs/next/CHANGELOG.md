@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.8.0] - 2026-08-10
+
 ### Changed
 - A space's card in the sidebar now tallies the agents inside it instead of its panes. The list under a card only ever showed agents, so a card reading `3 panes` above two rows was counting something you could not see, and the number said nothing about whether the card was worth opening. A space whose panes are all plain shells now reads `no agents`, which says outright that there is nothing folded away under it.
 - The focused agent's band in the sidebar now fills with the same accent that outlines the space around it, its labels knocked out of the fill the way an active tab's label sits on its own. The muted surface it used before read as a different kind of mark than the outline; sharing one color lets focus read at both scales at once — the space you are in, and the agent inside it.
