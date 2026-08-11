@@ -284,6 +284,7 @@ mobile_width_threshold = 64
 mouse_capture = true
 right_click_passthrough_modifier = ""
 redraw_on_focus_gained = true
+hide_cursor_when_unfocused = true
 mouse_scroll_lines = 3
 confirm_close = true
 prompt_new_tab_name = true
@@ -306,6 +307,10 @@ Set `mouse_capture = false` if you want your terminal to handle normal clicks, s
 Set `right_click_passthrough_modifier = "ctrl"` if you want Ctrl-right-click, hold, and drag gestures inside mouse-reporting pane apps to reach the app instead of opening Herdr's pane menu. The default is empty, which disables this passthrough. Supported modifiers are `ctrl`, `alt`, `cmd`, `super`, `meta`, and `hyper`; `shift` is rejected because many terminals reserve Shift+mouse for their own mouse bypass.
 
 Set `redraw_on_focus_gained = false` to avoid the visible full-screen refresh when switching back to Herdr. The default is `true` because a full redraw recovers from rare stale or dirty host terminal surfaces.
+
+When your terminal reports focus (xterm focus reporting, mode 1004), Herdr mutes its focus marks while the terminal window itself is unfocused: the focused pane's border and title, the outline around the current space, and the band under the agent you are typing to. A Herdr window on another screen then never looks like it is receiving your keystrokes. The muted tone is derived from your theme, so it stays readable on light and dark palettes alike. Terminals that never report focus keep the normal focused chrome.
+
+`hide_cursor_when_unfocused` extends that to the cursor: the focused pane's cursor block disappears while the window is unfocused. The default is `true`. Set it to `false` to keep the cursor and rely on your terminal's own unfocused cursor style.
 
 Set `mouse_scroll_lines` to change how many pane scrollback lines each mouse wheel notch scrolls. The default is 3. Pane apps that request mouse reporting still receive wheel events directly.
 
