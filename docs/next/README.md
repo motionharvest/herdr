@@ -14,6 +14,8 @@
 
 workspaces, tabs, panes. mouse-native: click, drag, split. every agent at a glance: blocked, working, done. detach and reattach, agents keep running. no gui app, no electron, no mac-only native wrapper. you see the agent's own terminal, not someone's interpretation of it.
 
+## Install (WSL, Linux, Mac)
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/motionharvest/herdr/main/install.sh | bash
 ```
