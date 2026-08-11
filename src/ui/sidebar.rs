@@ -55,6 +55,11 @@ const AGENT_STATUS_BAR_PULSE_STEPS: u32 = 6;
 const AGENT_STATUS_BAR_PULSE_FADE: f32 = 0.62;
 /// Rows a space card occupies: top border, its name, bottom border.
 const WORKSPACE_CARD_ROWS: u16 = 3;
+/// The line that marks where a dragged row would land. It is heavy on purpose:
+/// a space slot often falls on a row a card border or the selected group's
+/// outline already occupies, and a light line there would read as that border
+/// rather than as the drop marker.
+const DROP_INDICATOR_GLYPH: &str = "━";
 
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
@@ -669,8 +674,12 @@ pub(crate) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<u16>, Rect
     (ws_area, Some(divider_y), detail_area)
 }
 
+/// Screen row for a space reorder drop marker: the boundary between the entry
+/// above the slot and the one below it. Returns `None` when that boundary is
+/// off the list.
 pub(crate) fn workspace_drop_indicator_row(
     cards: &[crate::app::state::WorkspaceCardArea],
+    agent_rows: &[crate::app::state::AgentRowArea],
     area: Rect,
     insert_idx: usize,
 ) -> Option<u16> {
@@ -687,7 +696,7 @@ pub(crate) fn workspace_drop_indicator_row(
     if let Some(row) = cards
         .last()
         .filter(|card| insert_idx == card.ws_idx.saturating_add(1))
-        .map(|card| card.rect.y.saturating_add(card.rect.height))
+        .and_then(|_| workspace_list_end_row(cards, agent_rows))
         .filter(|y| *y < list_bottom)
     {
         return Some(row);
@@ -698,6 +707,25 @@ pub(crate) fn workspace_drop_indicator_row(
     }
 
     None
+}
+
+/// The free row below everything the list drew, which is where a card appended
+/// to the end would start. A space's agents follow its card, and the last of
+/// them reserves a blank row and the group's floor below itself, so the end of
+/// the list is two rows past the last agent rather than one past the last card.
+fn workspace_list_end_row(
+    cards: &[crate::app::state::WorkspaceCardArea],
+    agent_rows: &[crate::app::state::AgentRowArea],
+) -> Option<u16> {
+    cards
+        .iter()
+        .map(|card| card.rect.y.saturating_add(card.rect.height))
+        .chain(
+            agent_rows
+                .iter()
+                .map(|row| row.rect.y.saturating_add(row.rect.height).saturating_add(2)),
+        )
+        .max()
 }
 
 /// Screen row for an agent reorder drop marker. `agent_rows` must already be
@@ -834,7 +862,7 @@ fn render_workspace_rows(
     render_agent_rows(app, terminal_runtimes, frame, &agent_rows);
     render_agent_drop_indicator(app, frame, &agent_rows);
 
-    for card in cards {
+    for card in &cards {
         let Some(ws) = app.workspaces.get(card.ws_idx) else {
             continue;
         };
@@ -853,6 +881,7 @@ fn render_workspace_rows(
     }
 
     render_space_group_outline(app, frame, area, outlined);
+    render_workspace_drop_indicator(app, frame, area, &cards, &agent_rows);
 
     if layout.new_button != Rect::default() {
         render_new_workspace_button(frame, layout.new_button, app);
@@ -938,9 +967,47 @@ fn focused_agent_row(app: &AppState) -> Option<(usize, usize, crate::layout::Pan
     Some((ws_idx, ws.active_tab, ws.focused_pane_id()?))
 }
 
-/// Marks where a dragged agent row would land. Space cards have no equivalent
-/// marker, but agent rows are three lines tall and identical in shape, so the
-/// drop slot is otherwise impossible to read.
+/// Marks where a dragged space card would land, the same way a dragged agent
+/// row is marked. Cards stack flush, so the slot between two of them is the
+/// lower edge of the upper card; the topmost slot has no row above the list to
+/// claim, so it collapses onto the first card's own top edge.
+fn render_workspace_drop_indicator(
+    app: &AppState,
+    frame: &mut Frame,
+    area: Rect,
+    cards: &[crate::app::state::WorkspaceCardArea],
+    agent_rows: &[crate::app::state::AgentRowArea],
+) {
+    let Some(crate::app::state::DragTarget::WorkspaceReorder {
+        insert_idx: Some(insert_idx),
+        ..
+    }) = app.drag.as_ref().map(|drag| &drag.target)
+    else {
+        return;
+    };
+    let Some(first) = cards.first().map(|card| card.rect) else {
+        return;
+    };
+    let list = workspace_list_rect(app, area);
+    let Some(row) = workspace_drop_indicator_row(cards, agent_rows, list, *insert_idx) else {
+        return;
+    };
+    let row = row.max(first.y);
+    if list.height == 0 || row < list.y || row >= list.y + list.height {
+        return;
+    }
+
+    let style = Style::default().fg(app.palette.accent);
+    let buf = frame.buffer_mut();
+    for x in first.x..first.x + first.width {
+        buf[(x, row)]
+            .set_symbol(DROP_INDICATOR_GLYPH)
+            .set_style(style);
+    }
+}
+
+/// Marks where a dragged agent row would land. Agent rows are three lines tall
+/// and identical in shape, so the drop slot is otherwise impossible to read.
 fn render_agent_drop_indicator(
     app: &AppState,
     frame: &mut Frame,
@@ -976,7 +1043,9 @@ fn render_agent_drop_indicator(
     let style = Style::default().fg(app.palette.accent);
     let buf = frame.buffer_mut();
     for x in rect.x..rect.x + rect.width {
-        buf[(x, row)].set_symbol("─").set_style(style);
+        buf[(x, row)]
+            .set_symbol(DROP_INDICATOR_GLYPH)
+            .set_style(style);
     }
 }
 
@@ -1637,6 +1706,111 @@ mod tests {
             .draw(|frame| render_workspace_rows(&app, &runtimes, frame, area))
             .unwrap();
         (app, terminal)
+    }
+
+    /// Two spaces, drawn while the second card is being dragged toward
+    /// `insert_idx`.
+    fn render_workspace_drag(
+        area: Rect,
+        insert_idx: usize,
+    ) -> (crate::app::state::AppState, Terminal<TestBackend>) {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("alpha"), Workspace::test_new("beta")];
+        app.ensure_test_terminals();
+        // A pane only earns an agent row once its terminal names an agent.
+        for terminal in app.terminals.values_mut() {
+            terminal.detected_agent = Some(Agent::Claude);
+        }
+        app.active = Some(0);
+        app.selected = 0;
+        app.drag = Some(crate::app::state::DragState {
+            target: crate::app::state::DragTarget::WorkspaceReorder {
+                source_ws_idx: 1,
+                insert_idx: Some(insert_idx),
+            },
+        });
+
+        let runtimes = TerminalRuntimeRegistry::new();
+        let backend = TestBackend::new(area.x + area.width, area.y + area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_workspace_rows(&app, &runtimes, frame, area))
+            .unwrap();
+        (app, terminal)
+    }
+
+    fn assert_drop_marker_row(buf: &ratatui::buffer::Buffer, rect: Rect, row: u16, accent: Color) {
+        for x in rect.x..rect.x + rect.width {
+            assert_eq!(
+                buf[(x, row)].symbol(),
+                DROP_INDICATOR_GLYPH,
+                "drop marker at ({x}, {row})"
+            );
+            assert_eq!(buf[(x, row)].style().fg, Some(accent));
+        }
+    }
+
+    #[test]
+    fn space_drop_marker_draws_between_the_two_cards() {
+        let area = Rect::new(0, 0, 28, 26);
+        let (app, terminal) = render_workspace_drag(area, 1);
+        let cards = compute_workspace_card_areas(&app, area);
+        let target = cards
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("the second space should have a card")
+            .rect;
+
+        // The slot above the second card is the row the first space's group
+        // outline closes on, so the heavy marker has to win it outright.
+        assert_drop_marker_row(
+            terminal.backend().buffer(),
+            target,
+            target.y - 1,
+            app.palette.accent,
+        );
+    }
+
+    #[test]
+    fn end_of_list_space_drop_marker_clears_the_last_space_agents() {
+        let area = Rect::new(0, 0, 28, 26);
+        let (app, terminal) = render_workspace_drag(area, 2);
+        let (cards, agent_rows) = compute_workspace_list_areas(&app, area);
+        let last_agent = agent_rows
+            .last()
+            .expect("the second space should list its agent")
+            .rect;
+        // Past the agent's content, its blank row, and the group's floor.
+        let row = last_agent.y + last_agent.height + 2;
+
+        // The last space's agents hang below its card, so the end of the list
+        // is past them, on the free row above the `+ new` button.
+        assert_eq!(new_workspace_button_rect(&app, area).y, row + 1);
+        assert_drop_marker_row(
+            terminal.backend().buffer(),
+            cards[0].rect,
+            row,
+            app.palette.accent,
+        );
+    }
+
+    #[test]
+    fn top_space_drop_marker_collapses_onto_the_first_card() {
+        let area = Rect::new(0, 0, 28, 26);
+        let (app, terminal) = render_workspace_drag(area, 0);
+        let first = compute_workspace_card_areas(&app, area)
+            .first()
+            .expect("the first space should have a card")
+            .rect;
+
+        // There is no row above the list to mark, so the slot lands on the
+        // first card's own top edge rather than on the section header.
+        assert_drop_marker_row(
+            terminal.backend().buffer(),
+            first,
+            first.y,
+            app.palette.accent,
+        );
     }
 
     /// Foreground colors of one agent entry's three status bar cells, top to

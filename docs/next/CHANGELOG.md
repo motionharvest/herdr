@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- Dragging a space in the sidebar now draws the same drop line an agent row does, so you can see which slot the card will land in before you let go. The slot was always being tracked — the drag knew where it would drop — it simply had nothing drawn for it, and space cards are identical in shape, so the only feedback was the reorder itself. The line is heavier than a card border on purpose: a space slot usually falls on a row a card's edge or the current space's outline already occupies, and a light line there would read as that border rather than as the marker.
+
+### Fixed
+- The end-of-list drop slot now sits below the last space's agents rather than below its card. The slot was measured from the cards alone, which put it inside the agent rows hanging under the last one — invisible until there was a line drawn on it, and off by the height of that agent list.
+
 ## [0.8.2] - 2026-08-11
 
 ### Changed

@@ -307,10 +307,13 @@ impl AppState {
             return None;
         }
 
-        let cards = if self.view.workspace_card_areas.is_empty() {
-            crate::ui::compute_workspace_card_areas(self, self.view.sidebar_rect)
+        let (cards, agent_rows) = if self.view.workspace_card_areas.is_empty() {
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect)
         } else {
-            self.view.workspace_card_areas.clone()
+            (
+                self.view.workspace_card_areas.clone(),
+                self.view.agent_row_areas.clone(),
+            )
         };
         if cards.is_empty() {
             return Some(0);
@@ -338,7 +341,8 @@ impl AppState {
 
         let mut best: Option<(usize, u16)> = None;
         for insert_idx in insert_indices {
-            let Some(slot_row) = crate::ui::workspace_drop_indicator_row(&cards, area, insert_idx)
+            let Some(slot_row) =
+                crate::ui::workspace_drop_indicator_row(&cards, &agent_rows, area, insert_idx)
             else {
                 continue;
             };
@@ -1366,6 +1370,7 @@ mod tests {
         let source_row = app.state.view.workspace_card_areas[1].rect.y;
         let target_row = crate::ui::workspace_drop_indicator_row(
             &app.state.view.workspace_card_areas,
+            &app.state.view.agent_row_areas,
             app.state.workspace_list_rect(),
             0,
         )
@@ -1849,9 +1854,14 @@ mod tests {
         app.state.view.workspace_card_areas =
             crate::ui::compute_workspace_card_areas(&app.state, app.state.view.sidebar_rect);
 
+        // These spaces have no attached terminals, so the list is cards only and
+        // the end of it is the row below the last card.
         let cards = &app.state.view.workspace_card_areas;
+        let agent_rows = &app.state.view.agent_row_areas;
+        assert!(agent_rows.is_empty());
         let bottom_slot = crate::ui::workspace_drop_indicator_row(
             cards,
+            agent_rows,
             app.state.workspace_list_rect(),
             cards.len(),
         )
@@ -1884,10 +1894,21 @@ mod tests {
         let normal = cards.iter().find(|card| card.ws_idx == 1).unwrap();
 
         assert_eq!(app.state.workspace_drop_index_at_row(issue.rect.y), Some(1));
-        assert_eq!(
-            crate::ui::workspace_drop_indicator_row(cards, app.state.workspace_list_rect(), 2),
-            Some(normal.rect.y + normal.rect.height)
-        );
+
+        // Slot 2 is the end of the list, which sits below the last card and
+        // below the agents listed under it.
+        let agent_rows = &app.state.view.agent_row_areas;
+        let end_slot = crate::ui::workspace_drop_indicator_row(
+            cards,
+            agent_rows,
+            app.state.workspace_list_rect(),
+            2,
+        )
+        .unwrap();
+        assert!(end_slot >= normal.rect.y + normal.rect.height);
+        for row in agent_rows.iter().filter(|row| row.ws_idx == normal.ws_idx) {
+            assert!(end_slot >= row.rect.y + row.rect.height);
+        }
     }
 
     #[test]
@@ -1915,6 +1936,7 @@ mod tests {
             .rect;
         let target_row = crate::ui::workspace_drop_indicator_row(
             &app.state.view.workspace_card_areas,
+            &app.state.view.agent_row_areas,
             app.state.workspace_list_rect(),
             0,
         )
