@@ -22,9 +22,9 @@ curl -fsSL https://raw.githubusercontent.com/motionharvest/herdr/main/install.sh
 
 this is the **motionharvest fork** of [ogulcancelik/herdr](https://github.com/ogulcancelik/herdr), with its own sidebar redesign and workspace interactions on top of upstream.
 
-![herdr overview — three workspaces, one agent working, one blocked, one done](assets/screenshots/overview.svg)
+![herdr overview — three spaces in the sidebar, one agent working, one blocked, one finished](assets/screenshots/overview.png)
 
-*a real session: the `herdr` workspace with claude working next to a terminal pane, while the sidebar tracks a blocked agent in `webapp` and a finished one in `api`.*
+*the `herdr` workspace: claude working through a pane-title change next to a shell, while the sidebar tracks a blocked agent in `webapp` and a finished one in `api`.*
 
 ## what's different in this fork
 
@@ -101,9 +101,9 @@ states:
 - 🔵 **done** — work finished, you have not looked at it yet
 - 🟢 **idle** — done and seen
 
-![a blocked agent asking which framework to use, flagged red in the sidebar](assets/screenshots/blocked.svg)
+![a blocked agent asking which framework to scaffold against, flagged red in the sidebar](assets/screenshots/blocked.png)
 
-*the `webapp` agent hit a question and went red in the sidebar. the `herdr` agent keeps working in the background.*
+*the `webapp` agent stopped to ask which framework to scaffold against, and went red in the sidebar. the `herdr` agent keeps working in the background.*
 
 detection works by reading foreground process and terminal output. zero config, no hooks required. official claude code, codex, and opencode integrations provide session restore identity; pi, omp, github copilot cli, hermes, qodercli, and custom socket integrations can report their own state. details in the [agents docs](website/src/content/docs/agents.mdx).
 
@@ -175,9 +175,9 @@ not a gui window, not a web dashboard, not electron. herdr runs inside whatever 
 
 ## agents can use herdr too
 
-The local Unix socket lets agents create workspaces, split panes, spawn helpers, read output, and wait for state changes. Every screenshot in this README was staged and captured by an agent running inside herdr, driving the socket API against a nested session.
+The local Unix socket lets agents create workspaces, split panes, spawn helpers, read output, and wait for state changes. The sessions in this README's screenshots were staged by an agent running inside herdr, driving the socket API against a nested session; `scripts/stage_readme_demo.sh` rebuilds them.
 
-![the api workspace: a dev server pane below an agent pane in the same workspace](assets/screenshots/api-workspace.svg)
+![the api workspace: a dev server pane below an agent pane in the same workspace](assets/screenshots/api-workspace.png)
 
 *one workspace, two panes: an agent on top, the dev server it should talk to below — both real terminals.*
 
