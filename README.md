@@ -14,6 +14,10 @@
 
 workspaces, tabs, panes. mouse-native: click, drag, split. every agent at a glance: blocked, working, done. detach and reattach, agents keep running. no gui app, no electron, no mac-only native wrapper. you see the agent's own terminal, not someone's interpretation of it.
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/motionharvest/herdr/main/install.sh | bash
+```
+
 this is the **motionharvest fork** of [ogulcancelik/herdr](https://github.com/ogulcancelik/herdr), with its own sidebar redesign and workspace interactions on top of upstream.
 
 ![herdr overview — three workspaces, one agent working, one blocked, one done](assets/screenshots/overview.svg)
