@@ -217,6 +217,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Trade-off: rare host terminal surface corruption may persist until the next full redraw.
 # redraw_on_focus_gained = true
 
+# Hide the focused pane cursor while the outer terminal window is unfocused.
+# Herdr always mutes pane focus chrome in that state; this also removes the cursor block,
+# so a glance from another screen never shows a caret that looks ready for input.
+# Set false to keep the cursor visible and rely on your terminal's own unfocused cursor style.
+# hide_cursor_when_unfocused = true
+
 # Pane scrollback lines to scroll per mouse wheel notch.
 # mouse_scroll_lines = 3
 

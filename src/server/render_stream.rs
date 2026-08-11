@@ -345,6 +345,12 @@ pub(crate) fn focused_terminal_cursor(
         return None;
     }
 
+    // The host window is unfocused, so no caret should look live — including
+    // the one the outer terminal draws for an attached client.
+    if crate::ui::cursor_hidden_by_host_focus(app_state) {
+        return None;
+    }
+
     let ws_idx = app_state.active?;
     let info = app_state
         .view

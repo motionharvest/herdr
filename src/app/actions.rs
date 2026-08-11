@@ -959,6 +959,15 @@ impl AppState {
         }
     }
 
+    /// True when the host terminal window is known to have lost focus.
+    ///
+    /// `None` means the outer terminal never reported focus (mode 1004
+    /// unsupported, or no event yet), so it reads as focused: focus chrome
+    /// fails open rather than muting itself on terminals that stay silent.
+    pub fn host_window_unfocused(&self) -> bool {
+        self.outer_terminal_focus == Some(false)
+    }
+
     pub(crate) fn mark_active_tab_seen(&mut self) -> bool {
         let Some(ws_idx) = self.active else {
             return false;

@@ -531,6 +531,7 @@ impl App {
             right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
             right_click_passthrough: None,
             redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
+            hide_cursor_when_unfocused: config.ui.hide_cursor_when_unfocused,
             mouse_scroll_lines: config.ui.mouse_scroll_lines(),
             confirm_close: config.ui.confirm_close,
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
@@ -1226,6 +1227,7 @@ impl App {
                     self.state.request_client_config_reload = true;
                 }
                 self.state.redraw_on_focus_gained = config.ui.redraw_on_focus_gained;
+                self.state.hide_cursor_when_unfocused = config.ui.hide_cursor_when_unfocused;
                 self.state.mouse_scroll_lines = config.ui.mouse_scroll_lines();
                 self.state.right_click_passthrough_modifiers =
                     config.ui.right_click_passthrough_modifiers();
@@ -2548,6 +2550,25 @@ mod tests {
         assert!(app.state.workspaces[0].tabs[0].panes[&root_pane].seen);
         assert!(app.state.workspaces[0].tabs[0].panes[&split_pane].seen);
         assert!(!app.state.workspaces[0].tabs[background_tab].panes[&background_pane].seen);
+    }
+
+    #[tokio::test]
+    async fn outer_focus_lost_requests_a_repaint_once() {
+        let mut app = test_app();
+        app.state.outer_terminal_focus = Some(true);
+
+        // The frame has to be redrawn so focus chrome and the cursor drop.
+        let handled = app
+            .handle_raw_input_event(crate::raw_input::RawInputEvent::OuterFocusLost)
+            .await;
+        assert!(handled);
+        assert_eq!(app.state.outer_terminal_focus, Some(false));
+
+        // Already unfocused: a repeated report is not a state change.
+        let handled = app
+            .handle_raw_input_event(crate::raw_input::RawInputEvent::OuterFocusLost)
+            .await;
+        assert!(!handled);
     }
 
     #[tokio::test]

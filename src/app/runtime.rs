@@ -155,8 +155,10 @@ impl App {
                 true
             }
             crate::raw_input::RawInputEvent::OuterFocusLost => {
+                let was_focused = self.state.outer_terminal_focus != Some(false);
                 self.state.outer_terminal_focus = Some(false);
-                false
+                // Repaint so focus chrome and the pane cursor drop on the way out.
+                was_focused
             }
             crate::raw_input::RawInputEvent::HostDefaultColor { kind, color } => {
                 self.update_host_terminal_theme(kind, color)

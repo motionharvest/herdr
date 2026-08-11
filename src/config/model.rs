@@ -383,6 +383,8 @@ pub struct UiConfig {
     pub right_click_passthrough_modifier: RightClickPassthroughModifierConfig,
     /// Force a full host-terminal redraw when the outer terminal regains focus. Default: true.
     pub redraw_on_focus_gained: bool,
+    /// Hide the focused pane cursor while the outer terminal window has lost focus. Default: true.
+    pub hide_cursor_when_unfocused: bool,
     /// Lines to scroll per mouse wheel notch. Default: 3.
     pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
@@ -578,6 +580,7 @@ impl Default for UiConfig {
             mouse_capture: true,
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
+            hide_cursor_when_unfocused: true,
             mouse_scroll_lines: None,
             confirm_close: true,
             prompt_new_tab_name: true,
@@ -1017,6 +1020,19 @@ redraw_on_focus_gained = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.redraw_on_focus_gained);
+    }
+
+    #[test]
+    fn hide_cursor_when_unfocused_default_on_and_parse() {
+        let default_config = Config::default();
+        assert!(default_config.ui.hide_cursor_when_unfocused);
+
+        let toml = r#"
+[ui]
+hide_cursor_when_unfocused = false
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.ui.hide_cursor_when_unfocused);
     }
 
     #[test]

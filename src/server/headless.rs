@@ -1142,20 +1142,25 @@ impl HeadlessServer {
         }
     }
 
+    /// Returns true when the foreground client's focus actually flipped, so the
+    /// caller can repaint the focus chrome and pane cursor for the new state.
     fn update_client_outer_focus_from_events(
         &mut self,
         client_id: u64,
         events: &[crate::raw_input::RawInputEvent],
-    ) {
+    ) -> bool {
         let Some(client) = self.clients.get_mut(&client_id) else {
-            return;
+            return false;
         };
         let Some(next_focus) = client.update_outer_focus_from_events(events) else {
-            return;
+            return false;
         };
-        if self.foreground_client_id == Some(client_id) {
-            self.app.state.outer_terminal_focus = Some(next_focus);
+        if self.foreground_client_id != Some(client_id) {
+            return false;
         }
+        let changed = self.app.state.outer_terminal_focus != Some(next_focus);
+        self.app.state.outer_terminal_focus = Some(next_focus);
+        changed
     }
 
     /// Accepts pending client connections from the non-blocking listener.
@@ -1950,7 +1955,8 @@ impl HeadlessServer {
                         client.request_semantic_redraw_after_input();
                     }
                 }
-                self.update_client_outer_focus_from_events(client_id, &events);
+                let outer_focus_changed =
+                    self.update_client_outer_focus_from_events(client_id, &events);
                 let interaction = events_include_interaction(&events);
                 let foreground_changed = if interaction {
                     self.promote_client_to_foreground(client_id)
@@ -2004,7 +2010,7 @@ impl HeadlessServer {
                     // No re-render needed for remaining clients.
                     false
                 } else {
-                    foreground_changed || theme_changed || interaction
+                    foreground_changed || theme_changed || interaction || outer_focus_changed
                 }
             }
             ServerEvent::ClientClipboardImage {
@@ -4954,9 +4960,18 @@ next_tab = ""
             data: b"\x1b[O".to_vec(),
         });
 
-        assert!(!changed);
+        // Focus loss is not interaction, but the focus chrome and pane cursor
+        // still have to be repainted for the unfocused state.
+        assert!(changed);
         assert_eq!(server.clients[&1].outer_terminal_focus, Some(false));
         assert_eq!(server.app.state.outer_terminal_focus, Some(false));
+
+        let changed = server.handle_server_event(ServerEvent::ClientInput {
+            client_id: 1,
+            data: b"\x1b[O".to_vec(),
+        });
+
+        assert!(!changed, "repeated focus loss is not a state change");
     }
 
     #[test]

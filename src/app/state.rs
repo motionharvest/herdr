@@ -1478,6 +1478,9 @@ pub struct AppState {
     pub right_click_passthrough_modifiers: Option<KeyModifiers>,
     pub right_click_passthrough: Option<RightClickPassthroughGesture>,
     pub redraw_on_focus_gained: bool,
+    /// Drop the focused pane cursor while the host window is unfocused, so a
+    /// glance at another screen never shows a live-looking caret.
+    pub hide_cursor_when_unfocused: bool,
     pub mouse_scroll_lines: usize,
     pub confirm_close: bool,
     pub prompt_new_tab_name: bool,
@@ -1863,6 +1866,7 @@ impl AppState {
             right_click_passthrough_modifiers: None,
             right_click_passthrough: None,
             redraw_on_focus_gained: true,
+            hide_cursor_when_unfocused: true,
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             confirm_close: true,
             prompt_new_tab_name: true,

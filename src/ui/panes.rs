@@ -547,7 +547,7 @@ fn render_code_ui_pane_chrome(
     }
 
     let edge_color = if focused || highlighted {
-        app.palette.focused_pane_border()
+        focus_accent(app)
     } else {
         app.palette.overlay0
     };
@@ -596,7 +596,7 @@ fn render_code_ui_pane_chrome(
 
     let rule_glyph = if focused || highlighted { '═' } else { '─' };
     let git_icon = "\u{f418}";
-    let icon_style = if focused || highlighted {
+    let icon_style = if (focused || highlighted) && !app.host_window_unfocused() {
         Style::default().fg(Color::White).bg(Color::Reset)
     } else {
         edge_style
@@ -606,9 +606,7 @@ fn render_code_ui_pane_chrome(
     // and controls. Only the focused/highlighted pane keeps the distinct colors.
     let unfocused_style = Style::default().fg(app.palette.overlay0).bg(Color::Reset);
     let pane_name_style = if chrome_active {
-        Style::default()
-            .fg(app.palette.focused_pane_border())
-            .bg(Color::Reset)
+        Style::default().fg(focus_accent(app)).bg(Color::Reset)
     } else {
         unfocused_style
     };
@@ -998,7 +996,10 @@ pub(super) fn render_panes(
             if is_swap_preview {
                 render_pane_swap_drop_overlay(app, frame, info.inner_rect, true);
             } else {
-                let show_cursor = info.is_focused && terminal_active && !pane_is_scrolled_back(rt);
+                let show_cursor = info.is_focused
+                    && terminal_active
+                    && !pane_is_scrolled_back(rt)
+                    && !cursor_hidden_by_host_focus(app);
                 rt.render(frame, info.inner_rect, show_cursor);
                 render_pane_scrollbar(app, frame, info, rt);
             }
@@ -1194,6 +1195,102 @@ fn selection_fg_for_bg(bg: Color, p: &Palette) -> Color {
         .unwrap_or_else(|| panel_contrast_fg(p))
 }
 
+/// How much chroma a focus color gives up while the host terminal window is
+/// unfocused. Draining color is what actually makes a mark stop claiming
+/// attention, and because it holds the color's luminance it costs no contrast
+/// against anything — so every palette can afford all of it.
+const HOST_UNFOCUSED_DESATURATION: f32 = 0.7;
+
+/// The furthest a focus color travels toward the panel background while the
+/// host terminal window is unfocused. Past half way the color is more panel
+/// than accent and stops reading as a mark at all.
+const HOST_UNFOCUSED_MAX_MIX: f32 = 0.5;
+
+/// How far short of [`HOST_UNFOCUSED_MAX_MIX`] the mute will settle for, in
+/// steps, when the full amount would break the contrast floor.
+const HOST_UNFOCUSED_MIX_STEPS: u8 = 10;
+
+/// The contrast a muted focus color keeps against the panel behind it. This
+/// color is worn by bold names and border glyphs, and 3:1 is the accepted floor
+/// for both. A palette whose accent starts near the floor — Tokyo Night Day's
+/// sits at about 3.1:1 — therefore recedes less, or not at all, and leans on
+/// losing its color instead.
+const HOST_UNFOCUSED_MIN_CONTRAST: f32 = 3.0;
+
+/// Whether the focused pane should drop its cursor because the host terminal
+/// window is unfocused.
+///
+/// Emulators vary in how (or whether) they hollow the cursor on focus loss, so
+/// the block can keep reading as live on another screen. Removing it entirely
+/// is unambiguous: no caret, no keystrokes landing here.
+pub(crate) fn cursor_hidden_by_host_focus(app: &AppState) -> bool {
+    app.hide_cursor_when_unfocused && app.host_window_unfocused()
+}
+
+/// Mutes a color that means "focused" while the host terminal window itself is
+/// unfocused.
+///
+/// Every mark that claims your input — a pane border, a sidebar band, the name
+/// on the row you are typing into — is making a claim that is false for the
+/// whole window when the window is not the one you are in. Rather than each
+/// surface inventing its own unfocused tone, they all pass their focus color
+/// through here. Palettes whose colors are not RGB (the terminal 16-color
+/// theme) fall back to the muted overlay color, which is where unfocused chrome
+/// already lives.
+pub(super) fn mute_when_host_unfocused(app: &AppState, color: Color) -> Color {
+    if !app.host_window_unfocused() {
+        return color;
+    }
+    let (Some(rgb), Some(panel_bg)) = (color_to_rgb(color), color_to_rgb(app.palette.panel_bg))
+    else {
+        return app.palette.overlay0;
+    };
+    // Drain the color first. This is free — it holds luminance, so it cannot
+    // push anything below the floor — and it is the part of the effect that
+    // every palette gets in full.
+    let drained = desaturate(rgb, HOST_UNFOCUSED_DESATURATION);
+    // Then recede toward the panel as far as this palette can afford, backing
+    // off a step at a time until the result still reads against it.
+    for step in (1..=HOST_UNFOCUSED_MIX_STEPS).rev() {
+        let amount = HOST_UNFOCUSED_MAX_MIX * f32::from(step) / f32::from(HOST_UNFOCUSED_MIX_STEPS);
+        let muted = mix_rgb(drained, panel_bg, amount);
+        if contrast_ratio(muted, panel_bg) >= HOST_UNFOCUSED_MIN_CONTRAST {
+            return Color::Rgb(muted.0, muted.1, muted.2);
+        }
+    }
+    // A palette with no headroom at all keeps the accent's brightness and gives
+    // up only its color.
+    Color::Rgb(drained.0, drained.1, drained.2)
+}
+
+/// Pulls a color toward the neutral gray of the same relative luminance, so it
+/// loses chroma without gaining or losing contrast against anything.
+fn desaturate(color: Rgb, amount: f32) -> Rgb {
+    mix_rgb(
+        color,
+        gray_with_luminance(relative_luminance(color)),
+        amount,
+    )
+}
+
+/// The neutral gray at a given relative luminance — [`relative_luminance`]
+/// run backwards through the sRGB transfer.
+fn gray_with_luminance(luminance: f32) -> Rgb {
+    let value = if luminance <= 0.003_130_8 {
+        luminance * 12.92
+    } else {
+        1.055 * luminance.powf(1.0 / 2.4) - 0.055
+    };
+    let channel = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    (channel, channel, channel)
+}
+
+/// The pane-focus color that says "your keystrokes land here", muted while the
+/// host window is unfocused.
+pub(super) fn focus_accent(app: &AppState) -> Color {
+    mute_when_host_unfocused(app, app.palette.focused_pane_border())
+}
+
 pub(super) fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
     fn channel(base: u8, target: u8, amount: f32) -> u8 {
         (f32::from(base) + (f32::from(target) - f32::from(base)) * amount).round() as u8
@@ -1203,6 +1300,13 @@ pub(super) fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
         channel(base.1, target.1, amount),
         channel(base.2, target.2, amount),
     )
+}
+
+/// WCAG contrast ratio, 1.0 (identical) through 21.0 (black on white).
+pub(super) fn contrast_ratio(a: Rgb, b: Rgb) -> f32 {
+    let (a, b) = (relative_luminance(a), relative_luminance(b));
+    let (lighter, darker) = if a > b { (a, b) } else { (b, a) };
+    (lighter + 0.05) / (darker + 0.05)
 }
 
 fn relative_luminance(color: Rgb) -> f32 {
@@ -1379,6 +1483,143 @@ mod tests {
             rect_contains(close, cross_col, area.y),
             "close rect {close:?} should cover rendered cross at column {cross_col}"
         );
+    }
+
+    #[test]
+    fn focus_accent_mutes_while_host_window_is_unfocused() {
+        let mut app = AppState::test_new();
+        let accent = app.palette.focused_pane_border();
+
+        // Terminals that never report focus keep the live accent.
+        assert_eq!(focus_accent(&app), accent);
+        app.outer_terminal_focus = Some(true);
+        assert_eq!(focus_accent(&app), accent);
+
+        app.outer_terminal_focus = Some(false);
+        let muted = focus_accent(&app);
+        assert_ne!(
+            muted, accent,
+            "unfocused host window should mute the accent"
+        );
+        assert_ne!(
+            muted, app.palette.overlay0,
+            "the focused pane must stay distinguishable from unfocused panes"
+        );
+    }
+
+    #[test]
+    fn muted_focus_accent_holds_its_contrast_floor_in_every_built_in_theme() {
+        const THEMES: &[&str] = &[
+            "catppuccin",
+            "catppuccin-latte",
+            "tokyo-night",
+            "tokyo-night-day",
+            "dracula",
+            "synthwave",
+            "nord",
+            "gruvbox",
+            "gruvbox-light",
+            "one-dark",
+            "one-light",
+            "solarized",
+            "solarized-light",
+            "kanagawa",
+            "kanagawa-lotus",
+            "rose-pine",
+            "rose-pine-dawn",
+            "vesper",
+        ];
+
+        for name in THEMES {
+            let mut app = AppState::test_new();
+            app.palette = crate::app::state::Palette::from_name(name)
+                .unwrap_or_else(|| panic!("{name} should be a known theme"));
+            app.outer_terminal_focus = Some(false);
+
+            let muted = focus_accent(&app);
+            assert_ne!(
+                muted,
+                app.palette.focused_pane_border(),
+                "{name}: the accent should visibly mute"
+            );
+
+            let (Some(muted), Some(panel_bg)) =
+                (color_to_rgb(muted), color_to_rgb(app.palette.panel_bg))
+            else {
+                continue;
+            };
+            let contrast = contrast_ratio(muted, panel_bg);
+            assert!(
+                contrast >= HOST_UNFOCUSED_MIN_CONTRAST,
+                "{name}: muted accent sits at {contrast:.2}:1 against the panel"
+            );
+        }
+    }
+
+    #[test]
+    fn focus_accent_falls_back_to_overlay_without_rgb_colors() {
+        let mut app = AppState::test_new();
+        app.palette = crate::app::state::Palette::terminal();
+        app.outer_terminal_focus = Some(false);
+
+        assert_eq!(focus_accent(&app), app.palette.overlay0);
+    }
+
+    #[test]
+    fn cursor_hides_only_when_enabled_and_host_window_unfocused() {
+        let mut app = AppState::test_new();
+        assert!(app.hide_cursor_when_unfocused);
+
+        assert!(!cursor_hidden_by_host_focus(&app), "focus unknown");
+        app.outer_terminal_focus = Some(true);
+        assert!(!cursor_hidden_by_host_focus(&app));
+
+        app.outer_terminal_focus = Some(false);
+        assert!(cursor_hidden_by_host_focus(&app));
+
+        app.hide_cursor_when_unfocused = false;
+        assert!(!cursor_hidden_by_host_focus(&app));
+    }
+
+    #[test]
+    fn focused_pane_border_renders_muted_while_host_window_unfocused() {
+        fn left_edge_color(app: &AppState) -> Option<Color> {
+            let area = Rect::new(0, 0, 24, 5);
+            let backend = ratatui::backend::TestBackend::new(24, 5);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_code_ui_pane_chrome(
+                        app,
+                        frame,
+                        area,
+                        PaneChromeTitle {
+                            pane_type: "Pi".to_string(),
+                            folder_name: Some("panel".to_string()),
+                            repo_path: None,
+                            branch: None,
+                            worktree_state: crate::workspace::GitWorktreeState::Clean,
+                        },
+                        PaneId::from_raw(1),
+                        true,
+                        false,
+                        false,
+                        ExposedSides::all(),
+                        None,
+                    );
+                })
+                .unwrap();
+            terminal.backend().buffer()[(0, 2)].fg.into()
+        }
+
+        let mut app = AppState::test_new();
+        app.outer_terminal_focus = Some(true);
+        let focused_edge = left_edge_color(&app);
+        assert_eq!(focused_edge, Some(app.palette.focused_pane_border()));
+
+        app.outer_terminal_focus = Some(false);
+        assert_eq!(left_edge_color(&app), Some(focus_accent(&app)));
+        assert_ne!(left_edge_color(&app), focused_edge);
     }
 
     #[test]

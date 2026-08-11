@@ -6,8 +6,9 @@ use ratatui::{
     Frame,
 };
 
+use super::panes::{focus_accent, mute_when_host_unfocused};
 use super::scrollbar::should_show_scrollbar;
-use super::widgets::panel_contrast_fg;
+use super::widgets::contrasting_label_fg;
 use crate::app::state::AgentPanelScope;
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
@@ -904,7 +905,7 @@ fn render_space_group_outline(app: &AppState, frame: &mut Frame, area: Rect, gro
 
     let list = workspace_list_rect(app, area);
     let visible = |y: u16| list.height > 0 && y >= list.y && y < list.y + list.height;
-    let style = Style::default().fg(app.palette.focused_pane_border());
+    let style = Style::default().fg(focus_accent(app));
     let right = rect.x + rect.width - 1;
     let top = rect.y;
     let bottom = rect.y + rect.height - 1;
@@ -1096,7 +1097,7 @@ fn render_workspace_card(
     // to the focused agent row, so a selected space reads through its name.
     let border_color = app.palette.surface_dim;
     let name_color = if selected {
-        app.palette.accent
+        mute_when_host_unfocused(app, app.palette.accent)
     } else {
         app.palette.text
     };
@@ -1281,8 +1282,12 @@ fn render_agent_rows(
         // the way a selected space's name heads its card. The status bar is
         // left off too: it animates in its own state color and has to stay
         // legible against the sidebar, not against a wash behind it.
+        // The band mutes with the pane borders while the terminal window itself
+        // is unfocused, so the sidebar does not go on claiming input that the
+        // window is not receiving.
+        let band_color = focus_accent(app);
         if is_focused_pane {
-            fill_agent_row_band(frame, rect, app.palette.focused_pane_border());
+            fill_agent_row_band(frame, rect, band_color);
         }
         // Status is shown as a vertical bar running down the entry's left edge
         // instead of a bullet. It is inset by two so it clears the space
@@ -1300,17 +1305,19 @@ fn render_agent_rows(
         // selected space's name so the sidebar highlights agree.
         let name_style = if is_focused_pane {
             Style::default()
-                .fg(app.palette.accent)
+                .fg(mute_when_host_unfocused(app, app.palette.accent))
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(app.palette.text)
         };
         // Everything under the name is knocked out of the band in the panel's
         // own background tone, the way an active tab's label sits on its accent
-        // fill; off the band it keeps its usual dim tones.
+        // fill; off the band it keeps its usual dim tones. A muted band is too
+        // close to the panel for a knockout to show, so there the labels sit on
+        // top in the panel's text tone instead.
         let (title_fg, status_fg) = if is_focused_pane {
-            let knockout = panel_contrast_fg(&app.palette);
-            (knockout, knockout)
+            let label = contrasting_label_fg(&app.palette, band_color);
+            (label, label)
         } else {
             (app.palette.overlay1, app.palette.overlay0)
         };
@@ -1351,7 +1358,7 @@ fn render_agent_rows(
         // Last, because the bar's own trailing column and the labels' line both
         // run over where the left cap sits.
         if is_focused_pane {
-            cap_agent_row_band(frame, rect, app.palette.focused_pane_border());
+            cap_agent_row_band(frame, rect, band_color);
         }
     }
 }
@@ -1597,11 +1604,19 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::widgets::panel_contrast_fg;
     use crate::{detect::Agent, workspace::Workspace};
     use ratatui::{backend::TestBackend, Terminal};
 
     /// One space holding a single agent pane, rendered into `area`.
     fn render_sidebar_list(area: Rect) -> (crate::app::state::AppState, Terminal<TestBackend>) {
+        render_sidebar_list_with(area, |_| {})
+    }
+
+    fn render_sidebar_list_with(
+        area: Rect,
+        prepare: impl FnOnce(&mut crate::app::state::AppState),
+    ) -> (crate::app::state::AppState, Terminal<TestBackend>) {
         let mut app = crate::app::state::AppState::test_new();
         let workspace = Workspace::test_new("herdr");
         let pane = workspace.tabs[0].root_pane;
@@ -1613,6 +1628,7 @@ mod tests {
         app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
         app.active = Some(0);
         app.selected = 0;
+        prepare(&mut app);
 
         let runtimes = TerminalRuntimeRegistry::new();
         let backend = TestBackend::new(area.x + area.width, area.y + area.height);
@@ -1963,6 +1979,48 @@ mod tests {
         assert_eq!(buf[(name_x, row.y)].style().fg, Some(app.palette.accent));
         assert_eq!(buf[(name_x, row.y + 1)].style().fg, Some(knockout));
         assert_eq!(buf[(name_x, row.y + 2)].style().fg, Some(knockout));
+    }
+
+    #[test]
+    fn focused_agent_band_mutes_and_lifts_its_labels_while_the_host_window_is_unfocused() {
+        let area = Rect::new(0, 0, 28, 24);
+        let (app, terminal) =
+            render_sidebar_list_with(area, |app| app.outer_terminal_focus = Some(false));
+        let row = compute_workspace_list_areas(&app, area)
+            .1
+            .last()
+            .expect("the space's agent should have a row")
+            .rect;
+        let band = agent_row_band_rect(row).expect("the row is wide enough for a band");
+        let buf = terminal.backend().buffer();
+
+        let muted = focus_accent(&app);
+        assert_ne!(muted, app.palette.focused_pane_border());
+        assert_eq!(buf[(band.x, band.y)].style().bg, Some(muted), "band fill");
+        assert_eq!(
+            buf[(band.x - 1, band.y)].style().fg,
+            Some(muted),
+            "band cap"
+        );
+        assert_eq!(
+            buf[(row.x + row.width - 1, band.y)].style().fg,
+            Some(muted),
+            "the space outline mutes with the band it belongs to"
+        );
+
+        // A knockout would be invisible against the muted band, so the labels
+        // sit on top of it instead.
+        let label_x = row.x + AGENT_ROW_LABEL_X;
+        assert_eq!(
+            buf[(label_x, row.y)].style().fg,
+            Some(mute_when_host_unfocused(&app, app.palette.accent)),
+            "the agent name mutes with the rest of the focus mark"
+        );
+        assert_eq!(buf[(label_x, row.y + 1)].style().fg, Some(app.palette.text));
+        assert_ne!(
+            buf[(label_x, row.y + 1)].style().fg,
+            Some(panel_contrast_fg(&app.palette))
+        );
     }
 
     #[test]
