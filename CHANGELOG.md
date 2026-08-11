@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.8.2] - 2026-08-11
+
 ### Changed
 - A Herdr window that has lost focus now looks like it. Every mark that claims your typing mutes together — the focused pane's border and title, the outline around the space you are in, the band under the agent you are typing to, and both of their names — and the focused pane's cursor block disappears. A Herdr sitting on a second screen no longer presents the same "typing lands here" chrome as the window you are actually in, which is the difference dictation and blind typing were getting wrong. Herdr already knew: terminals report focus over the same channel as keystrokes, and that state was being used to hold back notifications while you were away. It was simply never drawn. Terminals that do not report focus, and multiplexers not passing focus events through, keep the normal focused chrome rather than muting on a signal that never arrives.
 - The muted color is derived from your theme rather than fixed: a focus color gives up most of its chroma, which costs no legibility, and then recedes toward the panel behind it as far as that palette can afford while staying readable. Dark themes recede fully; a light theme whose accent is already close to its background recedes little or not at all and leans on losing its color instead. The labels on the focused agent's band follow the band — knocked out of a bright fill as before, sitting on top of a muted one, where a knockout would be invisible.
