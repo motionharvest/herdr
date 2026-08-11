@@ -94,6 +94,33 @@ Do not use GitHub closing keywords like `fixes #<issue-number>`, `closes #<issue
 - Integration asset versions (`HERDR_INTEGRATION_VERSION` markers and matching `*_INTEGRATION_VERSION` constants) are migration versions relative to the latest released tag, not per-commit counters on `master`. If an integration asset changes multiple times between releases, bump it once from the version in the latest release.
 - When changing the server/client wire protocol, compare `src/protocol/wire.rs::PROTOCOL_VERSION` against the latest released tag. Bump it only if the current source protocol is not already greater than the latest released protocol. Update hardcoded protocol expectations and manual protocol fixtures in tests.
 
+## Deploy
+
+"Deploy", "deploy this", and "ship it" mean one thing: cut and publish the next stable release from `main`, start to finish. Run the whole sequence without stopping to confirm the steps. The word is itself the approval to push, tag, and publish binaries to stable-channel users.
+
+**1. Land the work.** Commit anything outstanding. The standing "propose the commit message and get alignment" rule is satisfied by stating the message in the deploy report — deploy does not wait on it. Then confirm `main` is not behind: `git fetch origin main --tags`.
+
+**2. Pick the version.** Default to a patch bump of the version in `Cargo.toml`. Use a minor bump only when one of these is true of the commits since the latest tag:
+
+- `PROTOCOL_VERSION` in `src/protocol/wire.rs` changed
+- a config key in `src/config/model.rs` was removed or renamed
+- a default in an `impl Default` config block changed, so existing installs behave differently without anyone editing a file
+- a default keybinding changed
+- the session file or persisted state shape changed
+- a commit subject carries `!` (`feat!:`) or its body carries `BREAKING CHANGE:`
+
+New features on their own stay a patch. That is this repository's practice, not an assumption: `Added` entries ship in the 0.6.6, 0.6.7, 0.6.8, 0.6.9, 0.7.1, 0.7.2, and 0.7.3 patch releases. Say which trigger fired when the bump is a minor. If a minor looks right for a reason not on that list, say so in one line and cut the patch anyway. An explicit instruction wins over all of it — "deploy a minor", "deploy 0.9.0".
+
+**3. Write the release notes.** Every user-facing change since the last tag needs an entry under `## Unreleased` in `docs/next/CHANGELOG.md`, filed under `Added`, `Changed`, or `Fixed`. Match the existing voice: what changed, what it did before, and why the old behavior was wrong. Internal refactors with no visible effect get no entry.
+
+**4. Finalize the docs.** Copy each staged file over its released counterpart — `docs/next/CHANGELOG.md` to `CHANGELOG.md`, `docs/next/README.md` to `README.md`, and every `docs/next/website/src/content/docs/*.mdx` into `website/src/content/docs/`. Leave generated `website/src/content/docs/preview/` alone. Verify with `just release-docs-check`, which fails the release if anything is out of sync. Commit as `docs: finalize release docs for v<version>`.
+
+**5. Audit.** Run `/pre-release-audit` when it is available in the session. When it is not, report it as skipped rather than letting the checklist imply it passed.
+
+**6. Publish.** `just release <version>` runs prepare and publish together: it bumps `Cargo.toml`, dates the changelog heading, runs `just check`, commits `release: v<version>`, pushes `main`, then tags and pushes `v<version>`. Use `just release-prepare` and `just release-publish` separately only when the release commit needs review in between.
+
+**7. Report.** Check `gh run list --limit 5` and name the workflows in flight. Call out pre-existing unrelated failures as unrelated. A tag whose Release workflow fails leaves users on a version with no binaries, so offer to watch the run.
+
 ## Release Channels
 
 Herdr has one main branch and two update channels. Stable and preview both build from `master`; there is no long-lived preview branch.
