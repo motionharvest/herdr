@@ -23,7 +23,6 @@ const FULL_PANE_CONTROLS_WIDTH: u16 = 12;
 const COMPACT_PANE_CONTROLS_WIDTH: u16 = 5;
 const PANE_CLOSE_CONTROL_SUFFIX: &str = " ✕ ";
 const PANE_INNER_PADDING: u16 = 0;
-const PANE_TITLE_ICON: &str = "\u{f04fd}";
 
 struct PaneTitleChromeLayout {
     /// Width of the pane name/path details section (before the horizontal rule glyphs).
@@ -37,7 +36,7 @@ fn pane_title_chrome_layout(
     maximized: bool,
 ) -> PaneTitleChromeLayout {
     let (_, controls_width) = pane_controls_text(title_width, maximized);
-    let title_prefix_width = "╭─ ".chars().count() + PANE_TITLE_ICON.chars().count() + 1;
+    let title_prefix_width = "╭─ ".chars().count();
     let text_available = title_width
         .saturating_sub(title_prefix_width as u16)
         .saturating_sub(controls_width)
@@ -489,17 +488,26 @@ impl PaneChromeTitle {
         let mut result = format!("{} {{{}}}", folder, agent);
 
         if let (Some(repo_path), Some(branch)) = (&self.repo_path, &self.branch) {
-            let git_icon = "\u{f418}"; //  git repo icon
             let status = worktree_state_marker(self.worktree_state);
-            // Format: "  ~/lab/code-ui (feat/git-status ✓)"
-            result.push_str(&format!(
-                " {} {} ({} {})",
-                git_icon, repo_path, branch, status
-            ));
+            // Format: " ~/lab/code-ui (feat/git-status ✓)"
+            result.push_str(&format!(" {} ({} {})", repo_path, branch, status));
         }
 
         result
     }
+}
+
+/// Split a formatted pane title into its name section and its git section.
+///
+/// The git section is everything that follows the agent label's closing brace,
+/// so the boundary is found the same way `push_title_name_spans` finds the
+/// label itself. Returns `None` when there is no agent label or nothing follows
+/// it, which is the case for panes with no git status attached.
+fn split_title_git_suffix(text: &str) -> Option<(&str, &str)> {
+    let brace_start = text.find(" {")?;
+    let close_idx = brace_start + text[brace_start..].find('}')?;
+    let (name, git) = text.split_at(close_idx + '}'.len_utf8());
+    (!git.is_empty()).then_some((name, git))
 }
 
 pub(super) fn push_title_name_spans(
@@ -595,15 +603,9 @@ fn render_code_ui_pane_chrome(
     let (controls_text, controls_width) = pane_controls_text(title_width, maximized);
 
     let rule_glyph = if focused || highlighted { '═' } else { '─' };
-    let git_icon = "\u{f418}";
-    let icon_style = if (focused || highlighted) && !app.host_window_unfocused() {
-        Style::default().fg(Color::White).bg(Color::Reset)
-    } else {
-        edge_style
-    };
     // On unfocused panes the whole title (name, braces, agent label, git info)
-    // drops to the muted overlay color, matching the dimmed icon, rule glyphs,
-    // and controls. Only the focused/highlighted pane keeps the distinct colors.
+    // drops to the muted overlay color, matching the dimmed rule glyphs and
+    // controls. Only the focused/highlighted pane keeps the distinct colors.
     let unfocused_style = Style::default().fg(app.palette.overlay0).bg(Color::Reset);
     let pane_name_style = if chrome_active {
         Style::default().fg(focus_accent(app)).bg(Color::Reset)
@@ -631,7 +633,7 @@ fn render_code_ui_pane_chrome(
         unfocused_style
     };
     let text_available = title_width
-        .saturating_sub("╭─ ".chars().count() as u16 + PANE_TITLE_ICON.chars().count() as u16 + 1)
+        .saturating_sub("╭─ ".chars().count() as u16)
         .saturating_sub(controls_width)
         .saturating_sub(3) as usize;
     let title_text = truncate_to_width(&title.formatted_title(), text_available);
@@ -641,26 +643,21 @@ fn render_code_ui_pane_chrome(
         String::new()
     };
 
-    let mut spans = vec![
-        Span::styled("╭─ ".to_string(), edge_style),
-        Span::styled(PANE_TITLE_ICON.to_string(), icon_style),
-        Span::styled(" ".to_string(), edge_style),
-    ];
-    if let Some((before_git_icon, after_git_icon)) = title_text.split_once(git_icon) {
+    let mut spans = vec![Span::styled("╭─ ".to_string(), edge_style)];
+    if let Some((name_text, git_text)) = split_title_git_suffix(&title_text) {
         push_title_name_spans(
             &mut spans,
-            before_git_icon,
+            name_text,
             pane_name_style,
             agent_label_style,
             pane_name_style,
         );
-        spans.push(Span::styled(git_icon.to_string(), icon_style));
-        if let Some(paren_start) = after_git_icon.rfind(" (") {
-            let (repo_path, branch_status) = after_git_icon.split_at(paren_start);
+        if let Some(paren_start) = git_text.rfind(" (") {
+            let (repo_path, branch_status) = git_text.split_at(paren_start);
             spans.push(Span::styled(repo_path.to_string(), repo_path_style));
             spans.push(Span::styled(branch_status.to_string(), git_style));
         } else {
-            spans.push(Span::styled(after_git_icon.to_string(), repo_path_style));
+            spans.push(Span::styled(git_text.to_string(), repo_path_style));
         }
     } else {
         push_title_name_spans(
