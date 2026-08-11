@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Dragging a pane by its title now swaps panes even when the pane you drag across is reporting mouse events. An agent or editor that turns on mouse tracking claimed every motion that crossed it, so the gesture was handed to that pane's own program before it could become a swap and died on its first cell of travel. A press that lands on herdr's own chrome — a pane title, a tab, a sidebar row — now owns the gesture until you release it. Terminals that track button presses but not motion no longer swallow the drag either: an encoding that comes back empty now reads as "this terminal is not tracking that event" instead of being forwarded as zero bytes.
+
 ## [0.8.0] - 2026-08-10
 
 ### Changed

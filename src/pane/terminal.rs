@@ -958,7 +958,12 @@ impl GhosttyPaneTerminal {
         let core = self.lock_core();
         let mut encoder = ghostty_mouse_encoder_for_terminal(&core.terminal)?;
         let event = ghostty_mouse_event_from_button_kind(kind, column, row, modifiers)?;
-        encoder.encode(&event).ok()
+        // An empty encoding means the terminal is not tracking this event, so
+        // report it as unencoded rather than "forwarded as zero bytes".
+        encoder
+            .encode(&event)
+            .ok()
+            .filter(|bytes| !bytes.is_empty())
     }
 
     pub fn encode_mouse_motion(
@@ -974,7 +979,10 @@ impl GhosttyPaneTerminal {
         }
         let mut encoder = ghostty_mouse_encoder_for_terminal(&core.terminal)?;
         let event = ghostty_mouse_event_from_motion_kind(kind, column, row, modifiers)?;
-        encoder.encode(&event).ok()
+        encoder
+            .encode(&event)
+            .ok()
+            .filter(|bytes| !bytes.is_empty())
     }
 
     pub fn encode_mouse_wheel(
@@ -987,7 +995,10 @@ impl GhosttyPaneTerminal {
         let core = self.lock_core();
         let mut encoder = ghostty_mouse_encoder_for_terminal(&core.terminal)?;
         let event = ghostty_mouse_event_from_wheel_kind(kind, column, row, modifiers)?;
-        encoder.encode(&event).ok()
+        encoder
+            .encode(&event)
+            .ok()
+            .filter(|bytes| !bytes.is_empty())
     }
 
     pub fn visible_text(&self) -> String {
@@ -2390,6 +2401,39 @@ mod tests {
         );
 
         assert_eq!(encoded.as_deref(), Some(&b"\x1b[<0;12;10m"[..]));
+    }
+
+    #[test]
+    fn ghostty_mouse_button_encoding_is_none_without_mouse_reporting() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+
+        let encoded = pane.encode_mouse_button(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            4,
+            6,
+            crossterm::event::KeyModifiers::empty(),
+        );
+
+        assert_eq!(encoded, None);
+    }
+
+    #[test]
+    fn ghostty_mouse_drag_encoding_is_none_without_motion_reporting() {
+        let (tx, _rx) = mpsc::channel(4);
+        let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        terminal.write(b"\x1b[?1000h\x1b[?1006h");
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+
+        let encoded = pane.encode_mouse_button(
+            crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+            4,
+            6,
+            crossterm::event::KeyModifiers::empty(),
+        );
+
+        assert_eq!(encoded, None);
     }
 
     #[test]

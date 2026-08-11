@@ -617,7 +617,7 @@ impl AppState {
                     return None;
                 }
 
-                if self.drag.is_none() {
+                if self.drag.is_none() && !self.chrome_press_active() {
                     if let Some(info) = self.pane_mouse_target(mouse.column, mouse.row).cloned() {
                         if self.forward_pane_mouse_button(terminal_runtimes, &info, mouse) {
                             self.selection = None;
@@ -826,7 +826,7 @@ impl AppState {
                     return None;
                 }
 
-                if self.drag.is_none() {
+                if self.drag.is_none() && !self.chrome_press_active() {
                     if let Some(info) = self.pane_mouse_target(mouse.column, mouse.row).cloned() {
                         if self.forward_pane_mouse_button(terminal_runtimes, &info, mouse) {
                             self.selection = None;
@@ -1417,6 +1417,16 @@ impl AppState {
             .iter()
             .copied()
             .find(|hit| rect_contains(hit.rect, col, row))
+    }
+
+    /// A press that landed on herdr's own chrome (pane title, tab, sidebar
+    /// row) owns the gesture until release: the motion after it belongs to the
+    /// drag it may still become, never to whatever pane sits under the cursor.
+    fn chrome_press_active(&self) -> bool {
+        self.pane_press.is_some()
+            || self.tab_press.is_some()
+            || self.workspace_press.is_some()
+            || self.agent_press.is_some()
     }
 
     fn pane_swap_enabled(&self) -> bool {
@@ -2701,6 +2711,117 @@ mod tests {
             start_col,
             start_row,
         ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let new_left = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|pane| pane.id == left)
+            .unwrap()
+            .rect;
+        let new_right = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|pane| pane.id == right)
+            .unwrap()
+            .rect;
+        assert_eq!(new_left, right_rect);
+        assert_eq!(new_right, left_rect);
+    }
+
+    #[tokio::test]
+    async fn dragging_pane_title_still_swaps_when_pane_mouse_reporting_is_enabled() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let left = ws.tabs[0].root_pane;
+        let right = ws.test_split(Direction::Horizontal);
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        for pane_id in [left, right] {
+            let info = app
+                .state
+                .view
+                .pane_infos
+                .iter()
+                .find(|info| info.id == pane_id)
+                .expect("pane info")
+                .clone();
+            app.state.insert_test_runtime(
+                pane_id,
+                crate::terminal::TerminalRuntime::test_with_screen_bytes(
+                    info.inner_rect.width.max(1),
+                    info.inner_rect.height.max(1),
+                    b"\x1b[?1002h\x1b[?1006h",
+                ),
+            );
+        }
+
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let left_rect = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|pane| pane.id == left)
+            .unwrap()
+            .rect;
+        let right_rect = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|pane| pane.id == right)
+            .unwrap()
+            .rect;
+        assert!(left_rect.x < right_rect.x);
+
+        let title_hit = app
+            .state
+            .view
+            .pane_title_hit_areas
+            .iter()
+            .find(|hit| hit.pane_id == left)
+            .expect("left pane title hit area");
+        let start_col = title_hit.rect.x + title_hit.rect.width / 2;
+        let start_row = title_hit.rect.y;
+        let target_col = right_rect.x + right_rect.width / 2;
+        let target_row = right_rect.y + right_rect.height / 2;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            start_col,
+            start_row,
+        ));
+        // The first drag step lands a few cells along the source title, still
+        // inside the source pane frame: the gesture must not be handed to the
+        // pane underneath before it can become a swap.
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            start_col + PANE_DRAG_THRESHOLD,
+            start_row,
+        ));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::PaneSwap { .. })
+        ));
+
         app.handle_mouse(mouse(
             MouseEventKind::Drag(MouseButton::Left),
             target_col,

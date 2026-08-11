@@ -120,7 +120,7 @@ pub fn play_builtin(sound: &'static BuiltinSound) {
 }
 
 fn play_with_override(builtin: BuiltinSound, custom_path: Option<PathBuf>) {
-    if sound_playback_disabled_by_env() {
+    if playback_disabled() {
         return;
     }
 
@@ -138,6 +138,16 @@ fn play_with_override(builtin: BuiltinSound, custom_path: Option<PathBuf>) {
             warn!(sound = builtin.key, err = %err, "sound playback failed");
         }
     });
+}
+
+/// Test builds never reach the speakers. Tests that build a real `App` get
+/// `local_sound_playback`, so driving a pane to Idle plays a notification for
+/// real — under `cargo nextest` the env check caught that, but a bare
+/// `cargo test` chimed out loud on the developer's machine, with the default
+/// sound rather than the configured one. Silence belongs to the build, not to
+/// the runner that happens to launch it.
+fn playback_disabled() -> bool {
+    cfg!(test) || sound_playback_disabled_by_env()
 }
 
 fn sound_playback_disabled_by_env() -> bool {
@@ -258,6 +268,13 @@ fn player_error(player: AudioPlayer, output: &Output) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_builds_never_play_audio() {
+        // Not a tautology in practice: this is the guard that keeps a bare
+        // `cargo test` from firing notification sounds out of the speakers.
+        assert!(playback_disabled());
+    }
 
     #[test]
     fn temp_sound_paths_are_unique() {
