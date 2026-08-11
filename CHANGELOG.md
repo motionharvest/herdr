@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- Pane titles no longer draw the two Nerd Font icons: the pane glyph in front of the name, and the branch glyph in front of the repo path. Both live in the Unicode Private Use Area, so a terminal running an unpatched font drew a replacement box — or nothing — in the title bar of every pane, while the layout still reserved the columns for them. The name now starts two columns earlier and truncates two columns later. The repo path and branch keep their separate colors: the renderer used to find where the git section began by searching the title for that branch glyph, and it now takes the boundary from the agent label's closing brace, which is the same place the pane name already ends.
+
 ## [0.8.3] - 2026-08-11
 
 ### Added
