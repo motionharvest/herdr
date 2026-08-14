@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.9.0] - 2026-08-14
+
 ### Added
 - A pane's assigned name — the `Olivia` or `Mei` the sidebar already shows — now works anywhere a pane id does, in every CLI command and API method that takes one, case-insensitively. Ids compact when panes close, so a script that captured `1-3` could be talking to a different pane a minute later; the name stays with its pane for the life of the terminal. Names also survive restarts now: the session file saves each pane's terminal identity, which the names are derived from, so a restored session comes back wearing the same names it shut down with. Pane responses in the API carry the name as a `name` field, and colliding names are suffixed `Olivia-2` rather than `Olivia 2`, because a name with a space in it would need quoting in the very commands the name is for.
 - `herdr agent prompt <target> <text>` delivers a message to the agent in another pane: the text is pasted, then Enter is pressed, so it arrives and submits as one message. `agent send` types text without submitting and `pane run` sends command text plus Enter for shells, but neither was right for prompting an agent — send left the message sitting unsubmitted in the composer, and run's per-line writes could hand a multi-line prompt to the agent as several messages.
