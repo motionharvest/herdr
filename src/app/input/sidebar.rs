@@ -308,7 +308,9 @@ impl AppState {
         }
 
         let (cards, agent_rows) = if self.view.workspace_card_areas.is_empty() {
-            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect)
+            let (cards, agent_rows, _) =
+                crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect);
+            (cards, agent_rows)
         } else {
             (
                 self.view.workspace_card_areas.clone(),
@@ -379,58 +381,125 @@ impl AppState {
 
     /// Agent rows currently drawn for `ws_idx`, top to bottom.
     fn agent_rows_for_workspace(&self, ws_idx: usize) -> Vec<crate::app::state::AgentRowArea> {
-        let agent_rows = if self.view.workspace_card_areas.is_empty() {
-            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).1
-        } else {
-            self.view.agent_row_areas.clone()
-        };
-        agent_rows
+        self.drawn_agent_rows()
             .into_iter()
             .filter(|area| area.ws_idx == ws_idx)
             .collect()
     }
 
-    /// Where a dragged agent row would land in its space's list: an
-    /// insert-before position in the space's current agent order. `None` while
-    /// the cursor is outside that space's rows.
-    pub(super) fn agent_drop_index_at_row(&self, ws_idx: usize, row: u16) -> Option<usize> {
+    fn drawn_agent_rows(&self) -> Vec<crate::app::state::AgentRowArea> {
+        if self.view.workspace_card_areas.is_empty() {
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).1
+        } else {
+            self.view.agent_row_areas.clone()
+        }
+    }
+
+    /// Folder rows currently drawn for `ws_idx`, top to bottom.
+    pub(super) fn agent_folder_rows_for_workspace(
+        &self,
+        ws_idx: usize,
+    ) -> Vec<crate::app::state::AgentFolderArea> {
+        let folder_rows = if self.view.workspace_card_areas.is_empty() {
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).2
+        } else {
+            self.view.agent_folder_areas.clone()
+        };
+        folder_rows
+            .into_iter()
+            .filter(|area| area.ws_idx == ws_idx)
+            .collect()
+    }
+
+    /// The rows drawn for one folder: its agents, in the order they are listed.
+    fn agent_rows_in_folder(
+        &self,
+        ws_idx: usize,
+        key: &str,
+    ) -> Vec<crate::app::state::AgentRowArea> {
+        let members = crate::ui::workspace_agent_groups(self, ws_idx)
+            .into_iter()
+            .find(|group| group.key == key)
+            .map(|group| {
+                group
+                    .agents
+                    .into_iter()
+                    .map(|member| member.pane_id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let rows = self.agent_rows_for_workspace(ws_idx);
+        members
+            .into_iter()
+            .filter_map(|pane_id| rows.iter().find(|area| area.pane_id == pane_id).cloned())
+            .collect()
+    }
+
+    /// Where a dragged agent would land among the agents it shares a folder
+    /// with: an insert-before position in that folder's list. An agent cannot
+    /// leave the folder it is working in, so the cursor pins to the folder's
+    /// ends rather than escaping it.
+    pub(super) fn agent_drop_index_at_row(
+        &self,
+        ws_idx: usize,
+        source_pane_id: crate::layout::PaneId,
+        row: u16,
+    ) -> Option<usize> {
+        let (key, _) = crate::ui::agent_folder_position(self, ws_idx, source_pane_id)?;
+        let rows = self.agent_rows_in_folder(ws_idx, &key);
         let first = rows.first()?;
         let last = rows.last()?;
-        // Dragging past either end of the space's block pins to that end
-        // instead of losing the drop.
         if row < first.rect.y {
-            return self.agent_order_position(ws_idx, first.pane_id);
+            return Some(0);
         }
         if row >= last.rect.y + last.rect.height {
-            return Some(self.agent_order_position(ws_idx, last.pane_id)? + 1);
+            return Some(rows.len());
         }
 
         match rows
             .iter()
-            .find(|area| row >= area.rect.y && row < area.rect.y + area.rect.height)
+            .position(|area| row >= area.rect.y && row < area.rect.y + area.rect.height)
         {
             // Top half of a row drops above it, bottom half below.
-            Some(hovered) => {
-                let position = self.agent_order_position(ws_idx, hovered.pane_id)?;
+            Some(position) => {
+                let hovered = &rows[position];
                 let past_midpoint = row >= hovered.rect.y + hovered.rect.height / 2;
                 Some(position + usize::from(past_midpoint))
             }
             // A gap row belongs to the entry below it, so it is that entry's
             // insert-above slot.
-            None => rows
-                .iter()
-                .find(|area| area.rect.y > row)
-                .and_then(|area| self.agent_order_position(ws_idx, area.pane_id)),
+            None => rows.iter().position(|area| area.rect.y > row),
         }
     }
 
-    fn agent_order_position(&self, ws_idx: usize, pane_id: crate::layout::PaneId) -> Option<usize> {
-        self.workspaces
-            .get(ws_idx)?
-            .ordered_pane_ids()
+    /// Where a dragged folder would land among its space's folders: an
+    /// insert-before position in that space's folder list.
+    pub(super) fn agent_folder_drop_index_at_row(&self, ws_idx: usize, row: u16) -> Option<usize> {
+        let folders = self.agent_folder_rows_for_workspace(ws_idx);
+        let first = folders.first()?;
+        let rows = self.agent_rows_for_workspace(ws_idx);
+        let last_agent = rows.last()?;
+        if row < first.rect.y {
+            return Some(0);
+        }
+        if row >= last_agent.rect.y + last_agent.rect.height {
+            return Some(folders.len());
+        }
+
+        // A folder owns every row from its own down to the row before the next
+        // folder, so the block a cursor is in decides which slot it means, and
+        // its midpoint decides which side of that block.
+        let position = folders
             .iter()
-            .position(|id| *id == pane_id)
+            .rposition(|area| area.rect.y <= row)
+            .unwrap_or(0);
+        let block_top = folders[position].rect.y;
+        let block_bottom = folders
+            .get(position + 1)
+            .map(|next| next.rect.y)
+            .unwrap_or_else(|| last_agent.rect.y + last_agent.rect.height);
+        let past_midpoint = row >= block_top + (block_bottom.saturating_sub(block_top)) / 2;
+        Some(position + usize::from(past_midpoint))
     }
 
     pub(super) fn agent_detail_target_at(
@@ -441,15 +510,27 @@ impl AppState {
             return None;
         }
 
-        let agent_rows = if self.view.workspace_card_areas.is_empty() {
-            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).1
-        } else {
-            self.view.agent_row_areas.clone()
-        };
-        agent_rows
+        self.drawn_agent_rows()
             .iter()
             .find(|area| row >= area.rect.y && row < area.rect.y + area.rect.height)
             .map(|area| (area.ws_idx, area.tab_idx, area.pane_id))
+    }
+
+    /// The folder row under `row`, which a press can pick up and drag.
+    pub(super) fn agent_folder_target_at(&self, row: u16) -> Option<(usize, String)> {
+        if self.sidebar_collapsed {
+            return None;
+        }
+
+        let folder_rows = if self.view.workspace_card_areas.is_empty() {
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).2
+        } else {
+            self.view.agent_folder_areas.clone()
+        };
+        folder_rows
+            .into_iter()
+            .find(|area| row >= area.rect.y && row < area.rect.y + area.rect.height)
+            .map(|area| (area.ws_idx, area.key))
     }
 }
 
@@ -660,10 +741,11 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 30);
-        let (cards, agent_rows) =
+        let (cards, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
+        app.state.view.agent_folder_areas = folder_rows;
 
         let target = app
             .state
@@ -829,10 +911,11 @@ mod tests {
         app.state.mode = Mode::Terminal;
         app.state.agent_panel_scope = AgentPanelScope::AllWorkspaces;
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 40);
-        let (cards, agent_rows) =
+        let (cards, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
+        app.state.view.agent_folder_areas = folder_rows;
 
         let target = app
             .state
@@ -949,10 +1032,11 @@ mod tests {
         // Scroll the merged list past the workspace card so agent rows shift up.
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 20);
         app.state.workspace_scroll = 1;
-        let (cards, agent_rows) =
+        let (cards, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
+        app.state.view.agent_folder_areas = folder_rows;
 
         let target = app
             .state
@@ -1239,10 +1323,11 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 30);
-        let (cards, agent_rows) =
+        let (cards, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
+        app.state.view.agent_folder_areas = folder_rows;
         app
     }
 
@@ -1443,10 +1528,11 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 40);
-        let (cards, agent_rows) =
+        let (cards, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
+        app.state.view.agent_folder_areas = folder_rows;
         app
     }
 
@@ -1456,6 +1542,114 @@ mod tests {
             .iter()
             .map(|detail| detail.pane_id)
             .collect()
+    }
+
+    /// One space whose agents work in the folders given, one agent per entry.
+    fn app_with_agent_folders(agents: &[(&str, &str)]) -> crate::app::App {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("space");
+        let mut panes = vec![(0_usize, ws.tabs[0].root_pane, agents[0].1)];
+        for (name, cwd) in &agents[1..] {
+            let tab_idx = ws.test_add_tab(Some(name));
+            let pane_id = ws.tabs[tab_idx].root_pane;
+            panes.push((tab_idx, pane_id, *cwd));
+        }
+
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        for (tab_idx, pane_id, cwd) in panes {
+            let terminal_id = app.state.workspaces[0].tabs[tab_idx].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.detected_agent = Some(Agent::Claude);
+            terminal.cwd = std::path::PathBuf::from(cwd);
+        }
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 40);
+        let (cards, agent_rows, folder_rows) =
+            crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
+        app.state.view.workspace_card_areas = cards;
+        app.state.view.agent_row_areas = agent_rows;
+        app.state.view.agent_folder_areas = folder_rows;
+        app
+    }
+
+    fn drag_sidebar(app: &mut crate::app::App, from: (u16, u16), to: (u16, u16)) {
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            from.0,
+            from.1,
+        ));
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), to.0, to.1));
+    }
+
+    #[test]
+    fn agents_in_one_folder_are_listed_together_however_their_tabs_are_ordered() {
+        let app =
+            app_with_agent_folders(&[("one", "/srv/a"), ("two", "/srv/b"), ("three", "/srv/a")]);
+        let natural = app.state.workspaces[0].natural_pane_order();
+        let drawn = app
+            .state
+            .view
+            .agent_row_areas
+            .iter()
+            .map(|area| area.pane_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            drawn,
+            vec![natural[0], natural[2], natural[1]],
+            "the two panes in /srv/a are listed together, though a /srv/b pane opened between them"
+        );
+        assert_eq!(app.state.view.agent_folder_areas.len(), 2);
+    }
+
+    #[test]
+    fn dragging_a_folder_row_moves_every_agent_under_it() {
+        let mut app =
+            app_with_agent_folders(&[("one", "/srv/a"), ("two", "/srv/b"), ("three", "/srv/a")]);
+        let natural = app.state.workspaces[0].natural_pane_order();
+        let folders = app.state.view.agent_folder_areas.clone();
+        let rows = app.state.view.agent_row_areas.clone();
+        let last = rows.last().unwrap().rect;
+
+        drag_sidebar(
+            &mut app,
+            (folders[0].rect.x + 2, folders[0].rect.y),
+            (folders[0].rect.x + 2, last.y + last.height),
+        );
+
+        assert_eq!(
+            agent_row_pane_ids(&app),
+            vec![natural[1], natural[0], natural[2]],
+            "the /srv/b folder now leads, and /srv/a keeps both of its agents in order"
+        );
+    }
+
+    #[test]
+    fn dragging_an_agent_keeps_it_inside_its_own_folder() {
+        let mut app =
+            app_with_agent_folders(&[("one", "/srv/a"), ("two", "/srv/a"), ("three", "/srv/b")]);
+        let natural = app.state.workspaces[0].natural_pane_order();
+        let rows = app.state.view.agent_row_areas.clone();
+        let source = rows[0].rect;
+        let below_everything = rows[2].rect.y + rows[2].rect.height + 4;
+
+        drag_sidebar(
+            &mut app,
+            (source.x + 2, source.y),
+            (source.x + 2, below_everything),
+        );
+
+        assert_eq!(
+            agent_row_pane_ids(&app),
+            vec![natural[1], natural[0], natural[2]],
+            "the agent lands at the end of its own folder, not at the end of the space"
+        );
     }
 
     #[test]
@@ -1537,10 +1731,11 @@ mod tests {
         assert_eq!(
             menu.kind,
             ContextMenuKind::Agent {
-                pane_id: target.pane_id
+                pane_id: target.pane_id,
+                can_reset: true,
             }
         );
-        assert_eq!(menu.items(), ["Rename pane"]);
+        assert_eq!(menu.items(), ["Rename pane", "Reset agent", "Close agent"]);
 
         let menu_rect = app.state.context_menu_rect().expect("menu rect");
         app.handle_mouse(mouse(
@@ -1554,6 +1749,51 @@ mod tests {
         assert!(app.state.context_menu.is_none());
     }
 
+    #[tokio::test]
+    async fn agent_row_new_session_types_the_agent_s_reset_command() {
+        let mut app = app_with_agent_rows(&[("one", Agent::Pi), ("two", Agent::Claude)]);
+        let rows = app.state.view.agent_row_areas.clone();
+        let target = &rows[1];
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(target.pane_id, runtime);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            target.rect.x + 2,
+            target.rect.y,
+        ));
+        let menu_rect = app.state.context_menu_rect().expect("menu rect");
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            menu_rect.x + 2,
+            menu_rect.y + 2,
+        ));
+
+        assert!(app.state.context_menu.is_none());
+        assert_eq!(rx.recv().await.unwrap(), bytes::Bytes::from_static(b"\x1b"));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            bytes::Bytes::from_static(b"/clear")
+        );
+        assert_eq!(rx.recv().await.unwrap(), bytes::Bytes::from_static(b"\r"));
+    }
+
+    #[test]
+    fn agent_row_menu_hides_new_session_for_harnesses_without_a_reset_command() {
+        let mut app = app_with_agent_rows(&[("one", Agent::Pi), ("two", Agent::Claude)]);
+        let rows = app.state.view.agent_row_areas.clone();
+        let target = &rows[0];
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            target.rect.x + 2,
+            target.rect.y,
+        ));
+
+        let menu = app.state.context_menu.as_ref().expect("agent context menu");
+        assert_eq!(menu.items(), ["Rename pane", "Close agent"]);
+    }
+
     #[test]
     fn agent_drop_slots_cover_the_gaps_between_rows() {
         let app = app_with_agent_rows(&[
@@ -1562,20 +1802,24 @@ mod tests {
             ("three", Agent::Codex),
         ]);
         let rows = app.state.view.agent_row_areas.clone();
+        let dragged = rows[0].pane_id;
         let gap_above_second = rows[1].rect.y - 1;
         let above_everything = rows[0].rect.y.saturating_sub(4);
         let below_everything = rows[2].rect.y + rows[2].rect.height + 4;
 
         assert_eq!(
-            app.state.agent_drop_index_at_row(0, gap_above_second),
+            app.state
+                .agent_drop_index_at_row(0, dragged, gap_above_second),
             Some(1)
         );
         assert_eq!(
-            app.state.agent_drop_index_at_row(0, above_everything),
+            app.state
+                .agent_drop_index_at_row(0, dragged, above_everything),
             Some(0)
         );
         assert_eq!(
-            app.state.agent_drop_index_at_row(0, below_everything),
+            app.state
+                .agent_drop_index_at_row(0, dragged, below_everything),
             Some(3)
         );
     }
@@ -1616,7 +1860,7 @@ mod tests {
             ("three", Agent::Codex),
         ]);
         let natural = agent_row_pane_ids(&app);
-        assert!(app.state.move_agent(0, natural[2], 0));
+        assert!(app.state.move_agent_in_folder(0, natural[2], 0));
 
         let snapshot = capture_snapshot(&app.state);
         assert_eq!(snapshot.workspaces[0].agent_order, vec![2, 0, 1]);
@@ -1630,7 +1874,7 @@ mod tests {
             ("three", Agent::Codex),
         ]);
         let natural = agent_row_pane_ids(&app);
-        assert!(app.state.move_agent(0, natural[2], 0));
+        assert!(app.state.move_agent_in_folder(0, natural[2], 0));
 
         // Closing the tab that owns the moved pane takes it out of the space.
         app.state.workspaces[0].active_tab = 2;

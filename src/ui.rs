@@ -67,13 +67,14 @@ pub(crate) use self::{
         SOUND_CHOICE_ROWS_OFFSET,
     },
     sidebar::{
-        agent_panel_entries, collapsed_sidebar_sections, collapsed_sidebar_toggle_rect,
-        compute_workspace_card_areas, compute_workspace_list_areas, expanded_sidebar_toggle_rect,
-        new_workspace_button_rect, normalized_workspace_scroll, render_sidebar,
-        spaces_section_collapsed, spaces_section_header_rect, workspace_agents_expanded,
+        agent_folder_position, agent_panel_entries, collapsed_sidebar_sections,
+        collapsed_sidebar_toggle_rect, compute_agent_locations, compute_workspace_card_areas,
+        compute_workspace_list_areas, expanded_sidebar_toggle_rect, new_workspace_button_rect,
+        normalized_workspace_scroll, render_sidebar, spaces_section_collapsed,
+        spaces_section_header_rect, workspace_agent_groups, workspace_agents_expanded,
         workspace_drop_indicator_row, workspace_list_entries, workspace_list_rect,
         workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
-        WorkspaceListEntry,
+        AgentFolderGroup, AgentLocation, WorkspaceListEntry,
     },
 };
 pub(crate) use self::{
@@ -198,6 +199,7 @@ fn compute_view_internal(
     } else {
         (Rect::default(), main_area)
     };
+    app.view.agent_locations = compute_agent_locations(app, terminal_runtimes);
     // Keep where the sidebar is scrolled across frames — this runs on every
     // render, so resetting here would snap the list back to the top between
     // wheel notches. Re-clamp instead, in case the sidebar just got shorter.
@@ -246,16 +248,19 @@ fn compute_view_internal(
         .map(|toast| toast_notification_rect(terminal_area, toast, app.config_diagnostic.is_some()))
         .unwrap_or_default();
 
-    let (workspace_card_areas, agent_row_areas) = if app.sidebar_collapsed {
-        (Vec::new(), Vec::new())
+    let (workspace_card_areas, agent_row_areas, agent_folder_areas) = if app.sidebar_collapsed {
+        (Vec::new(), Vec::new(), Vec::new())
     } else {
         compute_workspace_list_areas(app, sidebar_rect)
     };
+    let agent_locations = std::mem::take(&mut app.view.agent_locations);
     app.view = crate::app::ViewState {
         layout: ViewLayout::Desktop,
         sidebar_rect,
         workspace_card_areas,
         agent_row_areas,
+        agent_folder_areas,
+        agent_locations,
         tab_bar_rect,
         tab_hit_areas: tab_bar_view.tab_hit_areas,
         tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
@@ -353,6 +358,8 @@ fn compute_mobile_view(
         sidebar_rect: Rect::default(),
         workspace_card_areas: Vec::new(),
         agent_row_areas: Vec::new(),
+        agent_folder_areas: Vec::new(),
+        agent_locations: std::collections::HashMap::new(),
         tab_bar_rect: Rect::default(),
         tab_hit_areas: Vec::new(),
         tab_scroll_left_hit_area: Rect::default(),
@@ -728,9 +735,11 @@ mod tests {
         assert_eq!(agent_row.ws_idx, card.ws_idx);
         assert_eq!(agent_row.pane_id, root_pane);
         // The first agent starts right under the card: the card's own floor row
-        // is the only padding between the space name and its agents.
-        assert_eq!(agent_row.rect.y, card.rect.y + card.rect.height);
-        assert_eq!(agent_row.rect.height, 3);
+        // is the only padding between the space name and its agents, and the
+        // folder header the agent carries takes the row after it.
+        assert!(agent_row.location_header);
+        assert_eq!(agent_row.rect.y, card.rect.y + card.rect.height + 1);
+        assert_eq!(agent_row.rect.height, 2);
 
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -740,7 +749,7 @@ mod tests {
         // Status bar glyph runs down the agent entry's left edge, inset far
         // enough to clear the space outline.
         for row in agent_row.rect.y..agent_row.rect.y + agent_row.rect.height {
-            assert_eq!(buffer[(agent_row.rect.x + 2, row)].symbol(), "▎");
+            assert_eq!(buffer[(agent_row.rect.x + 3, row)].symbol(), "▎");
         }
 
         // Folding the space drops its agent rows from the list.

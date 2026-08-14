@@ -1082,21 +1082,102 @@ impl AppState {
         self.ensure_workspace_visible(self.selected);
     }
 
-    /// Reorder a space's agent row in the sidebar. `insert_idx` is an
-    /// insert-before position in that space's current agent order. This is a
-    /// display order only: tabs and the pane layout stay put.
-    pub fn move_agent(
+    /// Move a dragged agent to `insert_idx` among the agents it shares a folder
+    /// with. Every other folder, and every other agent in this one, stays where
+    /// it is. Display order only.
+    pub fn move_agent_in_folder(
         &mut self,
         ws_idx: usize,
         source_pane_id: crate::layout::PaneId,
         insert_idx: usize,
     ) -> bool {
+        let mut groups = crate::ui::workspace_agent_groups(self, ws_idx);
+        let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.agents.iter().any(|m| m.pane_id == source_pane_id))
+        else {
+            return false;
+        };
+        let Some(from) = group
+            .agents
+            .iter()
+            .position(|member| member.pane_id == source_pane_id)
+        else {
+            return false;
+        };
+        if insert_idx > group.agents.len() {
+            return false;
+        }
+        let to = if from < insert_idx {
+            insert_idx - 1
+        } else {
+            insert_idx
+        };
+        if to == from {
+            return false;
+        }
+        let member = group.agents.remove(from);
+        group.agents.insert(to, member);
+        self.apply_agent_group_order(ws_idx, &groups)
+    }
+
+    /// Move a whole folder, and every agent under it, to `insert_idx` among its
+    /// space's folders. Display order only.
+    pub fn move_agent_folder(&mut self, ws_idx: usize, key: &str, insert_idx: usize) -> bool {
+        let mut groups = crate::ui::workspace_agent_groups(self, ws_idx);
+        let Some(from) = groups.iter().position(|group| group.key == key) else {
+            return false;
+        };
+        if insert_idx > groups.len() {
+            return false;
+        }
+        let to = if from < insert_idx {
+            insert_idx - 1
+        } else {
+            insert_idx
+        };
+        if to == from {
+            return false;
+        }
+        let group = groups.remove(from);
+        groups.insert(to, group);
+        self.apply_agent_group_order(ws_idx, &groups)
+    }
+
+    /// Write a rearranged set of folders back as the space's agent order. The
+    /// agents fill the slots they already occupied, so panes with no agent —
+    /// which the sidebar never lists — keep their place in the order.
+    fn apply_agent_group_order(
+        &mut self,
+        ws_idx: usize,
+        groups: &[crate::ui::AgentFolderGroup],
+    ) -> bool {
         let Some(ws) = self.workspaces.get_mut(ws_idx) else {
             return false;
         };
-        if !ws.move_agent(source_pane_id, insert_idx) {
+        let mut listed = groups
+            .iter()
+            .flat_map(|group| group.agents.iter().map(|member| member.pane_id));
+        let previous = ws.ordered_pane_ids();
+        let is_listed = |pane_id: &crate::layout::PaneId| {
+            groups
+                .iter()
+                .any(|group| group.agents.iter().any(|m| m.pane_id == *pane_id))
+        };
+        let order = previous
+            .iter()
+            .map(|pane_id| {
+                if is_listed(pane_id) {
+                    listed.next().unwrap_or(*pane_id)
+                } else {
+                    *pane_id
+                }
+            })
+            .collect::<Vec<_>>();
+        if order == previous {
             return false;
         }
+        ws.set_agent_order(order);
         self.mark_session_dirty();
         true
     }
@@ -1248,7 +1329,7 @@ impl AppState {
             // A zero-height list can never show the row; without this guard
             // the scroll would grow unbounded because normalization is a
             // no-op for empty bodies.
-            let (cards, rows) =
+            let (cards, rows, _) =
                 crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect);
             if cards.is_empty() && rows.is_empty() {
                 break;
@@ -1593,6 +1674,115 @@ impl AppState {
         {
             pane.dimmed = !pane.dimmed;
         }
+    }
+
+    /// The reset command for the agent occupying `pane_id`'s terminal, when
+    /// that agent is known and has one. Panes without a recognized agent, and
+    /// harnesses whose reset command herdr does not know, return `None` so the
+    /// reset action stays hidden instead of typing a guess into the pane.
+    pub(crate) fn agent_reset_command_for_pane(&self, pane_id: PaneId) -> Option<&'static str> {
+        let terminal_id = self
+            .workspaces
+            .iter()
+            .find_map(|ws| ws.terminal_id(pane_id))?;
+        let agent = self.terminals.get(terminal_id)?.effective_known_agent()?;
+        crate::detect::agent_reset_command(agent)
+    }
+
+    /// Starts a new session in the agent occupying `pane_id`'s terminal by
+    /// typing its own reset command, the way the user would.
+    ///
+    /// Escape lands first so a half-typed prompt does not end up prefixed to
+    /// the command, and so a working agent is interrupted before the reset.
+    /// The keystrokes are written as typed input rather than a paste, because
+    /// agent slash commands are recognized from the typed line.
+    /// Returns whether the command was sent.
+    pub(crate) fn reset_agent_in_pane(
+        &self,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+        pane_id: PaneId,
+    ) -> bool {
+        let Some(command) = self.agent_reset_command_for_pane(pane_id) else {
+            return false;
+        };
+        let Some(ws_idx) = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.terminal_id(pane_id).is_some())
+        else {
+            return false;
+        };
+        let Some(runtime) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+        else {
+            return false;
+        };
+
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let escape =
+            runtime.encode_terminal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()).into());
+        let enter = runtime
+            .encode_terminal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()).into());
+        for bytes in [escape, command.as_bytes().to_vec(), enter] {
+            if runtime.try_send_bytes(bytes::Bytes::from(bytes)).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Ends the agent occupying `pane_id`'s terminal while keeping the pane.
+    /// An agent running as a job under the pane's shell is signaled directly
+    /// and the shell keeps the terminal; an agent that is the terminal's own
+    /// child is signaled after arranging for a shell to respawn in its place.
+    /// Returns whether an agent was found to signal.
+    pub(crate) fn close_agent_in_pane(
+        &mut self,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+        pane_id: PaneId,
+    ) -> bool {
+        let Some((ws_idx, terminal_id)) = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(ws_idx, ws)| ws.terminal_id(pane_id).map(|id| (ws_idx, id.clone())))
+        else {
+            return false;
+        };
+        let Some(child_pid) = self
+            .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+            .map(|runtime| runtime.child_pid())
+            .filter(|pid| *pid != 0)
+        else {
+            return false;
+        };
+
+        // The PTY child is spawned as its own session leader, so its pid is
+        // also its process group. A foreground group that differs from it is
+        // a job the shell is running — the agent — and the shell survives
+        // losing it.
+        let foreground_job = crate::platform::foreground_job(child_pid)
+            .filter(|job| job.process_group_id != child_pid);
+        match foreground_job {
+            Some(job) => {
+                crate::pane::terminate_agent_processes(
+                    job.processes.iter().map(|process| process.pid).collect(),
+                );
+            }
+            None => {
+                // The terminal's child is the agent itself, so ending it ends
+                // the PTY session; mark the terminal to respawn a shell in
+                // the same pane when the exit lands.
+                if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
+                    terminal.respawn_shell_on_exit = true;
+                }
+                let mut pids = crate::platform::session_processes(child_pid);
+                if pids.is_empty() {
+                    pids.push(child_pid);
+                }
+                crate::pane::terminate_agent_processes(pids);
+            }
+        }
+        true
     }
 
     pub fn toggle_zoom(&mut self) {

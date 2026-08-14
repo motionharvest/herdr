@@ -615,8 +615,8 @@ fn render_mobile_switcher_content(
 
 fn mobile_agent_detail(entry: &AgentPanelEntry) -> String {
     let mut parts = Vec::new();
-    if let Some(location) = entry.location.as_deref() {
-        parts.push(location.to_string());
+    if let Some(location) = entry.location.as_ref() {
+        parts.push(location.label());
     }
     let status = entry
         .state_labels
@@ -935,17 +935,17 @@ fn truncate(text: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::sidebar::AgentLocation;
 
-    fn agent_entry(location: Option<&str>, agent_label: Option<&str>) -> AgentPanelEntry {
+    fn agent_entry(location: Option<AgentLocation>, agent_label: Option<&str>) -> AgentPanelEntry {
         AgentPanelEntry {
             ws_idx: 0,
             tab_idx: 0,
             pane_id: PaneId::from_raw(1),
             name: "Olivia".into(),
-            tab_name: "api".into(),
             agent_label: agent_label.map(str::to_string),
             model_info: None,
-            location: location.map(str::to_string),
+            location,
             state: AgentState::Idle,
             seen: true,
             custom_status: None,
@@ -955,7 +955,13 @@ mod tests {
 
     #[test]
     fn mobile_agent_detail_includes_location_when_available() {
-        let entry = agent_entry(Some("~/lab/herdr (main ✓)"), Some("pi"));
+        let entry = agent_entry(
+            Some(AgentLocation {
+                path: "~/lab/herdr".into(),
+                git: Some("main ✓".into()),
+            }),
+            Some("pi"),
+        );
 
         assert_eq!(
             mobile_agent_detail(&entry),

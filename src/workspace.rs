@@ -833,29 +833,15 @@ impl Workspace {
         ordered
     }
 
-    /// Move an agent row to `insert_idx`, an insert-before position in the
-    /// current sidebar order. Returns whether the order actually changed.
-    pub fn move_agent(&mut self, source: PaneId, insert_idx: usize) -> bool {
-        let mut ordered = self.ordered_pane_ids();
-        let Some(source_idx) = ordered.iter().position(|id| *id == source) else {
-            return false;
-        };
-        if insert_idx > ordered.len() {
-            return false;
-        }
-        let target_idx = if source_idx < insert_idx {
-            insert_idx.saturating_sub(1)
-        } else {
-            insert_idx
-        }
-        .min(ordered.len().saturating_sub(1));
-        if target_idx == source_idx {
-            return false;
-        }
-        ordered.remove(source_idx);
-        ordered.insert(target_idx, source);
-        self.agent_order = ordered;
-        true
+    /// Replace the sidebar order outright. The caller has already arranged the
+    /// panes — grouping agents under their folders, say — so this stores the
+    /// arrangement as given, keeping only panes the space still has.
+    pub fn set_agent_order(&mut self, order: Vec<PaneId>) {
+        let natural = self.natural_pane_order();
+        self.agent_order = order
+            .into_iter()
+            .filter(|id| natural.contains(id))
+            .collect();
     }
 
     fn unregister_pane(&mut self, pane_id: PaneId) {

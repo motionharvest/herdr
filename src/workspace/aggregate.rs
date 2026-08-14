@@ -303,7 +303,7 @@ mod tests {
             terminals.insert(terminal.id.clone(), terminal);
         }
 
-        assert!(ws.move_agent(second, 0));
+        ws.set_agent_order(vec![second, first]);
 
         let ordered: Vec<_> = ws
             .pane_details(&terminals)
@@ -319,7 +319,7 @@ mod tests {
         let first = ws.tabs[0].root_pane;
         let second_tab = ws.test_add_tab(Some("review"));
         let second = ws.tabs[second_tab].root_pane;
-        assert!(ws.move_agent(second, 0));
+        ws.set_agent_order(vec![second, first]);
 
         let third_tab = ws.test_add_tab(Some("ops"));
         let third = ws.tabs[third_tab].root_pane;

@@ -932,6 +932,41 @@ fn shutdown_pane_processes(
     );
 }
 
+/// Ends exactly `pids` with the same signal ladder a closing pane uses, but
+/// detached: the waits between escalation steps run on their own thread so
+/// closing an agent never stalls input handling. The pid set is captured up
+/// front on purpose — re-probing between steps could pick up a process that
+/// took the foreground after the agent exited.
+pub(crate) fn terminate_agent_processes(mut pids: Vec<u32>) {
+    pids.retain(|pid| *pid != 0);
+    if pids.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for (signal, grace) in [
+            (
+                crate::platform::Signal::Hangup,
+                std::time::Duration::from_millis(250),
+            ),
+            (
+                crate::platform::Signal::Terminate,
+                std::time::Duration::from_millis(250),
+            ),
+            (
+                crate::platform::Signal::Kill,
+                std::time::Duration::from_millis(250),
+            ),
+        ] {
+            crate::platform::signal_processes(&pids, signal);
+            if wait_for_processes_to_exit(&pids, 0, None, grace) {
+                info!(pids = ?pids, ?signal, "agent processes terminated");
+                return;
+            }
+        }
+        warn!(pids = ?pids, "agent processes still alive after forced shutdown");
+    });
+}
+
 #[cfg(unix)]
 fn truncate_handoff_history(history: String, max_bytes: usize) -> String {
     if history.len() <= max_bytes {
@@ -1870,6 +1905,12 @@ impl PaneRuntime {
             preserve_processes_on_drop: false,
             detect_handle,
         })
+    }
+
+    /// Pid of the process the PTY was spawned around: the pane's shell, or
+    /// the launch command itself for panes started from an argv.
+    pub fn child_pid(&self) -> u32 {
+        self.child_pid.load(Ordering::Acquire)
     }
 
     pub fn begin_graceful_release(&self, agent: Agent) {

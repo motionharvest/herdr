@@ -5,9 +5,9 @@ use tracing::warn;
 
 use crate::{
     app::state::{
-        AgentPressState, AppState, ContextMenuKind, ContextMenuState, DragState, DragTarget,
-        MenuListState, Mode, PanePressState, RightClickPassthroughGesture, TabPressState,
-        ViewLayout, WorkspacePressState,
+        AgentFolderPressState, AgentPressState, AppState, ContextMenuKind, ContextMenuState,
+        DragState, DragTarget, MenuListState, Mode, PanePressState, RightClickPassthroughGesture,
+        TabPressState, ViewLayout, WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
     selection::Selection,
@@ -181,6 +181,7 @@ impl AppState {
                 self.selection_autoscroll = None;
                 self.workspace_press = None;
                 self.agent_press = None;
+                self.agent_folder_press = None;
 
                 if self.mode == Mode::ConfirmClose {
                     let popup = self.confirm_close_rect();
@@ -560,6 +561,18 @@ impl AppState {
                         return None;
                     }
 
+                    if let Some((ws_idx, key)) = self.agent_folder_target_at(mouse.row) {
+                        // The folder is a label, not a card: a click selects
+                        // nothing, but a drag carries the whole folder.
+                        self.agent_folder_press = Some(AgentFolderPressState {
+                            ws_idx,
+                            key,
+                            start_col: mouse.column,
+                            start_row: mouse.row,
+                        });
+                        return None;
+                    }
+
                     if let Some((ws_idx, _tab_idx, pane_id)) =
                         self.agent_detail_target_at(mouse.row)
                     {
@@ -632,12 +645,27 @@ impl AppState {
                 let agent_drop_index = self
                     .agent_press
                     .as_ref()
-                    .map(|press| press.ws_idx)
+                    .map(|press| (press.ws_idx, press.pane_id))
                     .or_else(|| match self.drag.as_ref().map(|drag| &drag.target) {
-                        Some(DragTarget::AgentReorder { ws_idx, .. }) => Some(*ws_idx),
+                        Some(DragTarget::AgentReorder {
+                            ws_idx,
+                            source_pane_id,
+                            ..
+                        }) => Some((*ws_idx, *source_pane_id)),
                         _ => None,
                     })
-                    .and_then(|ws_idx| self.agent_drop_index_at_row(ws_idx, mouse.row));
+                    .and_then(|(ws_idx, pane_id)| {
+                        self.agent_drop_index_at_row(ws_idx, pane_id, mouse.row)
+                    });
+                let agent_folder_drop_index = self
+                    .agent_folder_press
+                    .as_ref()
+                    .map(|press| press.ws_idx)
+                    .or_else(|| match self.drag.as_ref().map(|drag| &drag.target) {
+                        Some(DragTarget::AgentFolderReorder { ws_idx, .. }) => Some(*ws_idx),
+                        _ => None,
+                    })
+                    .and_then(|ws_idx| self.agent_folder_drop_index_at_row(ws_idx, mouse.row));
                 if self.drag.is_none() {
                     if let Some(press) = &self.agent_press {
                         let delta_col = mouse.column.abs_diff(press.start_col);
@@ -648,6 +676,18 @@ impl AppState {
                                     ws_idx: press.ws_idx,
                                     source_pane_id: press.pane_id,
                                     insert_idx: agent_drop_index,
+                                },
+                            });
+                        }
+                    } else if let Some(press) = &self.agent_folder_press {
+                        let delta_col = mouse.column.abs_diff(press.start_col);
+                        let delta_row = mouse.row.abs_diff(press.start_row);
+                        if delta_col.max(delta_row) >= AGENT_DRAG_THRESHOLD {
+                            self.drag = Some(DragState {
+                                target: DragTarget::AgentFolderReorder {
+                                    ws_idx: press.ws_idx,
+                                    key: press.key.clone(),
+                                    insert_idx: agent_folder_drop_index,
                                 },
                             });
                         }
@@ -729,6 +769,11 @@ impl AppState {
                 {
                     *insert_idx = agent_drop_index;
                 } else if let Some(DragState {
+                    target: DragTarget::AgentFolderReorder { insert_idx, .. },
+                }) = &mut self.drag
+                {
+                    *insert_idx = agent_folder_drop_index;
+                } else if let Some(DragState {
                     target: DragTarget::WorkspaceReorder { insert_idx, .. },
                 }) = &mut self.drag
                 {
@@ -748,6 +793,7 @@ impl AppState {
                         DragTarget::WorkspaceReorder { .. }
                         | DragTarget::TabReorder { .. }
                         | DragTarget::AgentReorder { .. }
+                        | DragTarget::AgentFolderReorder { .. }
                         | DragTarget::PaneSwap { .. } => {}
                         DragTarget::WorkspaceListScrollbar { grab_row_offset } => {
                             if let Some(offset_from_bottom) =
@@ -815,6 +861,7 @@ impl AppState {
                     self.workspace_press = None;
                     self.tab_press = None;
                     self.agent_press = None;
+                    self.agent_folder_press = None;
                     self.pane_press = None;
                     self.drag = None;
                     self.selection_autoscroll = None;
@@ -834,6 +881,7 @@ impl AppState {
                             self.workspace_press = None;
                             self.tab_press = None;
                             self.agent_press = None;
+                            self.agent_folder_press = None;
                             self.pane_press = None;
                             self.drag = None;
                             return None;
@@ -845,6 +893,7 @@ impl AppState {
                 let tab_press = self.tab_press.take();
                 let pane_press = self.pane_press.take();
                 self.agent_press = None;
+                self.agent_folder_press = None;
                 match self.drag.take() {
                     Some(DragState {
                         target:
@@ -863,7 +912,17 @@ impl AppState {
                                 insert_idx: Some(insert_idx),
                             },
                     }) => {
-                        self.move_agent(ws_idx, source_pane_id, insert_idx);
+                        self.move_agent_in_folder(ws_idx, source_pane_id, insert_idx);
+                    }
+                    Some(DragState {
+                        target:
+                            DragTarget::AgentFolderReorder {
+                                ws_idx,
+                                key,
+                                insert_idx: Some(insert_idx),
+                            },
+                    }) => {
+                        self.move_agent_folder(ws_idx, &key, insert_idx);
                     }
                     Some(DragState {
                         target:
@@ -1004,6 +1063,7 @@ impl AppState {
                 self.workspace_press = None;
                 self.tab_press = None;
                 self.agent_press = None;
+                self.agent_folder_press = None;
                 if self
                     .workspace_list_scrollbar_target_at(mouse.column, mouse.row)
                     .is_some()
@@ -1058,8 +1118,9 @@ impl AppState {
                     // Focus the row's pane first, the way right-clicking the
                     // pane itself does, so the menu acts on what was clicked.
                     self.focus_pane_in_workspace(ws_idx, pane_id);
+                    let can_reset = self.agent_reset_command_for_pane(pane_id).is_some();
                     self.context_menu = Some(ContextMenuState {
-                        kind: ContextMenuKind::Agent { pane_id },
+                        kind: ContextMenuKind::Agent { pane_id, can_reset },
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
@@ -1093,15 +1154,20 @@ impl AppState {
                         .and_then(|ws_idx| self.workspaces.get(ws_idx))
                         .and_then(|ws| ws.pane_state(info.id));
                     let dimmed = pane.is_some_and(|pane| pane.dimmed);
-                    let has_manual_label = pane
-                        .and_then(|pane| self.terminals.get(&pane.attached_terminal_id))
+                    let terminal =
+                        pane.and_then(|pane| self.terminals.get(&pane.attached_terminal_id));
+                    let has_manual_label = terminal
                         .and_then(|terminal| terminal.manual_label.as_ref())
                         .is_some();
+                    let has_agent = terminal.is_some_and(|terminal| terminal.is_agent_terminal());
+                    let can_reset = self.agent_reset_command_for_pane(info.id).is_some();
                     self.context_menu = Some(ContextMenuState {
                         kind: ContextMenuKind::Pane {
                             pane_id: info.id,
                             has_manual_label,
                             dimmed,
+                            has_agent,
+                            can_reset,
                         },
                         x: mouse.column,
                         y: mouse.row,
@@ -1427,6 +1493,7 @@ impl AppState {
             || self.tab_press.is_some()
             || self.workspace_press.is_some()
             || self.agent_press.is_some()
+            || self.agent_folder_press.is_some()
     }
 
     fn pane_swap_enabled(&self) -> bool {
@@ -1590,6 +1657,7 @@ impl AppState {
         self.workspace_press = None;
         self.tab_press = None;
         self.agent_press = None;
+        self.agent_folder_press = None;
         self.drag = None;
         self.context_menu = None;
         self.right_click_passthrough = Some(RightClickPassthroughGesture {
@@ -2643,6 +2711,8 @@ mod tests {
                 pane_id,
                 has_manual_label: false,
                 dimmed: false,
+                has_agent: false,
+                can_reset: false,
             },
             x: 2,
             y: 2,

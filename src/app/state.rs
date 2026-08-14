@@ -627,10 +627,29 @@ pub struct WorkspaceCardArea {
 }
 
 /// Clickable region for an agent row nested under its space card. The rect
-/// covers only the entry's content rows, not the leading gap row.
+/// covers only the entry's content rows, not the leading gap row and not the
+/// folder header row above it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentRowArea {
     pub ws_idx: usize,
+    pub tab_idx: usize,
+    pub pane_id: PaneId,
+    pub rect: Rect,
+    /// Whether the row directly above this one is the folder header this agent
+    /// heads. Agents listed under it in the same folder share that one header,
+    /// so only the first of them carries it.
+    pub location_header: bool,
+}
+
+/// The folder row a space's agents are listed under. It is a label rather than
+/// a card — clicking it selects nothing — but dragging it moves the whole
+/// folder among its space's folders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentFolderArea {
+    pub ws_idx: usize,
+    /// The folder itself, which is the identity a drag carries.
+    pub key: String,
+    /// The first agent listed under it, whose location supplies the row's text.
     pub tab_idx: usize,
     pub pane_id: PaneId,
     pub rect: Rect,
@@ -811,6 +830,12 @@ pub struct ViewState {
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
     pub agent_row_areas: Vec<AgentRowArea>,
+    pub agent_folder_areas: Vec<AgentFolderArea>,
+    /// Where each listed pane is working, as of the last frame. The sidebar
+    /// list is laid out from `AppState` alone, which cannot see the live
+    /// runtimes a pane's current folder comes from, so it reads that folder
+    /// from here — and so does the paint that writes the folder header.
+    pub agent_locations: std::collections::HashMap<PaneId, crate::ui::AgentLocation>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -1110,11 +1135,19 @@ pub(crate) enum DragTarget {
         source_tab_idx: usize,
         insert_idx: Option<usize>,
     },
-    /// Reordering an agent row inside its space's sidebar list. Display order
-    /// only — the pane layout is untouched.
+    /// Reordering an agent row among the agents it shares a folder with.
+    /// Display order only — the pane layout is untouched, and an agent cannot
+    /// leave the folder it is actually working in.
     AgentReorder {
         ws_idx: usize,
         source_pane_id: PaneId,
+        insert_idx: Option<usize>,
+    },
+    /// Reordering a whole folder, and every agent under it, among its space's
+    /// folders. Display order only.
+    AgentFolderReorder {
+        ws_idx: usize,
+        key: String,
         insert_idx: Option<usize>,
     },
     WorkspaceListScrollbar {
@@ -1179,6 +1212,13 @@ pub(crate) struct AgentPressState {
     pub start_row: u16,
 }
 
+pub(crate) struct AgentFolderPressState {
+    pub ws_idx: usize,
+    pub key: String,
+    pub start_col: u16,
+    pub start_row: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextMenuKind {
     Workspace {
@@ -1199,11 +1239,20 @@ pub enum ContextMenuKind {
     /// sense from the list itself.
     Agent {
         pane_id: PaneId,
+        /// Whether herdr knows the running agent's reset command, which adds
+        /// the option to start a new session in place.
+        can_reset: bool,
     },
     Pane {
         pane_id: PaneId,
         has_manual_label: bool,
         dimmed: bool,
+        /// Whether an agent occupies the pane's terminal, which adds the
+        /// option to close the agent while keeping the pane.
+        has_agent: bool,
+        /// Whether herdr knows the running agent's reset command, which adds
+        /// the option to start a new session in place.
+        can_reset: bool,
     },
 }
 
@@ -1216,95 +1265,60 @@ pub struct ContextMenuState {
 }
 
 impl ContextMenuState {
-    pub fn items(&self) -> &'static [&'static str] {
+    pub fn items(&self) -> Vec<&'static str> {
         match self.kind {
-            ContextMenuKind::Workspace { .. } => &["Rename", "Close"],
+            ContextMenuKind::Workspace { .. } => vec!["Rename", "Close"],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
                 has_worktree_children: false,
                 ..
-            } => &["Rename", "Close", "New worktree", "Open worktree..."],
+            } => vec!["Rename", "Close", "New worktree", "Open worktree..."],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: true,
                 ..
-            } => &["Rename", "Close", "Delete worktree checkout..."],
+            } => vec!["Rename", "Close", "Delete worktree checkout..."],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
                 has_worktree_children: true,
-                collapsed: true,
+                collapsed,
                 ..
-            } => &[
+            } => vec![
                 "Rename",
                 "Close group",
                 "New worktree",
                 "Open worktree...",
-                "Expand",
+                if collapsed { "Expand" } else { "Collapse" },
             ],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: false,
-                has_worktree_children: true,
-                collapsed: false,
-                ..
-            } => &[
-                "Rename",
-                "Close group",
-                "New worktree",
-                "Open worktree...",
-                "Collapse",
-            ],
-            ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
-            ContextMenuKind::Agent { .. } => &["Rename pane"],
-            ContextMenuKind::Pane {
-                has_manual_label: true,
-                dimmed,
-                ..
-            } => {
-                if dimmed {
-                    &[
-                        "Rename pane",
-                        "Clear pane name",
-                        "Split vertically",
-                        "Split horizontally",
-                        "Zoom",
-                        "Undim",
-                        "Close pane",
-                    ]
-                } else {
-                    &[
-                        "Rename pane",
-                        "Clear pane name",
-                        "Split vertically",
-                        "Split horizontally",
-                        "Zoom",
-                        "Dim",
-                        "Close pane",
-                    ]
+            ContextMenuKind::Tab { .. } => vec!["New tab", "Rename", "Close"],
+            ContextMenuKind::Agent { can_reset, .. } => {
+                let mut items = vec!["Rename pane"];
+                if can_reset {
+                    items.push("Reset agent");
                 }
+                items.push("Close agent");
+                items
             }
             ContextMenuKind::Pane {
-                has_manual_label: false,
+                has_manual_label,
                 dimmed,
+                has_agent,
+                can_reset,
                 ..
             } => {
-                if dimmed {
-                    &[
-                        "Rename pane",
-                        "Split vertically",
-                        "Split horizontally",
-                        "Zoom",
-                        "Undim",
-                        "Close pane",
-                    ]
-                } else {
-                    &[
-                        "Rename pane",
-                        "Split vertically",
-                        "Split horizontally",
-                        "Zoom",
-                        "Dim",
-                        "Close pane",
-                    ]
+                let mut items = vec!["Rename pane"];
+                if has_manual_label {
+                    items.push("Clear pane name");
                 }
+                items.extend(["Split vertically", "Split horizontally", "Zoom"]);
+                items.push(if dimmed { "Undim" } else { "Dim" });
+                items.push("Close pane");
+                if can_reset {
+                    items.push("Reset agent");
+                }
+                if has_agent {
+                    items.push("Close agent");
+                }
+                items
             }
         }
     }
@@ -1440,6 +1454,7 @@ pub struct AppState {
     pub(crate) tab_press: Option<TabPressState>,
     pub(crate) pane_press: Option<PanePressState>,
     pub(crate) agent_press: Option<AgentPressState>,
+    pub(crate) agent_folder_press: Option<AgentFolderPressState>,
     pub selection: Option<Selection>,
     pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub context_menu: Option<ContextMenuState>,
@@ -1819,6 +1834,8 @@ impl AppState {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 agent_row_areas: Vec::new(),
+                agent_folder_areas: Vec::new(),
+                agent_locations: std::collections::HashMap::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -1838,6 +1855,7 @@ impl AppState {
             tab_press: None,
             pane_press: None,
             agent_press: None,
+            agent_folder_press: None,
             selection: None,
             selection_autoscroll: None,
             context_menu: None,
@@ -2035,6 +2053,36 @@ mod tests {
             menu.items(),
             &["Rename", "Close", "New worktree", "Open worktree..."]
         );
+    }
+
+    #[test]
+    fn pane_context_menu_offers_close_agent_only_for_agent_panes() {
+        let menu_for = |has_agent| ContextMenuState {
+            kind: ContextMenuKind::Pane {
+                pane_id: crate::layout::PaneId::alloc(),
+                has_manual_label: false,
+                dimmed: false,
+                has_agent,
+                can_reset: false,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+
+        assert_eq!(
+            menu_for(true).items(),
+            &[
+                "Rename pane",
+                "Split vertically",
+                "Split horizontally",
+                "Zoom",
+                "Dim",
+                "Close pane",
+                "Close agent",
+            ]
+        );
+        assert!(!menu_for(false).items().contains(&"Close agent"));
     }
 
     #[test]

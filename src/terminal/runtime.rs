@@ -197,6 +197,12 @@ impl TerminalRuntime {
         self.0.begin_graceful_release(agent);
     }
 
+    /// Pid of the process the PTY was spawned around: the pane's shell, or
+    /// the launch command itself for panes started from an argv.
+    pub fn child_pid(&self) -> u32 {
+        self.0.child_pid()
+    }
+
     pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
         self.0.resize(rows, cols, cell_width_px, cell_height_px);
     }

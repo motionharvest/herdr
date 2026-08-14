@@ -720,7 +720,7 @@ pub(super) fn apply_context_menu_action(
             }
         }
         (
-            ContextMenuKind::Agent { pane_id } | ContextMenuKind::Pane { pane_id, .. },
+            ContextMenuKind::Agent { pane_id, .. } | ContextMenuKind::Pane { pane_id, .. },
             Some("Rename pane"),
         ) => {
             open_rename_pane(state, pane_id);
@@ -754,6 +754,20 @@ pub(super) fn apply_context_menu_action(
         (ContextMenuKind::Pane { pane_id, .. }, Some("Dim" | "Undim")) => {
             state.toggle_pane_dimmed(pane_id);
             state.mode = Mode::Terminal;
+        }
+        (
+            ContextMenuKind::Agent { pane_id, .. } | ContextMenuKind::Pane { pane_id, .. },
+            Some("Reset agent"),
+        ) => {
+            state.reset_agent_in_pane(terminal_runtimes, pane_id);
+            leave_modal(state);
+        }
+        (
+            ContextMenuKind::Agent { pane_id, .. } | ContextMenuKind::Pane { pane_id, .. },
+            Some("Close agent"),
+        ) => {
+            state.close_agent_in_pane(terminal_runtimes, pane_id);
+            leave_modal(state);
         }
         (ContextMenuKind::Pane { .. }, Some("Close pane")) => {
             if !state.close_pane() {
@@ -1311,6 +1325,8 @@ mod tests {
                 pane_id,
                 has_manual_label: false,
                 dimmed: false,
+                has_agent: false,
+                can_reset: false,
             },
             x: 0,
             y: 0,

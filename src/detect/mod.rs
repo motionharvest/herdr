@@ -110,6 +110,30 @@ pub fn agent_display_name(agent: Agent) -> &'static str {
     }
 }
 
+/// The slash command that drops an agent's current conversation and starts a
+/// fresh session inside the running process.
+///
+/// `None` means the harness has no command we can rely on, so herdr never
+/// types anything into it; add the entry here once the command is known
+/// rather than guessing at call sites.
+pub fn agent_reset_command(agent: Agent) -> Option<&'static str> {
+    match agent {
+        Agent::Claude | Agent::Gemini | Agent::GithubCopilot => Some("/clear"),
+        Agent::Codex | Agent::OpenCode | Agent::Amp => Some("/new"),
+        Agent::Pi
+        | Agent::Cursor
+        | Agent::Antigravity
+        | Agent::Cline
+        | Agent::Kimi
+        | Agent::Kiro
+        | Agent::Droid
+        | Agent::Grok
+        | Agent::Hermes
+        | Agent::Kilo
+        | Agent::Qodercli => None,
+    }
+}
+
 pub fn parse_agent_label(agent: &str) -> Option<Agent> {
     let name = normalized_agent_lookup_name(agent);
     match name.as_str() {
