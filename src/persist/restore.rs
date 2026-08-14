@@ -241,6 +241,7 @@ fn restore_with_imports_and_failures(
     let mut terminals = HashMap::new();
     let mut terminal_runtimes = HashMap::new();
     let mut resumed_agent_sessions = HashSet::new();
+    let mut used_terminal_ids = HashSet::new();
     let mut failed_imports = 0;
     for (idx, ws_snap) in snapshot.workspaces.iter().enumerate() {
         let runtime_context = RestoreRuntimeContext {
@@ -258,6 +259,7 @@ fn restore_with_imports_and_failures(
             cols,
             &runtime_context,
             &mut resumed_agent_sessions,
+            &mut used_terminal_ids,
             imported_panes,
         );
         failed_imports += workspace_failed_imports;
@@ -279,6 +281,7 @@ fn restore_workspace(
     cols: u16,
     runtime_context: &RestoreRuntimeContext<'_>,
     resumed_agent_sessions: &mut HashSet<String>,
+    used_terminal_ids: &mut HashSet<TerminalId>,
     imported_panes: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
 ) -> RestoreFailures<Option<RestoredWorkspace>> {
     let mut tabs = Vec::new();
@@ -297,6 +300,7 @@ fn restore_workspace(
             cols,
             runtime_context,
             resumed_agent_sessions,
+            used_terminal_ids,
             imported_panes,
         );
         failed_imports += tab_failed_imports;
@@ -387,6 +391,7 @@ fn restore_tab(
     cols: u16,
     runtime_context: &RestoreRuntimeContext<'_>,
     resumed_agent_sessions: &mut HashSet<String>,
+    used_terminal_ids: &mut HashSet<TerminalId>,
     imported_panes: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
 ) -> RestoreFailures<Option<RestoredTab>> {
     let (node, id_map) = restore_node_remapped(&snap.layout);
@@ -424,6 +429,13 @@ fn restore_tab(
             }
         };
 
+        // Reuse the saved terminal identity so everything derived from it
+        // (assigned pane names, agent bookkeeping) survives the restart.
+        // Fall back to a fresh id for pre-field snapshots or duplicates.
+        let terminal_id = saved_pane
+            .and_then(|p| p.terminal_id.clone())
+            .filter(|saved_id| used_terminal_ids.insert(saved_id.clone()))
+            .unwrap_or_else(TerminalId::alloc);
         let saved_label = saved_pane.and_then(|p| p.label.clone());
         let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
@@ -451,7 +463,6 @@ fn restore_tab(
             startup.restore_plan.clone()
         };
         if let Some(plan) = pending_native_agent_restore {
-            let terminal_id = TerminalId::alloc();
             let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone())
                 .with_pending_agent_resume_plan(plan);
             if let Some(label) = saved_label {
@@ -512,7 +523,6 @@ fn restore_tab(
 
         match runtime_result {
             Ok(runtime) => {
-                let terminal_id = TerminalId::alloc();
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
                 if was_imported {
                     if let Some(argv) = saved_launch_argv {
@@ -1069,6 +1079,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            terminal_id: None,
                             cwd,
                             label: None,
                             agent_name: None,
@@ -1148,6 +1159,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            terminal_id: None,
                             cwd,
                             label: None,
                             agent_name: None,
@@ -1318,6 +1330,7 @@ mod tests {
         panes.insert(
             0,
             super::super::snapshot::PaneSnapshot {
+                terminal_id: None,
                 cwd: cwd.clone(),
                 label: None,
                 agent_name: None,
@@ -1368,5 +1381,106 @@ mod tests {
             spaces_collapsed: false,
         };
         (snapshot, history)
+    }
+
+    fn snapshot_with_pane_terminal_ids(
+        cwd: PathBuf,
+        first_id: Option<TerminalId>,
+        second_id: Option<TerminalId>,
+    ) -> SessionSnapshot {
+        let pane = |terminal_id: Option<TerminalId>| super::super::snapshot::PaneSnapshot {
+            terminal_id,
+            cwd: cwd.clone(),
+            label: None,
+            agent_name: None,
+            agent_session: None,
+            launch_argv: None,
+        };
+        SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                agent_order: Vec::new(),
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Split {
+                        direction: DirectionSnapshot::Horizontal,
+                        ratio: 0.5,
+                        first: Box::new(LayoutSnapshot::Pane(0)),
+                        second: Box::new(LayoutSnapshot::Pane(1)),
+                    },
+                    panes: HashMap::from([(0, pane(first_id)), (1, pane(second_id))]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            agent_panel_scope: Default::default(),
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+            collapsed_agent_space_ids: Default::default(),
+            sidebar_collapsed: false,
+            spaces_collapsed: false,
+        }
+    }
+
+    fn restore_terminals(snapshot: &SessionSnapshot) -> HashMap<TerminalId, TerminalState> {
+        let (events, _event_rx) = mpsc::channel(4);
+        let (_workspaces, terminals, _runtimes) = restore(
+            snapshot,
+            None,
+            24,
+            80,
+            0,
+            "/usr/bin/true",
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(AtomicBool::new(false)),
+        );
+        terminals
+    }
+
+    #[tokio::test]
+    async fn restore_preserves_saved_terminal_ids_and_pane_names() {
+        let cwd = std::env::current_dir().unwrap();
+        let first = TerminalId::alloc();
+        let second = TerminalId::alloc();
+        let snapshot =
+            snapshot_with_pane_terminal_ids(cwd, Some(first.clone()), Some(second.clone()));
+
+        let terminals = restore_terminals(&snapshot);
+
+        assert!(terminals.contains_key(&first));
+        assert!(terminals.contains_key(&second));
+        // Names are derived from terminal ids, so preserved ids mean the
+        // assigned names come out identical after the restart.
+        let names = crate::pane_names::assigned_names(&terminals);
+        let first_name = names.get(&first).expect("restored terminal keeps a name");
+        assert!(first_name.starts_with(crate::pane_names::base_name_for(&first.to_string())));
+    }
+
+    #[tokio::test]
+    async fn restore_deduplicates_corrupt_terminal_ids() {
+        let cwd = std::env::current_dir().unwrap();
+        let duplicated = TerminalId::alloc();
+        let snapshot = snapshot_with_pane_terminal_ids(
+            cwd,
+            Some(duplicated.clone()),
+            Some(duplicated.clone()),
+        );
+
+        let terminals = restore_terminals(&snapshot);
+
+        assert_eq!(terminals.len(), 2, "each pane must keep its own terminal");
+        assert!(terminals.contains_key(&duplicated));
     }
 }

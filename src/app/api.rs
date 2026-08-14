@@ -579,6 +579,7 @@ impl App {
             Method::AgentStart(params) => return self.handle_agent_start(request.id, params),
             Method::AgentRead(params) => return self.handle_agent_read(request.id, params),
             Method::AgentSend(params) => return self.handle_agent_send(request.id, params),
+            Method::AgentPrompt(params) => return self.handle_agent_prompt(request.id, params),
             Method::PaneSplit(params) => return self.handle_pane_split(request.id, params),
             Method::PaneList(params) => return self.handle_pane_list(request.id, params),
             Method::PaneGet(target) => return self.handle_pane_get(request.id, target),

@@ -291,6 +291,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::AgentGet(_) => "agent.get",
         Method::AgentRead(_) => "agent.read",
         Method::AgentSend(_) => "agent.send",
+        Method::AgentPrompt(_) => "agent.prompt",
         Method::AgentRename(_) => "agent.rename",
         Method::AgentFocus(_) => "agent.focus",
         Method::AgentStart(_) => "agent.start",

@@ -1,10 +1,12 @@
 use bytes::Bytes;
 
 use crate::api::schema::{
-    AgentRenameParams, AgentSendParams, AgentStartParams, AgentTarget, PaneReadResult, ReadFormat,
-    ReadSource, ResponseResult,
+    AgentPromptParams, AgentRenameParams, AgentSendParams, AgentStartParams, AgentTarget,
+    PaneReadResult, ReadFormat, ReadSource, ResponseResult,
 };
 use crate::app::App;
+
+use super::super::api_helpers::{encode_api_keys, encode_api_text};
 
 use super::responses::{encode_error, encode_error_body, encode_success};
 
@@ -112,6 +114,33 @@ impl App {
         };
         if let Err(err) = runtime.try_send_bytes(Bytes::from(params.text)) {
             return encode_error(id, "agent_send_failed", err.to_string());
+        }
+
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    pub(super) fn handle_agent_prompt(&mut self, id: String, params: AgentPromptParams) -> String {
+        let resolved = match self.resolve_terminal_target(&params.target) {
+            Ok(resolved) => resolved,
+            Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
+        };
+        let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
+            return agent_not_found(id, &params.target);
+        };
+        let encoded_enter = match encode_api_keys(runtime, &["Enter".into()]) {
+            Ok(encoded_enter) => encoded_enter,
+            Err(key) => return encode_error(id, "invalid_key", format!("unsupported key {key}")),
+        };
+        if !params.text.is_empty() {
+            let text_bytes = encode_api_text(runtime, &params.text);
+            if let Err(err) = runtime.try_send_bytes(Bytes::from(text_bytes)) {
+                return encode_error(id, "agent_send_failed", err.to_string());
+            }
+        }
+        for bytes in encoded_enter {
+            if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
+                return encode_error(id, "agent_send_failed", err.to_string());
+            }
         }
 
         encode_success(id, ResponseResult::Ok {})

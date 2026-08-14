@@ -39,7 +39,7 @@ pub fn base_name_for(seed: &str) -> &'static str {
 }
 
 /// Assign every terminal a unique display name. Terminals whose base names
-/// collide are numbered in stable id order ("Olivia", "Olivia 2", …), so
+/// collide are numbered in stable id order ("Olivia", "Olivia-2", …), so
 /// earlier terminals keep their bare name when new ones appear.
 pub fn assigned_names(
     terminals: &HashMap<TerminalId, TerminalState>,
@@ -56,7 +56,7 @@ pub fn assigned_names(
         let name = if *count == 1 {
             base.to_string()
         } else {
-            format!("{base} {count}")
+            format!("{base}-{count}")
         };
         names.insert(id.clone(), name);
     }

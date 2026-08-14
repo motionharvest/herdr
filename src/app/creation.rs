@@ -282,6 +282,7 @@ impl App {
         let presentation = terminal.effective_presentation();
         Some(crate::api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
+            name: crate::pane_names::assigned_names(&self.state.terminals).remove(&terminal.id),
             terminal_id: terminal.id.to_string(),
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,

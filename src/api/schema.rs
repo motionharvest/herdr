@@ -60,6 +60,8 @@ pub enum Method {
     AgentRead(AgentReadParams),
     #[serde(rename = "agent.send")]
     AgentSend(AgentSendParams),
+    #[serde(rename = "agent.prompt")]
+    AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.rename")]
     AgentRename(AgentRenameParams),
     #[serde(rename = "agent.focus")]
@@ -235,6 +237,14 @@ pub struct AgentReadParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSendParams {
+    pub target: String,
+    pub text: String,
+}
+
+/// Deliver a prompt to an agent: the text is sent as a paste, then Enter is
+/// pressed, so the agent receives and submits it as one message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentPromptParams {
     pub target: String,
     pub text: String,
 }
@@ -837,6 +847,9 @@ pub struct AgentInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneInfo {
     pub pane_id: String,
+    /// Assigned human name ("Olivia", "Olivia-2"); accepted as a pane target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub terminal_id: String,
     pub workspace_id: String,
     pub tab_id: String,
@@ -980,7 +993,7 @@ pub enum EventData {
         workspace_id: String,
     },
     PaneCreated {
-        pane: PaneInfo,
+        pane: Box<PaneInfo>,
     },
     PaneClosed {
         pane_id: String,
@@ -1443,6 +1456,7 @@ mod tests {
                 },
                 root_pane: PaneInfo {
                     pane_id: "w_1-1".into(),
+                    name: None,
                     terminal_id: "term_1".into(),
                     workspace_id: "w_1".into(),
                     tab_id: "w_1:1".into(),
@@ -1494,6 +1508,7 @@ mod tests {
                 },
                 root_pane: PaneInfo {
                     pane_id: "w_1-3".into(),
+                    name: None,
                     terminal_id: "term_example".into(),
                     workspace_id: "w_1".into(),
                     tab_id: "w_1:2".into(),

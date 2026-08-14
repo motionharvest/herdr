@@ -616,4 +616,6 @@ fn print_pane_help() {
     eprintln!("  herdr pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--custom-status TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
     eprintln!("  herdr pane report-metadata <pane_id> --source ID [--agent LABEL] [--applies-to-source ID] [--title TEXT|--clear-title] [--display-agent TEXT|--clear-display-agent] [--custom-status TEXT|--clear-custom-status] [--state-label STATUS=TEXT] [--clear-state-labels] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr pane run <pane_id> <command>");
+    eprintln!();
+    eprintln!("<pane_id> accepts a pane id from `herdr pane list` or a pane name (e.g. Olivia, case-insensitive).");
 }

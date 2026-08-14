@@ -19,7 +19,10 @@ const OMP_INTEGRATION_VERSION: u32 = 2;
 const PI_CODING_AGENT_DIR_ENV_VAR: &str = "PI_CODING_AGENT_DIR";
 const CLAUDE_HOOK_INSTALL_NAME: &str = "herdr-agent-state.sh";
 const CLAUDE_HOOK_ASSET: &str = include_str!("assets/claude/herdr-agent-state.sh");
-const CLAUDE_INTEGRATION_VERSION: u32 = 5;
+const CLAUDE_STATUSLINE_INSTALL_NAME: &str = "herdr-statusline.sh";
+const CLAUDE_STATUSLINE_ASSET: &str = include_str!("assets/claude/herdr-statusline.sh");
+const CLAUDE_STATUSLINE_DELEGATE_NAME: &str = "herdr-statusline-delegate.json";
+const CLAUDE_INTEGRATION_VERSION: u32 = 6;
 const CLAUDE_CONFIG_DIR_ENV_VAR: &str = "CLAUDE_CONFIG_DIR";
 const CODEX_HOOK_INSTALL_NAME: &str = "herdr-agent-state.sh";
 const CODEX_HOOK_ASSET: &str = include_str!("assets/codex/herdr-agent-state.sh");
@@ -69,7 +72,9 @@ const INTEGRATION_VERSION_MARKER: &str = "HERDR_INTEGRATION_VERSION=";
 #[derive(Debug)]
 pub(crate) struct ClaudeInstallPaths {
     pub hook_path: PathBuf,
+    pub statusline_path: PathBuf,
     pub settings_path: PathBuf,
+    pub wrapped_statusline: bool,
 }
 
 #[derive(Debug)]
@@ -187,8 +192,11 @@ pub(crate) struct OmpUninstallResult {
 #[derive(Debug)]
 pub(crate) struct ClaudeUninstallResult {
     pub hook_path: PathBuf,
+    pub statusline_path: PathBuf,
     pub settings_path: PathBuf,
     pub removed_hook_file: bool,
+    pub removed_statusline_file: bool,
+    pub restored_statusline: bool,
     pub updated_settings: bool,
 }
 
@@ -274,16 +282,27 @@ pub(crate) fn install_target(
         }
         crate::api::schema::IntegrationTarget::Claude => {
             let installed = install_claude()?;
-            vec![
+            let mut messages = vec![
                 format!(
                     "installed claude integration hook to {}",
                     installed.hook_path.display()
                 ),
                 format!(
-                    "ensured claude settings at {}",
-                    installed.settings_path.display()
+                    "installed claude statusline to {}",
+                    installed.statusline_path.display()
                 ),
-            ]
+            ];
+            if installed.wrapped_statusline {
+                messages.push(
+                    "wrapped the existing claude statusline; it still renders the display"
+                        .to_string(),
+                );
+            }
+            messages.push(format!(
+                "ensured claude settings at {}",
+                installed.settings_path.display()
+            ));
+            messages
         }
         crate::api::schema::IntegrationTarget::Codex => {
             let installed = install_codex()?;
@@ -427,6 +446,15 @@ pub(crate) fn uninstall_target(
                     "no claude hook found at {}",
                     result.hook_path.display()
                 ));
+            }
+            if result.removed_statusline_file {
+                messages.push(format!(
+                    "removed claude statusline at {}",
+                    result.statusline_path.display()
+                ));
+            }
+            if result.restored_statusline {
+                messages.push("restored the previous claude statusline".to_string());
             }
             if result.updated_settings {
                 messages.push(format!(
@@ -1011,11 +1039,53 @@ pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
         Some("*"),
     )?;
 
+    let statusline_path = hooks_dir.join(CLAUDE_STATUSLINE_INSTALL_NAME);
+    fs::write(&statusline_path, CLAUDE_STATUSLINE_ASSET)?;
+    make_executable(&statusline_path)?;
+
+    // claude settings hold a single statusLine slot. herdr's script reports the
+    // session title to the pane, then feeds the same stdin to whatever command
+    // was configured before, preserved verbatim in the delegate file.
+    let delegate_path = hooks_dir.join(CLAUDE_STATUSLINE_DELEGATE_NAME);
+    let statusline_command = format!(
+        "sh {}",
+        shell_single_quote(&statusline_path.display().to_string())
+    );
+    let existing_statusline = settings.get("statusLine").cloned();
+    let existing_is_ours = existing_statusline
+        .as_ref()
+        .and_then(|value| value.get("command"))
+        .and_then(Value::as_str)
+        .is_some_and(|command| command.contains(CLAUDE_STATUSLINE_INSTALL_NAME));
+    let mut wrapped_statusline = false;
+    let mut statusline = match existing_statusline {
+        Some(value) if existing_is_ours => value,
+        Some(value)
+            if value
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| !command.trim().is_empty()) =>
+        {
+            fs::write(&delegate_path, serde_json::to_string_pretty(&value)?)?;
+            wrapped_statusline = true;
+            value
+        }
+        _ => json!({}),
+    };
+    if !statusline.is_object() {
+        statusline = json!({});
+    }
+    statusline["type"] = json!("command");
+    statusline["command"] = json!(statusline_command);
+    settings["statusLine"] = statusline;
+
     fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
 
     Ok(ClaudeInstallPaths {
         hook_path,
+        statusline_path,
         settings_path,
+        wrapped_statusline,
     })
 }
 
@@ -1343,9 +1413,13 @@ pub(crate) fn uninstall_omp() -> io::Result<OmpUninstallResult> {
 }
 
 pub(crate) fn uninstall_claude() -> io::Result<ClaudeUninstallResult> {
-    let hook_path = claude_dir()?.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME);
+    let hooks_dir = claude_dir()?.join("hooks");
+    let hook_path = hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME);
+    let statusline_path = hooks_dir.join(CLAUDE_STATUSLINE_INSTALL_NAME);
+    let delegate_path = hooks_dir.join(CLAUDE_STATUSLINE_DELEGATE_NAME);
     let settings_path = claude_dir()?.join("settings.json");
     let mut updated_settings = false;
+    let mut restored_statusline = false;
 
     if settings_path.is_file() {
         let mut settings = serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?)
@@ -1412,17 +1486,45 @@ pub(crate) fn uninstall_claude() -> io::Result<ClaudeUninstallResult> {
             )?;
         }
 
+        let statusline_is_ours = settings
+            .get("statusLine")
+            .and_then(|value| value.get("command"))
+            .and_then(Value::as_str)
+            .is_some_and(|command| command.contains(CLAUDE_STATUSLINE_INSTALL_NAME));
+        if statusline_is_ours {
+            let original = fs::read_to_string(&delegate_path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<Value>(&content).ok());
+            match original {
+                Some(original) => {
+                    settings["statusLine"] = original;
+                    restored_statusline = true;
+                }
+                None => {
+                    if let Some(object) = settings.as_object_mut() {
+                        object.remove("statusLine");
+                    }
+                }
+            }
+            updated_settings = true;
+        }
+
         if updated_settings {
             fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
         }
     }
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
+    let removed_statusline_file = remove_file_if_exists(&statusline_path)?;
+    remove_file_if_exists(&delegate_path)?;
 
     Ok(ClaudeUninstallResult {
         hook_path,
+        statusline_path,
         settings_path,
         removed_hook_file,
+        removed_statusline_file,
+        restored_statusline,
         updated_settings,
     })
 }
@@ -3031,7 +3133,7 @@ mod tests {
 
         assert_eq!(claude.path, hook_path);
         assert_eq!(claude.installed_version, Some(1));
-        assert_eq!(claude.expected_version, 5);
+        assert_eq!(claude.expected_version, 6);
         assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
         std::env::remove_var("HOME");
@@ -3061,7 +3163,7 @@ mod tests {
 
         assert_eq!(claude.path, hook_path);
         assert_eq!(claude.installed_version, Some(2));
-        assert_eq!(claude.expected_version, 5);
+        assert_eq!(claude.expected_version, 6);
         assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
         std::env::remove_var("HOME");
@@ -3121,6 +3223,120 @@ mod tests {
         assert!(settings["hooks"].get("SubagentStop").is_none());
         assert!(settings["hooks"].get("Stop").is_none());
         assert!(settings["hooks"].get("SessionEnd").is_none());
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn install_claude_wraps_existing_statusline_and_uninstall_restores_it() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        let claude_dir = home.join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"statusLine":{"type":"command","command":"ccstatusline","padding":0}}"#,
+        )
+        .unwrap();
+        std::env::set_var("HOME", &home);
+
+        let installed = install_claude().unwrap();
+        let delegate_path = claude_dir
+            .join("hooks")
+            .join(CLAUDE_STATUSLINE_DELEGATE_NAME);
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
+        let delegate: Value =
+            serde_json::from_str(&fs::read_to_string(&delegate_path).unwrap()).unwrap();
+
+        assert!(installed.wrapped_statusline);
+        assert_eq!(
+            fs::read_to_string(&installed.statusline_path).unwrap(),
+            CLAUDE_STATUSLINE_ASSET
+        );
+        assert!(settings["statusLine"]["command"]
+            .as_str()
+            .unwrap()
+            .contains(CLAUDE_STATUSLINE_INSTALL_NAME));
+        assert_eq!(settings["statusLine"]["padding"], 0);
+        assert_eq!(delegate["command"], "ccstatusline");
+
+        // reinstalling must not re-wrap and swallow its own command as the delegate.
+        let reinstalled = install_claude().unwrap();
+        let delegate: Value =
+            serde_json::from_str(&fs::read_to_string(&delegate_path).unwrap()).unwrap();
+        assert!(!reinstalled.wrapped_statusline);
+        assert_eq!(delegate["command"], "ccstatusline");
+
+        let result = uninstall_claude().unwrap();
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(&result.settings_path).unwrap()).unwrap();
+        assert!(result.removed_statusline_file);
+        assert!(result.restored_statusline);
+        assert_eq!(settings["statusLine"]["command"], "ccstatusline");
+        assert_eq!(settings["statusLine"]["padding"], 0);
+        assert!(!delegate_path.exists());
+        assert!(!result.statusline_path.exists());
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn install_claude_sets_statusline_when_none_configured_and_uninstall_clears_it() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        let claude_dir = home.join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let installed = install_claude().unwrap();
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
+        assert!(!installed.wrapped_statusline);
+        assert_eq!(settings["statusLine"]["type"], "command");
+        assert!(settings["statusLine"]["command"]
+            .as_str()
+            .unwrap()
+            .contains(CLAUDE_STATUSLINE_INSTALL_NAME));
+        assert!(!claude_dir
+            .join("hooks")
+            .join(CLAUDE_STATUSLINE_DELEGATE_NAME)
+            .exists());
+
+        let result = uninstall_claude().unwrap();
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(&result.settings_path).unwrap()).unwrap();
+        assert!(result.removed_statusline_file);
+        assert!(!result.restored_statusline);
+        assert!(settings.get("statusLine").is_none());
+
+        std::env::remove_var("HOME");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn uninstall_claude_leaves_foreign_statusline_alone() {
+        let _lock = integration_env_lock();
+        let base = unique_base();
+        let home = base.join("home");
+        let claude_dir = home.join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"statusLine":{"type":"command","command":"ccstatusline"}}"#,
+        )
+        .unwrap();
+        std::env::set_var("HOME", &home);
+
+        let result = uninstall_claude().unwrap();
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(&result.settings_path).unwrap()).unwrap();
+        assert!(!result.restored_statusline);
+        assert_eq!(settings["statusLine"]["command"], "ccstatusline");
 
         std::env::remove_var("HOME");
         let _ = fs::remove_dir_all(base);

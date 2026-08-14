@@ -68,6 +68,11 @@ impl App {
         None
     }
 
+    /// Resolve a pane target: an internal id ("p_<n>", "p_<ws>_<n>"), a
+    /// public id ("<workspace_id>-<number>"), or an assigned pane name
+    /// ("Olivia", "Olivia-2", case-insensitive). Id forms win over names;
+    /// generated workspace ids never look like names, so the forms cannot
+    /// collide in practice.
     pub(super) fn parse_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
         if let Some(rest) = id.strip_prefix("p_") {
             if let Some((ws_raw, pane_raw)) = rest.rsplit_once('_') {
@@ -81,6 +86,11 @@ impl App {
             return self.find_pane(pane_id).map(|(ws_idx, _)| (ws_idx, pane_id));
         }
 
+        self.parse_public_pane_id(id)
+            .or_else(|| self.pane_by_assigned_name(id))
+    }
+
+    fn parse_public_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
         let (ws_raw, pane_number_raw) = id.rsplit_once('-')?;
         let ws_idx = self.parse_workspace_id(ws_raw)?;
         let pane_number = pane_number_raw.parse::<usize>().ok()?;
@@ -90,5 +100,66 @@ impl App {
             .iter()
             .find_map(|(pane_id, number)| (*number == pane_number).then_some(*pane_id))?;
         Some((ws_idx, pane_id))
+    }
+
+    fn pane_by_assigned_name(&self, name: &str) -> Option<(usize, crate::layout::PaneId)> {
+        let terminal_id = crate::pane_names::assigned_names(&self.state.terminals)
+            .into_iter()
+            .find_map(|(terminal_id, assigned)| {
+                assigned.eq_ignore_ascii_case(name).then_some(terminal_id)
+            })?;
+        self.state
+            .workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(ws_idx, ws)| {
+                ws.tabs.iter().find_map(|tab| {
+                    tab.panes.iter().find_map(|(pane_id, pane)| {
+                        (pane.attached_terminal_id == terminal_id).then_some((ws_idx, *pane_id))
+                    })
+                })
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{config::Config, workspace::Workspace};
+
+    fn test_app() -> super::App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.ensure_test_terminals();
+        app
+    }
+
+    #[test]
+    fn parse_pane_id_resolves_assigned_names_case_insensitively() {
+        let app = test_app();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].terminal_id(pane_id).unwrap();
+        let name = crate::pane_names::assigned_names(&app.state.terminals)
+            .remove(terminal_id)
+            .unwrap();
+
+        assert_eq!(app.parse_pane_id(&name), Some((0, pane_id)));
+        assert_eq!(app.parse_pane_id(&name.to_lowercase()), Some((0, pane_id)));
+        assert_eq!(app.parse_pane_id("NoSuchName"), None);
+    }
+
+    #[test]
+    fn explicit_pane_ids_still_resolve() {
+        let app = test_app();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let public_id = app.public_pane_id(0, pane_id).unwrap();
+
+        assert_eq!(app.parse_pane_id(&public_id), Some((0, pane_id)));
     }
 }

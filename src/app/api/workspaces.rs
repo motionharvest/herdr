@@ -79,7 +79,7 @@ impl App {
                 self.emit_event(EventEnvelope {
                     event: EventKind::PaneCreated,
                     data: EventData::PaneCreated {
-                        pane: root_pane.clone(),
+                        pane: Box::new(root_pane.clone()),
                     },
                 });
                 encode_success(

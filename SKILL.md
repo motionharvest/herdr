@@ -43,6 +43,8 @@ plain shells still exist as panes, but herdr's sidebar agent section intentional
 
 important: ids can compact when tabs, panes, or workspaces are closed. do not treat them as durable ids. re-read ids from `workspace list`, `tab list`, `pane list`, or create/split responses when you need a current id. do not guess that an older `1-3` is still the same pane later.
 
+**pane names** — every pane also has a stable human name (`Olivia`, `Mei`, `Olivia-2` on collision), shown in the sidebar and returned as `name` in `pane list` and `pane get`. any command that takes a pane id also accepts the name, case-insensitive. names stay with their pane for the life of the terminal and survive restarts, so they are safer than compact ids across closes.
+
 ## discover yourself
 
 see what panes exist and which one is focused:
@@ -131,6 +133,16 @@ split downward instead:
 ```bash
 herdr pane split 1-2 --direction down --no-focus
 ```
+
+## prompt an agent
+
+send a message to the agent running in another pane. the text is pasted and Enter is pressed, so it arrives and submits as one message:
+
+```bash
+herdr agent prompt Dexter "run the test suite and summarize failures"
+```
+
+`agent prompt` targets accept pane names, terminal ids, agent names, and pane ids. `agent send` is the raw variant: it types the text without submitting.
 
 ## wait for output
 
@@ -249,9 +261,12 @@ herdr pane read 1-3 --source recent --lines 30
 ### check what another agent is working on
 
 ```bash
-herdr pane list
+herdr agent status           # one line per agent: name, status, session title
+herdr agent status Bailey    # one agent's line, e.g. "Bailey: idle · Fix the parser bug"
 herdr pane read 1-1 --source recent --lines 80
 ```
+
+`agent status` prints plain text, not json. the title comes from the agent's reported session metadata and is absent until the agent reports one.
 
 ### watch another pane robustly
 
@@ -275,7 +290,7 @@ herdr pane read 1-3 --source recent-unwrapped --lines 40
 herdr pane split 1-2 --direction right --no-focus
 herdr pane run 1-3 "claude"
 herdr wait output 1-3 --match ">" --timeout 15000
-herdr pane run 1-3 "review the test coverage in src/api/"
+herdr agent prompt 1-3 "review the test coverage in src/api/"
 ```
 
 ### coordinate with another agent

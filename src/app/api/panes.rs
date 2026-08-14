@@ -75,7 +75,9 @@ impl App {
         let pane = self.pane_info(ws_idx, new_pane.pane_id).unwrap();
         self.emit_event(EventEnvelope {
             event: EventKind::PaneCreated,
-            data: EventData::PaneCreated { pane: pane.clone() },
+            data: EventData::PaneCreated {
+                pane: Box::new(pane.clone()),
+            },
         });
 
         encode_success(id, ResponseResult::PaneInfo { pane })

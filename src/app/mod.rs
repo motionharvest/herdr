@@ -2898,6 +2898,26 @@ mod tests {
     }
 
     #[test]
+    fn terminal_target_resolves_assigned_pane_name() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("terminal-target-name");
+        let pane = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane).unwrap().clone();
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        let name = crate::pane_names::assigned_names(&app.state.terminals)
+            .remove(&terminal_id)
+            .unwrap();
+
+        let resolved = app.resolve_terminal_target(&name).unwrap();
+
+        assert_eq!(resolved.pane_id, pane);
+        assert_eq!(resolved.terminal_id, terminal_id.to_string());
+    }
+
+    #[test]
     fn terminal_target_resolves_unique_agent_name() {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-name");

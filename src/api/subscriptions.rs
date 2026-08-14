@@ -214,6 +214,9 @@ impl ActiveSubscription {
             } => {
                 let last_sequence = event_hub.current_sequence();
                 let probe = pane_get(format!("{request_id}:sub:{index}:probe"), &pane_id, api_tx)?;
+                // The target may be an alias (a pane name); events carry the
+                // canonical public id, so store the probe's id for matching.
+                let canonical_pane_id = probe.pane_id.clone();
                 let last_status = probe.agent_status;
                 let last_presentation = PanePresentationSnapshot::from(&probe);
                 let initial_event = agent_status
@@ -231,7 +234,7 @@ impl ActiveSubscription {
 
                 Ok(Self::AgentStatusChanged(Box::new(
                     ActiveAgentStatusChangedSubscription {
-                        pane_id,
+                        pane_id: canonical_pane_id,
                         status_filter: agent_status,
                         last_status: Some(last_status),
                         last_presentation: Some(last_presentation),

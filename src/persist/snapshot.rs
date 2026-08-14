@@ -107,6 +107,11 @@ pub struct TabSnapshot {
 
 #[derive(Serialize, Deserialize)]
 pub struct PaneSnapshot {
+    /// Terminal identity, restored so everything derived from it (assigned
+    /// pane names, agent bookkeeping) survives restarts. Absent in snapshots
+    /// written before it existed; restore allocates a fresh id then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_id: Option<crate::terminal::TerminalId>,
     pub cwd: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -388,6 +393,10 @@ fn capture_tab(
         panes.insert(
             id.raw(),
             PaneSnapshot {
+                terminal_id: tab
+                    .panes
+                    .get(id)
+                    .map(|pane| pane.attached_terminal_id.clone()),
                 cwd,
                 label,
                 agent_name,
@@ -617,6 +626,7 @@ mod tests {
         panes.insert(
             0,
             PaneSnapshot {
+                terminal_id: None,
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
                 label: None,
                 agent_name: None,
@@ -627,6 +637,7 @@ mod tests {
         panes.insert(
             1,
             PaneSnapshot {
+                terminal_id: None,
                 cwd: PathBuf::from("/home/can/Projects/website"),
                 label: Some("website".into()),
                 agent_name: None,
@@ -1199,6 +1210,7 @@ mod tests {
         panes.insert(
             0,
             PaneSnapshot {
+                terminal_id: None,
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
                 label: None,
                 agent_name: None,
@@ -1209,6 +1221,7 @@ mod tests {
         panes.insert(
             1,
             PaneSnapshot {
+                terminal_id: None,
                 cwd: std::env::var("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),

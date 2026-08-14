@@ -781,7 +781,9 @@ impl App {
         });
         self.emit_event(EventEnvelope {
             event: EventKind::PaneCreated,
-            data: EventData::PaneCreated { pane: root_pane },
+            data: EventData::PaneCreated {
+                pane: Box::new(root_pane),
+            },
         });
     }
 

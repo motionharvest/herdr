@@ -1,6 +1,6 @@
 use crate::api::schema::{
-    AgentReadParams, AgentRenameParams, AgentSendParams, AgentStartParams, AgentStatus,
-    AgentTarget, EmptyParams, Method, ReadFormat, ReadSource, Request, Subscription,
+    AgentPromptParams, AgentReadParams, AgentRenameParams, AgentSendParams, AgentStartParams,
+    AgentStatus, AgentTarget, EmptyParams, Method, ReadFormat, ReadSource, Request, Subscription,
 };
 
 pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
@@ -12,8 +12,10 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
     match subcommand {
         "list" => agent_list(&args[1..]),
         "get" => agent_get(&args[1..]),
+        "status" => agent_status(&args[1..]),
         "read" => agent_read(&args[1..]),
         "send" => agent_send(&args[1..]),
+        "prompt" => agent_prompt(&args[1..]),
         "rename" => agent_rename(&args[1..]),
         "focus" => agent_focus(&args[1..]),
         "wait" => agent_wait(&args[1..]),
@@ -143,6 +145,89 @@ fn agent_get(args: &[String]) -> std::io::Result<i32> {
             target: target.clone(),
         }),
     })?)
+}
+
+fn agent_status(args: &[String]) -> std::io::Result<i32> {
+    if args.len() > 1 || args.first().is_some_and(|arg| arg.starts_with('-')) {
+        eprintln!("usage: herdr agent status [target]");
+        return Ok(2);
+    }
+
+    match args.first() {
+        Some(target) => {
+            let response = resolve_agent_target(target, "cli:agent:status")?;
+            if response.get("error").is_some() {
+                eprintln!("{}", serde_json::to_string(&response).unwrap());
+                return Ok(1);
+            }
+            let agent = &response["result"]["agent"];
+            let name = agent["name"].as_str().unwrap_or(target);
+            println!("{}", agent_status_line(name, agent));
+            Ok(0)
+        }
+        None => {
+            let response = super::send_request(&Request {
+                id: "cli:agent:status".into(),
+                method: Method::AgentList(EmptyParams::default()),
+            })?;
+            if response.get("error").is_some() {
+                eprintln!("{}", serde_json::to_string(&response).unwrap());
+                return Ok(1);
+            }
+            let Some(agents) = response["result"]["agents"].as_array() else {
+                eprintln!("agent status failed: response did not include agents");
+                return Ok(1);
+            };
+            // agent responses only carry explicit rename names; the assigned
+            // human names (the usual way agents are addressed) live on panes.
+            let pane_names = pane_names_by_pane_id()?;
+            for agent in agents {
+                let name = agent["name"]
+                    .as_str()
+                    .or_else(|| {
+                        agent["pane_id"]
+                            .as_str()
+                            .and_then(|pane_id| pane_names.get(pane_id))
+                            .map(String::as_str)
+                    })
+                    .or_else(|| agent["terminal_id"].as_str())
+                    .unwrap_or("?");
+                println!("{}", agent_status_line(name, agent));
+            }
+            Ok(0)
+        }
+    }
+}
+
+fn pane_names_by_pane_id() -> std::io::Result<std::collections::HashMap<String, String>> {
+    let response = super::send_request(&Request {
+        id: "cli:agent:status:panes".into(),
+        method: Method::PaneList(crate::api::schema::PaneListParams { workspace_id: None }),
+    })?;
+    let mut names = std::collections::HashMap::new();
+    if let Some(panes) = response["result"]["panes"].as_array() {
+        for pane in panes {
+            if let (Some(pane_id), Some(name)) = (pane["pane_id"].as_str(), pane["name"].as_str()) {
+                names.insert(pane_id.to_owned(), name.to_owned());
+            }
+        }
+    }
+    Ok(names)
+}
+
+fn agent_status_line(name: &str, agent: &serde_json::Value) -> String {
+    let status = agent["agent_status"].as_str().unwrap_or("unknown");
+    let mut line = format!("{name}: {status}");
+    for key in ["title", "custom_status"] {
+        if let Some(value) = agent[key].as_str() {
+            let value = value.trim();
+            if !value.is_empty() {
+                line.push_str(" · ");
+                line.push_str(value);
+            }
+        }
+    }
+    line
 }
 
 fn agent_focus(args: &[String]) -> std::io::Result<i32> {
@@ -323,6 +408,21 @@ fn agent_send(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
+fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
+    if args.len() < 2 {
+        eprintln!("usage: herdr agent prompt <target> <text>");
+        return Ok(2);
+    }
+
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:prompt".into(),
+        method: Method::AgentPrompt(AgentPromptParams {
+            target: args[0].clone(),
+            text: args[1..].join(" "),
+        }),
+    })?)
+}
+
 fn agent_read(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!("usage: herdr agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
@@ -415,15 +515,51 @@ fn print_agent_help() {
     eprintln!("herdr agent commands:");
     eprintln!("  herdr agent list");
     eprintln!("  herdr agent get <target>");
+    eprintln!("  herdr agent status [target]");
     eprintln!("  herdr agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
     eprintln!("  herdr agent send <target> <text>");
+    eprintln!("  herdr agent prompt <target> <text>");
     eprintln!("  herdr agent rename <target> <name>|--clear");
     eprintln!("  herdr agent focus <target>");
     eprintln!("  herdr agent wait <target> --status <idle|working|blocked|unknown> [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!("  herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
-    eprintln!("  targets accept terminal ids, unique agent names, detected/reported agent labels, and legacy pane ids");
+    eprintln!("  targets accept terminal ids, pane names, unique agent names, detected/reported agent labels, and legacy pane ids");
     eprintln!(
-        "  agent send writes literal text; use pane run when you want command text plus Enter"
+        "  agent send writes literal text without submitting; agent prompt pastes the text and presses Enter"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_status_line;
+    use serde_json::json;
+
+    #[test]
+    fn status_line_includes_title_and_custom_status_when_present() {
+        let agent = json!({
+            "agent_status": "idle",
+            "title": "Learn tic tac toe rules and gameplay",
+            "custom_status": "waiting on review",
+        });
+        assert_eq!(
+            agent_status_line("Bailey", &agent),
+            "Bailey: idle · Learn tic tac toe rules and gameplay · waiting on review"
+        );
+    }
+
+    #[test]
+    fn status_line_omits_missing_and_blank_fields() {
+        let agent = json!({
+            "agent_status": "working",
+            "title": "  ",
+        });
+        assert_eq!(agent_status_line("Carmen", &agent), "Carmen: working");
+    }
+
+    #[test]
+    fn status_line_defaults_status_to_unknown() {
+        let agent = json!({});
+        assert_eq!(agent_status_line("term_1", &agent), "term_1: unknown");
+    }
 }
