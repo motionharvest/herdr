@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+- The context menu on an agent — on its sidebar row or on its pane — now offers `Reset agent`, which starts a fresh session inside the running process by typing the harness's own reset command: `/clear` for Claude Code, Gemini, and Copilot, `/new` for Codex, opencode, and Amp. Escape is sent first, so a half-typed prompt is not left prefixed to the command and a working agent is interrupted before the reset lands. Harnesses whose reset command herdr does not know show no such entry, rather than typing a guess into the pane.
+- The same menus offer `Close agent`, which ends the agent and leaves you the pane. Ending an agent used to mean closing its pane and losing the split with it, or reaching into the pane and quitting the agent by hand. An agent running as a job under the pane's shell is signaled on its own and the shell keeps the terminal; an agent that is the terminal's own child gets a shell respawned in its place. The signal ladder is the one a closing pane already uses — hangup, then terminate, then kill — and the waits between the steps run off the input thread, so a slow exit never stalls typing.
+- A sidebar agent row now carries what the agent reports it is doing: the session title its harness set, then any custom status it announced, wrapped under the row's name and state. That is the same text `herdr agent status` prints, and reading it meant leaving the sidebar for a shell. The text is capped at three rows, with everything past the cap folded into the last one and cut, so a long-winded agent cannot push the rest of the list off screen.
+
+### Changed
+- Sidebar agent rows now head with the folder the agent is working in — the pane's cwd, with its git branch and dirty marker trailing in a dimmer tone the way they do on the pane's own title bar — instead of the name of the tab holding the pane. A tab name only promises that the panes under it share a folder, and nothing makes that true, so the row said less about whether this was the agent you meant to prompt than the pane's title bar did. Agents working in the same folder share one header and are indented under it, so a space now reads as a list of folders rather than a flat list of rows. A sidebar too narrow for the whole label drops the path's leading folders first, marked `…/`, so the folder the agent is actually in and its branch both survive as long as they can; the branch goes only when the last folder and the branch will not sit together. A pane with no cwd yet falls back to its tab name.
+- Dragging in the sidebar now moves rows within that arrangement: an agent reorders among the agents it shares a folder with, and dragging a folder header moves the whole folder, and every agent under it, among its space's folders. An agent used to be free to land anywhere in its space's list, including under a folder heading it was not working in, which left the list stating something untrue about the pane.
+- A space card whose agent list is folded away now wears a hollow dot in place of its state dot. A closed card and a card with nothing under it looked identical, so an empty list gave no way to tell a space with no agents from one with its agents put away.
+
 ## [0.9.0] - 2026-08-14
 
 ### Added
