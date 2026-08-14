@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.9.1] - 2026-08-14
+
 ### Added
 - The context menu on an agent — on its sidebar row or on its pane — now offers `Reset agent`, which starts a fresh session inside the running process by typing the harness's own reset command: `/clear` for Claude Code, Gemini, and Copilot, `/new` for Codex, opencode, and Amp. Escape is sent first, so a half-typed prompt is not left prefixed to the command and a working agent is interrupted before the reset lands. Harnesses whose reset command herdr does not know show no such entry, rather than typing a guess into the pane.
 - The same menus offer `Close agent`, which ends the agent and leaves you the pane. Ending an agent used to mean closing its pane and losing the split with it, or reaching into the pane and quitting the agent by hand. An agent running as a job under the pane's shell is signaled on its own and the shell keeps the terminal; an agent that is the terminal's own child gets a shell respawned in its place. The signal ladder is the one a closing pane already uses — hangup, then terminate, then kill — and the waits between the steps run off the input thread, so a slow exit never stalls typing.
