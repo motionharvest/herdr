@@ -99,7 +99,7 @@ herdr integration install claude
 
 The hook reports Claude Code session identity to the local Herdr socket on session start. Claude Code state comes from Herdr's screen detection.
 
-Herdr uses `~/.claude` by default, or `CLAUDE_CONFIG_DIR` when set. The Claude config directory must already exist. Install writes `hooks/herdr-agent-state.sh` and updates `settings.json` with Herdr hook entries. Uninstall removes the matching hook entries and deletes the hook script.
+Herdr uses `~/.claude` by default, or `CLAUDE_CONFIG_DIR` when set. The Claude config directory must already exist. Install writes `hooks/herdr-agent-state.sh` and `hooks/herdr-statusline.sh`, and updates `settings.json` with Herdr hook entries and a `statusLine` command. The statusline script reports the Claude session's title to its pane; a statusline that was already configured is preserved in `hooks/herdr-statusline-delegate.json` and still renders the display. Uninstall removes the matching hook entries, deletes both scripts, and restores the previous `statusLine` configuration.
 
 ## Codex
 

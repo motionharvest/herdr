@@ -105,6 +105,8 @@ herdr pane split <pane_id> --direction right|down [--cwd PATH] [--focus] [--no-f
 herdr pane close <pane_id>
 ```
 
+`<pane_id>` accepts a pane ID from `pane list` or the pane's assigned name (`Olivia`, `Olivia-2` on collision), case-insensitively. Pane IDs compact when panes close; the name stays with its pane for the life of the terminal and survives restarts, so prefer names in anything longer-lived than one command. `pane list` and `pane get` return the name as a `name` field.
+
 Read output:
 
 ```bash
@@ -164,8 +166,10 @@ herdr pane report-metadata <pane_id> \
 ```bash
 herdr agent list
 herdr agent get <target>
+herdr agent status [target]
 herdr agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]
 herdr agent send <target> <text>
+herdr agent prompt <target> <text>
 herdr agent rename <target> <name>|--clear
 herdr agent focus <target>
 herdr agent wait <target> --status <idle|working|blocked|unknown> [--timeout MS]
@@ -173,9 +177,9 @@ herdr agent attach <target> [--takeover]
 herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>
 ```
 
-Agent targets can be terminal IDs, unique agent names, detected or reported agent labels, or legacy pane IDs. Names and labels are agent identities. Terminal IDs and legacy pane IDs are low-level escape hatches.
+Agent targets can be terminal IDs, pane names, unique agent names, detected or reported agent labels, or legacy pane IDs. Names and labels are agent identities. Terminal IDs and legacy pane IDs are low-level escape hatches.
 
-`agent read` reads the resolved terminal stream. `agent send` writes literal text to that stream. `agent get`, `agent focus`, `agent wait`, and `agent attach` require the resolved terminal to have agent identity. `agent rename` can assign that identity.
+`agent status` prints one plain-text line per agent — name, status, and the reported session title when the agent has reported one — instead of JSON. `agent read` reads the resolved terminal stream. `agent send` writes literal text to that stream without submitting; `agent prompt` pastes the text and presses Enter, so the message arrives and submits as one. `agent get`, `agent focus`, `agent wait`, and `agent attach` require the resolved terminal to have agent identity. `agent rename` can assign that identity.
 
 Use `pane send-text`, `pane send-keys`, `pane run`, and `terminal attach` for ordinary terminals, servers, tests, shells, or low-level terminal control. Use `pane run` when you want to submit a command with Enter.
 
