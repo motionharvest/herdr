@@ -103,13 +103,13 @@ fn parse_integration_target(
 ) -> std::io::Result<Option<IntegrationTarget>> {
     let Some(target) = args.first().map(|arg| arg.as_str()) else {
         eprintln!(
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|droid|kimi|opencode|hermes|qodercli>"
+            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|droid|kimi|opencode|hermes|qodercli|grok>"
         );
         return Ok(None);
     };
     if args.len() != 1 {
         eprintln!(
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|droid|kimi|opencode|hermes|qodercli>"
+            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|droid|kimi|opencode|hermes|qodercli|grok>"
         );
         return Ok(None);
     }
@@ -125,10 +125,11 @@ fn parse_integration_target(
         "opencode" => IntegrationTarget::Opencode,
         "hermes" => IntegrationTarget::Hermes,
         "qodercli" => IntegrationTarget::Qodercli,
+        "grok" => IntegrationTarget::Grok,
         _ => {
             eprintln!("unknown integration target: {target}");
             eprintln!(
-                "currently supported: pi, omp, claude, codex, copilot, droid, kimi, opencode, hermes, qodercli"
+                "currently supported: pi, omp, claude, codex, copilot, droid, kimi, opencode, hermes, qodercli, grok"
             );
             return Ok(None);
         }
@@ -149,6 +150,7 @@ fn print_integration_help() {
     eprintln!("  herdr integration install opencode");
     eprintln!("  herdr integration install hermes");
     eprintln!("  herdr integration install qodercli");
+    eprintln!("  herdr integration install grok");
     eprintln!("  herdr integration uninstall pi");
     eprintln!("  herdr integration uninstall omp");
     eprintln!("  herdr integration uninstall claude");
@@ -159,5 +161,6 @@ fn print_integration_help() {
     eprintln!("  herdr integration uninstall opencode");
     eprintln!("  herdr integration uninstall hermes");
     eprintln!("  herdr integration uninstall qodercli");
+    eprintln!("  herdr integration uninstall grok");
     eprintln!("  herdr integration status [--outdated-only]");
 }

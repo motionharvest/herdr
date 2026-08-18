@@ -211,7 +211,7 @@ for agents outside the built-in list, herdr still works as a terminal multiplexe
 
 ### direct integrations
 
-official integrations have two roles. claude code, codex, and opencode report session identity for native restore, while their state still comes from screen detection. pi, github copilot cli, and hermes report both semantic state and session identity. omp and qodercli report semantic state without native session restore. install with:
+official integrations have two roles. claude code, codex, opencode, and grok report session identity for native restore, while their state still comes from screen detection. pi, github copilot cli, and hermes report both semantic state and session identity. omp and qodercli report semantic state without native session restore. install with:
 
 ```bash
 herdr integration install pi
@@ -222,6 +222,7 @@ herdr integration install copilot
 herdr integration install opencode
 herdr integration install hermes
 herdr integration install qodercli
+herdr integration install grok
 ```
 
 see the [integrations docs](website/src/content/docs/integrations.mdx) for setup details.
@@ -282,7 +283,7 @@ All documentation ships in this repository under [`website/src/content/docs/`](w
 - [session state and restore](website/src/content/docs/session-state.mdx) — detach, restart restore, agent restore, and live handoff
 - [persistence and remote access](website/src/content/docs/persistence-remote.mdx) — SSH, remote attach, named sessions
 - [configuration](website/src/content/docs/configuration.mdx) — keybindings, themes, notifications, environment variables
-- [integrations](website/src/content/docs/integrations.mdx) — pi, omp, claude code, codex, github copilot cli, opencode, hermes, qodercli
+- [integrations](website/src/content/docs/integrations.mdx) — pi, omp, claude code, codex, github copilot cli, opencode, hermes, qodercli, grok
 - [socket API](website/src/content/docs/socket-api.mdx) — socket protocol and full CLI reference
 - [CLI reference](website/src/content/docs/cli-reference.mdx) — every `herdr` subcommand
 - [agent skill file](website/src/content/docs/agent-skill.mdx) and [`SKILL.md`](./SKILL.md) — reusable skill so agents can drive herdr from inside it

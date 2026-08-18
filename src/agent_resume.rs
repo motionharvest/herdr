@@ -76,6 +76,7 @@ pub fn is_reserved_native_state_source(source: &str, agent: &str) -> bool {
             | ("herdr:codex", "codex")
             | ("herdr:droid", "droid")
             | ("herdr:opencode", "opencode")
+            | ("herdr:grok", "grok")
     )
 }
 
@@ -139,6 +140,9 @@ pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<
                 session_ref.value.clone(),
             ]
         }
+        ("herdr:grok", "grok", AgentSessionRefKind::Id) => {
+            vec!["grok".into(), "--resume".into(), session_ref.value.clone()]
+        }
         _ => return None,
     };
 
@@ -166,6 +170,7 @@ fn is_official_agent_source(source: &str, agent: &str) -> bool {
             | ("herdr:pi", "pi")
             | ("herdr:hermes", "hermes")
             | ("herdr:opencode", "opencode")
+            | ("herdr:grok", "grok")
     )
 }
 
@@ -256,6 +261,16 @@ mod tests {
             .argv,
             vec!["opencode", "--session", "opencode-session"]
         );
+        assert_eq!(
+            plan(
+                "herdr:grok",
+                "grok",
+                &AgentSessionRef::id("grok-session").unwrap()
+            )
+            .unwrap()
+            .argv,
+            vec!["grok", "--resume", "grok-session"]
+        );
     }
 
     #[test]
@@ -324,6 +339,21 @@ mod tests {
             Some("/tmp/droid-session".into())
         )
         .is_none());
+
+        let session_ref =
+            session_ref_from_report("herdr:grok", "grok", Some("grok-id".into()), None).unwrap();
+        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value, "grok-id");
+        assert!(session_ref_from_report(
+            "herdr:grok",
+            "grok",
+            None,
+            Some("/tmp/grok-session".into())
+        )
+        .is_none());
+        assert!(
+            session_ref_from_report("custom:grok", "grok", Some("grok-id".into()), None).is_none()
+        );
     }
 
     #[test]
@@ -380,6 +410,19 @@ mod tests {
             "copilot",
             AgentSessionRefKind::Id,
             "copilot-session"
+        )
+        .is_some());
+        assert!(plan(
+            "herdr:grok",
+            "grok",
+            &AgentSessionRef::path("/tmp/grok-session").unwrap()
+        )
+        .is_none());
+        assert!(session_ref_from_snapshot(
+            "herdr:grok",
+            "grok",
+            AgentSessionRefKind::Id,
+            "grok-session"
         )
         .is_some());
     }
