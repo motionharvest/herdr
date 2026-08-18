@@ -54,6 +54,28 @@ pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
     })
 }
 
+/// The directory the composer should offer for work happening at `cwd`.
+///
+/// A linked worktree is the parent checkout: the composer starts work in a
+/// repository, and listing every checkout it has already created hides that
+/// repository under a row per agent.
+pub fn composer_folder_path(cwd: &Path) -> Option<PathBuf> {
+    match git_worktree_info(cwd) {
+        Some(info) if info.is_linked_worktree => {
+            if info
+                .git_common_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                != Some(".git")
+            {
+                return None;
+            }
+            info.git_common_dir.parent().map(Path::to_path_buf)
+        }
+        _ => Some(cwd.to_path_buf()),
+    }
+}
+
 pub fn git_space_metadata(cwd: &Path) -> Option<GitSpaceMetadata> {
     git_repo_root(cwd)?;
 
@@ -400,5 +422,60 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn committed_repo(name: &str) -> PathBuf {
+        let root = temp_test_dir(name);
+        run_git(&root, &["init", "--quiet"]);
+        run_git(&root, &["config", "user.email", "herdr@example.invalid"]);
+        run_git(&root, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(root.join("README.md"), "test\n").unwrap();
+        run_git(&root, &["add", "README.md"]);
+        run_git(&root, &["commit", "--quiet", "-m", "initial"]);
+        std::fs::canonicalize(&root).unwrap()
+    }
+
+    #[test]
+    fn a_plain_folder_is_offered_as_itself() {
+        let root = temp_test_dir("composer-plain");
+        assert_eq!(composer_folder_path(&root).as_deref(), Some(root.as_path()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_repository_checkout_is_offered_as_itself() {
+        let repo = committed_repo("composer-repo");
+        assert_eq!(composer_folder_path(&repo).as_deref(), Some(repo.as_path()));
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn a_linked_worktree_offers_the_parent_checkout() {
+        let repo = committed_repo("composer-parent");
+        let checkout = temp_test_dir("composer-worktree");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/composer-test",
+                checkout.to_str().unwrap(),
+            ],
+        );
+        let checkout = std::fs::canonicalize(&checkout).unwrap();
+
+        assert_eq!(
+            composer_folder_path(&checkout).as_deref(),
+            Some(repo.as_path()),
+            "the worktree is not a directory the composer should list"
+        );
+
+        run_git(
+            &repo,
+            &["worktree", "remove", "--force", checkout.to_str().unwrap()],
+        );
+        std::fs::remove_dir_all(repo).unwrap();
     }
 }

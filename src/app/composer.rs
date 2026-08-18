@@ -92,7 +92,9 @@ impl crate::app::AppState {
     /// The folders the composer offers: every folder something is working in,
     /// most recently used first, with the folder already on show kept where it
     /// is. A hidden agent counts, because work is work whether or not a pane
-    /// happens to be showing it.
+    /// happens to be showing it. A linked worktree is listed as its parent
+    /// checkout, so the directory control stays a list of places to start from
+    /// rather than a row for every checkout already created.
     ///
     /// It is rebuilt from what is running rather than remembered separately, so
     /// a space that closes takes its folder off the list and there is no second
@@ -110,6 +112,14 @@ impl crate::app::AppState {
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
     ) {
         let mut folders: Vec<PathBuf> = Vec::new();
+        let mut offer = |cwd: PathBuf| {
+            let Some(folder) = crate::workspace::composer_folder_path(&cwd) else {
+                return;
+            };
+            if !folders.contains(&folder) {
+                folders.push(folder);
+            }
+        };
         for ws in &self.workspaces {
             for tab in &ws.tabs {
                 for pane_id in tab.layout.pane_ids() {
@@ -117,9 +127,7 @@ impl crate::app::AppState {
                     else {
                         continue;
                     };
-                    if !folders.contains(&cwd) {
-                        folders.push(cwd);
-                    }
+                    offer(cwd);
                 }
             }
         }
@@ -136,15 +144,174 @@ impl crate::app::AppState {
             else {
                 continue;
             };
-            if !folders.contains(&cwd) {
-                folders.push(cwd);
-            }
+            offer(cwd);
         }
         if let Some(showing) = self.composer.folder_path() {
-            if !folders.iter().any(|folder| folder == showing) {
-                folders.insert(0, showing.to_path_buf());
+            if let Some(folder) = crate::workspace::composer_folder_path(showing) {
+                folders.retain(|listed| listed != &folder);
+                folders.insert(0, folder);
             }
         }
         self.composer.set_folders(folders);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::AppState;
+    use crate::terminal::{TerminalRuntimeRegistry, TerminalState};
+    use crate::workspace::Workspace;
+
+    fn committed_repo(name: &str) -> PathBuf {
+        let unique = format!(
+            "herdr-composer-folders-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let repo = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            ["init", "--quiet"].as_slice(),
+            ["config", "user.email", "herdr@example.invalid"].as_slice(),
+            ["config", "user.name", "Herdr Test"].as_slice(),
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::write(repo.join("README.md"), "test\n").unwrap();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "README.md"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["commit", "--quiet", "-m", "initial"])
+            .status()
+            .unwrap()
+            .success());
+        std::fs::canonicalize(&repo).unwrap()
+    }
+
+    fn add_worktree(repo: &std::path::Path, name: &str) -> PathBuf {
+        let checkout = repo.parent().unwrap().join(format!(
+            "{}-{name}",
+            repo.file_name().unwrap().to_string_lossy()
+        ));
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args([
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                &format!("worktree/{name}"),
+                checkout.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap()
+            .success());
+        std::fs::canonicalize(&checkout).unwrap()
+    }
+
+    fn state_working_in(cwd: PathBuf) -> AppState {
+        let mut state = AppState::test_new();
+        let ws = Workspace::test_new("space");
+        let pane_id = ws.tabs[0].root_pane;
+        let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
+        state.workspaces = vec![ws];
+        state.active = Some(0);
+        state
+            .terminals
+            .insert(terminal_id.clone(), TerminalState::new(terminal_id, cwd));
+        state
+    }
+
+    #[test]
+    fn composer_folders_list_the_parent_instead_of_a_linked_worktree() {
+        let repo = committed_repo("parent");
+        let checkout = add_worktree(&repo, "agent");
+        let mut state = state_working_in(checkout.clone());
+
+        state.refresh_composer_folders(&TerminalRuntimeRegistry::default());
+
+        let paths: Vec<_> = state
+            .composer
+            .folders
+            .iter()
+            .map(|folder| folder.path.clone())
+            .collect();
+        assert!(
+            paths.contains(&repo),
+            "the parent checkout should stay pickable"
+        );
+        assert!(
+            !paths.contains(&checkout),
+            "a linked worktree should not appear"
+        );
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force", checkout.to_str().unwrap()])
+            .status();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn two_linked_worktrees_of_the_same_repo_are_one_folder() {
+        let repo = committed_repo("shared");
+        let first = add_worktree(&repo, "first");
+        let second = add_worktree(&repo, "second");
+        let mut state = state_working_in(first.clone());
+        let extra = Workspace::test_new("other");
+        let pane_id = extra.tabs[0].root_pane;
+        let terminal_id = extra.tabs[0].panes[&pane_id].attached_terminal_id.clone();
+        state.workspaces.push(extra);
+        state.terminals.insert(
+            terminal_id.clone(),
+            TerminalState::new(terminal_id, second.clone()),
+        );
+
+        state.refresh_composer_folders(&TerminalRuntimeRegistry::default());
+
+        let paths: Vec<_> = state
+            .composer
+            .folders
+            .iter()
+            .map(|folder| folder.path.clone())
+            .collect();
+        assert_eq!(
+            paths.iter().filter(|path| *path == &repo).count(),
+            1,
+            "one parent, not one row per checkout"
+        );
+        assert!(!paths.contains(&first));
+        assert!(!paths.contains(&second));
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force", first.to_str().unwrap()])
+            .status();
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force", second.to_str().unwrap()])
+            .status();
+        let _ = std::fs::remove_dir_all(repo);
     }
 }
