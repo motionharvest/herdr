@@ -920,6 +920,34 @@ prunable stale
     }
 
     #[test]
+    fn landing_refuses_a_dirty_parent_checkout() {
+        let repo = create_committed_repo("worktree-land-dirty-parent");
+        let checkout = unique_temp_path("worktree-land-dirty-parent-checkout");
+        let branch = "worktree/test-land-dirty-parent";
+        run_worktree_command(&build_worktree_add_new_branch_command(
+            &repo, &checkout, branch, "HEAD",
+        ))
+        .unwrap();
+        std::fs::write(checkout.join("agent.txt"), "land me\n").unwrap();
+        run_git(&checkout, &["add", "agent.txt"]);
+        run_git(&checkout, &["commit", "--quiet", "-m", "agent work"]);
+        std::fs::write(repo.join("README.md"), "parent dirty\n").unwrap();
+
+        let error = land_worktree(&repo, &checkout, &[]).unwrap_err();
+
+        assert!(
+            error.contains("parent checkout has uncommitted changes"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("README.md")).unwrap(),
+            "parent dirty\n"
+        );
+        remove_worktree_and_branch(&repo, &checkout, true).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
     fn landing_stops_before_parent_on_verify_failure() {
         let repo = create_committed_repo("worktree-verify-repo");
         let checkout = unique_temp_path("worktree-verify-checkout");

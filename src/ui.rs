@@ -28,7 +28,7 @@ pub(crate) use self::agent_table::{
 pub(crate) use self::composer::ComposerLayout;
 use self::composer::{render_composer, render_composer_dropdown};
 use self::dialogs::{
-    render_confirm_close_agent_overlay, render_confirm_close_overlay,
+    render_confirm_close_agent_overlay, render_confirm_close_overlay, render_land_worktree_overlay,
     render_new_linked_worktree_overlay, render_open_existing_worktree_overlay,
     render_remove_worktree_overlay, render_rename_overlay,
 };
@@ -74,11 +74,11 @@ pub(crate) use self::{
 pub(crate) use self::{
     dialogs::{
         confirm_close_agent_button_rects, confirm_close_agent_popup_rect,
-        confirm_close_button_rects, confirm_close_popup_rect, new_linked_worktree_button_rects,
-        new_linked_worktree_inner_rect, open_existing_worktree_button_rects,
-        open_existing_worktree_inner_rect, open_existing_worktree_max_visible_rows,
-        open_existing_worktree_visible_start, remove_worktree_button_rects,
-        remove_worktree_popup_rect, rename_button_rects,
+        confirm_close_button_rects, confirm_close_popup_rect, land_worktree_close_rect,
+        land_worktree_popup_rect, new_linked_worktree_button_rects, new_linked_worktree_inner_rect,
+        open_existing_worktree_button_rects, open_existing_worktree_inner_rect,
+        open_existing_worktree_max_visible_rows, open_existing_worktree_visible_start,
+        remove_worktree_button_rects, remove_worktree_popup_rect, rename_button_rects,
     },
     settings::{
         settings_button_rects, settings_show_primary_action, SOUND_ALERT_ROWS_OFFSET,
@@ -369,6 +369,7 @@ pub fn render_with_runtime_registry(
             render_open_existing_worktree_overlay(app, frame, frame.area())
         }
         Mode::ConfirmRemoveWorktree => render_remove_worktree_overlay(app, frame, frame.area()),
+        Mode::WorktreeLand => render_land_worktree_overlay(app, frame, frame.area()),
         Mode::GlobalMenu => render_global_launcher_menu(app, frame),
         Mode::KeybindHelp => render_keybind_help_overlay(app, frame),
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),

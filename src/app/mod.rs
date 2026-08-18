@@ -388,6 +388,7 @@ impl App {
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
+            worktree_land: None,
             worktree_directory,
             worktree_verify_command: config.worktrees.verify.clone(),
             worktree_auto_land: config.worktrees.auto_land,
@@ -1363,6 +1364,9 @@ impl App {
             }
             Mode::ConfirmRemoveWorktree => {
                 self.handle_worktree_remove_key(key_event);
+            }
+            Mode::WorktreeLand => {
+                self.handle_worktree_land_key(key_event);
             }
             Mode::Resize => {
                 input::handle_resize_key(&mut self.state, key);

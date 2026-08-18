@@ -157,6 +157,22 @@ pub(crate) fn remove_worktree_popup_rect(area: Rect) -> Option<Rect> {
     centered_popup_rect(area, 72, 10)
 }
 
+pub(crate) fn land_worktree_popup_rect(area: Rect) -> Option<Rect> {
+    centered_popup_rect(area, 76, 14)
+}
+
+pub(crate) fn land_worktree_close_rect(inner: Rect) -> Rect {
+    action_button_row_rects(
+        inner,
+        &[ActionButtonSpec {
+            hint: Some("↵"),
+            label: "close",
+        }],
+        2,
+        inner.height.saturating_sub(1),
+    )[0]
+}
+
 pub(crate) fn remove_worktree_button_rects(inner: Rect, force_confirmation: bool) -> (Rect, Rect) {
     let primary_label = if force_confirmation {
         "delete anyway"
@@ -414,6 +430,103 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
             .bg(app.palette.surface0)
             .add_modifier(Modifier::BOLD),
     );
+}
+
+pub(super) fn render_land_worktree_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    let Some(land) = app.worktree_land.as_ref() else {
+        return;
+    };
+
+    super::dim_background(frame, area);
+    let Some(popup) = land_worktree_popup_rect(area) else {
+        return;
+    };
+    let Some(inner) = render_panel_shell(frame, popup, app.palette.accent, app.palette.panel_bg)
+    else {
+        return;
+    };
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .areas::<7>(inner);
+
+    render_modal_header(
+        frame,
+        rows[0],
+        &format!("land on {}", land.parent_branch),
+        &app.palette,
+    );
+    frame.render_widget(
+        Paragraph::new(" Commits uncommitted files if needed, rebases onto the parent branch,")
+            .style(Style::default().fg(app.palette.overlay0)),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(" then fast-forwards that parent checkout.")
+            .style(Style::default().fg(app.palette.overlay0)),
+        rows[2],
+    );
+    if !land.path.as_os_str().is_empty() {
+        frame.render_widget(
+            Paragraph::new(format!(" {}", land.path.display()))
+                .style(Style::default().fg(app.palette.text)),
+            rows[3],
+        );
+    }
+
+    let (status, status_style) = if land.landing {
+        (
+            format!(
+                " landing {} onto {}…",
+                if land.label.is_empty() {
+                    "worktree"
+                } else {
+                    land.label.as_str()
+                },
+                land.parent_branch
+            ),
+            Style::default().fg(app.palette.yellow),
+        )
+    } else if let Some(error) = &land.error {
+        (format!(" {error}"), Style::default().fg(app.palette.red))
+    } else if let (Some(title), Some(detail)) = (&land.result_title, &land.result_detail) {
+        (
+            format!(" {title}. {detail}"),
+            Style::default().fg(app.palette.green),
+        )
+    } else {
+        (
+            " waiting…".to_string(),
+            Style::default().fg(app.palette.overlay0),
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(status)
+            .style(status_style)
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        rows[5],
+    );
+
+    if !land.landing {
+        let close_rect = land_worktree_close_rect(inner);
+        render_action_button(
+            frame,
+            close_rect,
+            Some("↵"),
+            "close",
+            Style::default()
+                .fg(panel_contrast_fg(&app.palette))
+                .bg(app.palette.accent)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
 }
 
 pub(super) fn render_open_existing_worktree_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -909,6 +1022,56 @@ mod tests {
         assert!(text_at(Rect::new(inner.x, inner.y + 1, inner.width, 1)).contains("worker"));
         assert!(text_at(confirm).contains("remove"));
         assert!(text_at(cancel).contains("cancel"));
+    }
+
+    #[test]
+    fn the_land_overlay_shows_status_while_running_and_the_error_when_it_fails() {
+        let mut app = AppState::test_new();
+        app.mode = crate::app::Mode::WorktreeLand;
+        app.worktree_land = Some(crate::app::state::WorktreeLandState {
+            workspace_id: "ws".into(),
+            path: "/tmp/herdr-issue".into(),
+            label: "issue".into(),
+            parent_branch: "main".into(),
+            landing: true,
+            error: None,
+            result_title: None,
+            result_detail: None,
+        });
+        let area = Rect::new(0, 0, 106, 24);
+        app.view.terminal_area = area;
+        crate::ui::compute_view(&mut app, area);
+
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(106, 24))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| crate::ui::render(&app, frame))
+            .expect("draw");
+        let running = terminal.backend().buffer().clone();
+        let running_text: String = running
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+        assert!(running_text.contains("land on main"), "{running_text}");
+        assert!(running_text.contains("landing"), "{running_text}");
+
+        app.worktree_land.as_mut().unwrap().landing = false;
+        app.worktree_land.as_mut().unwrap().error = Some(
+            "parent checkout has uncommitted changes. The ! next to a directory means that checkout has uncommitted files."
+                .into(),
+        );
+        terminal
+            .draw(|frame| crate::ui::render(&app, frame))
+            .expect("draw");
+        let failed = terminal.backend().buffer().clone();
+        let failed_text: String = failed
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+        assert!(failed_text.contains("uncommitted"), "{failed_text}");
+        assert!(failed_text.contains("close"), "{failed_text}");
     }
 
     #[test]

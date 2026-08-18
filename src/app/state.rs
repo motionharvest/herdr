@@ -644,6 +644,18 @@ pub struct WorktreeRemoveState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeLandState {
+    pub workspace_id: String,
+    pub path: std::path::PathBuf,
+    pub label: String,
+    pub parent_branch: String,
+    pub landing: bool,
+    pub error: Option<String>,
+    pub result_title: Option<String>,
+    pub result_detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeOpenEntry {
     pub path: std::path::PathBuf,
     pub branch: Option<String>,
@@ -827,6 +839,7 @@ pub enum Mode {
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
+    WorktreeLand,
     Resize,
     ConfirmClose,
     ConfirmCloseAgent,
@@ -1425,6 +1438,7 @@ pub struct AppState {
     pub worktree_create: Option<WorktreeCreateState>,
     pub worktree_open: Option<WorktreeOpenState>,
     pub worktree_remove: Option<WorktreeRemoveState>,
+    pub worktree_land: Option<WorktreeLandState>,
     pub worktree_directory: String,
     pub worktree_verify_command: Vec<String>,
     pub worktree_auto_land: bool,
@@ -1804,6 +1818,7 @@ impl AppState {
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
+            worktree_land: None,
             worktree_directory: "/tmp/herdr-worktrees".into(),
             worktree_verify_command: Vec::new(),
             worktree_auto_land: false,

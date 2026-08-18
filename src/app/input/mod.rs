@@ -90,6 +90,7 @@ impl App {
                     Mode::NewLinkedWorktree => self.handle_worktree_create_key(key_event),
                     Mode::OpenExistingWorktree => self.handle_worktree_open_key(key_event),
                     Mode::ConfirmRemoveWorktree => self.handle_worktree_remove_key(key_event),
+                    Mode::WorktreeLand => self.handle_worktree_land_key(key_event),
                     Mode::Resize => handle_resize_key(&mut self.state, key),
                     Mode::ConfirmClose => handle_confirm_close_key(&mut self.state, key_event),
                     Mode::ConfirmCloseAgent => handle_confirm_close_agent_key(

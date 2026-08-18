@@ -196,7 +196,10 @@ impl AppState {
 
         if matches!(
             self.mode,
-            Mode::NewLinkedWorktree | Mode::OpenExistingWorktree | Mode::ConfirmRemoveWorktree
+            Mode::NewLinkedWorktree
+                | Mode::OpenExistingWorktree
+                | Mode::ConfirmRemoveWorktree
+                | Mode::WorktreeLand
         ) && !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
         {
             return None;
@@ -390,6 +393,29 @@ impl AppState {
                                 leave_modal(self);
                             }
                             _ => {}
+                        }
+                    }
+                    return None;
+                }
+
+                if self.mode == Mode::WorktreeLand {
+                    if let Some(popup) = crate::ui::land_worktree_popup_rect(self.screen_rect()) {
+                        let inner = Rect::new(
+                            popup.x + 1,
+                            popup.y + 1,
+                            popup.width.saturating_sub(2),
+                            popup.height.saturating_sub(2),
+                        );
+                        let close = crate::ui::land_worktree_close_rect(inner);
+                        if modal_action_from_buttons(
+                            mouse.column,
+                            mouse.row,
+                            &[(close, ModalAction::Cancel)],
+                        ) == Some(ModalAction::Cancel)
+                            && !self.worktree_land.as_ref().is_some_and(|land| land.landing)
+                        {
+                            self.worktree_land = None;
+                            leave_modal(self);
                         }
                     }
                     return None;
