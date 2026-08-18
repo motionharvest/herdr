@@ -32,8 +32,9 @@ use crate::detect::AgentState;
 use crate::layout::PaneId;
 use crate::terminal::TerminalRuntimeRegistry;
 
-/// The columns, left to right. Summary has no length of its own: it takes
-/// whatever the others leave, even though it is not last.
+/// The columns, left to right. Each is as wide as its widest cell, heading
+/// included, and leftover room stays empty at the right, so the row reads as
+/// one left-aligned line.
 ///
 /// State is not a column. The margin beside a row already says whether the
 /// agent is working, waiting on an answer, or finished, in one cell and in
@@ -365,10 +366,11 @@ fn position_of(entries: &[AgentPanelEntry], ws_idx: usize, pane_id: PaneId) -> O
         .position(|entry| entry.ws_idx == ws_idx && entry.pane_id == pane_id)
 }
 
-/// Every column is as wide as the widest cell in that group, heading included,
-/// except the summary, which takes whatever the others leave. A group is
-/// measured against its own agents only, so one group's long path does not
-/// stretch the same column in the group beside it.
+/// Every column is as wide as the widest cell in that group, heading included.
+/// Leftover room is not given to any column, so Directory sits next to Summary
+/// instead of at the far side of the group. A group is measured against its
+/// own agents only, so one group's long title does not stretch the same
+/// column in the group beside it.
 fn column_widths(app: &AppState, held: &[AgentPanelEntry], group_width: u16) -> Vec<usize> {
     let mut wanted: Vec<usize> = HEADINGS
         .iter()
@@ -376,27 +378,18 @@ fn column_widths(app: &AppState, held: &[AgentPanelEntry], group_width: u16) -> 
         .collect();
     for entry in held {
         for (column, text) in cell_texts(app, entry).iter().enumerate() {
-            if column == COL_SUMMARY {
-                continue;
-            }
             wanted[column] = wanted[column].max(text.chars().count());
         }
     }
-    // Each measured column takes what it wants or what is left, whichever is
-    // less. A group squeezed thin therefore loses its rightmost columns rather
-    // than spilling over the group beside it. Summary is skipped here and
-    // takes whatever remains, because a long title must not push Directory or
-    // Git Status off the row.
+    // Each column takes what it wants or what is left, whichever is less. A
+    // group squeezed thin therefore loses its rightmost columns rather than
+    // spilling over the group beside it.
     let mut room = (group_width as usize).saturating_sub(GUTTER as usize);
     let mut widths = vec![0usize; COLUMNS];
     for (column, width) in widths.iter_mut().enumerate() {
-        if column == COL_SUMMARY {
-            continue;
-        }
         *width = (wanted[column] + COLUMN_GAP).min(room);
         room -= *width;
     }
-    widths[COL_SUMMARY] = room;
     widths
 }
 
@@ -968,6 +961,7 @@ fn cell_line<'a>(
             };
             Line::styled(pad(text, width), style)
         }
+        COL_SUMMARY => Line::styled(pad(text, width), dim),
         COL_DIRECTORY => folder_line(app, entry, width, folders),
         COL_AGENT => Line::styled(
             pad(text, width),
@@ -1313,11 +1307,12 @@ mod tests {
     }
 
     #[test]
-    fn a_long_summary_does_not_steal_the_short_columns() {
+    fn the_columns_pack_left_and_summary_is_only_as_wide_as_its_text() {
         let mut state = state_with_agents(1);
         let pane_id = state.workspaces[0].tabs[0].root_pane;
         let path = "~/very/long/path/that/would/stretch/the/column/if/kept";
         let git = "feat/a-long-branch-name !";
+        let summary = "Fix the parser";
         state.view.agent_locations.insert(
             pane_id,
             AgentLocation {
@@ -1327,32 +1322,33 @@ mod tests {
         );
         let id = state.terminals.keys().next().cloned().expect("a terminal");
         if let Some(terminal) = state.terminals.get_mut(&id) {
-            terminal.session_title = Some(
-                "A long summary that would steal the row if it were measured like the others"
-                    .into(),
-            );
+            terminal.session_title = Some(summary.into());
         }
-        let (layout, _) = split_agent_table(&mut state, Rect::new(0, 0, 120, 20));
+        let (layout, _) = split_agent_table(&mut state, Rect::new(0, 0, 200, 20));
         let columns = &layout.groups[0].columns;
         let texts = cell_texts(&state, &row_of(&state, pane_id));
+        assert_eq!(texts[COL_SUMMARY], summary);
         assert_eq!(texts[COL_DIRECTORY], "kept");
-        assert_eq!(texts[COL_GIT], git);
-        assert!(
-            columns[COL_DIRECTORY].width < path.chars().count() as u16,
-            "directory {} kept the path's width {}",
-            columns[COL_DIRECTORY].width,
-            path.chars().count()
+        for window in columns.windows(2) {
+            assert_eq!(
+                window[1].x,
+                window[0].x + window[0].width,
+                "column at {} should sit against the one before it",
+                window[1].x
+            );
+        }
+        let summary_wanted = summary
+            .chars()
+            .count()
+            .max(HEADINGS[COL_SUMMARY].chars().count());
+        assert_eq!(
+            columns[COL_SUMMARY].width as usize,
+            summary_wanted + COLUMN_GAP
         );
+        let last = columns.last().expect("columns");
         assert!(
-            columns[COL_GIT].width as usize >= HEADINGS[COL_GIT].chars().count(),
-            "git status {} lost its heading",
-            columns[COL_GIT].width
-        );
-        assert!(
-            (columns[COL_SUMMARY].width as usize) < texts[COL_SUMMARY].chars().count(),
-            "summary {} was measured to its text {}",
-            columns[COL_SUMMARY].width,
-            texts[COL_SUMMARY].chars().count()
+            last.x + last.width < layout.groups[0].area.x + layout.groups[0].area.width,
+            "leftover room should stay empty at the right of the group"
         );
     }
 
