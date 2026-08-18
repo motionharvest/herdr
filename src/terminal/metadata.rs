@@ -342,7 +342,9 @@ impl TerminalState {
         enforce_ttl: bool,
     ) -> EffectivePresentation {
         let mut presentation = EffectivePresentation::empty();
-        presentation.title = self.newest_metadata_title(now, enforce_ttl);
+        presentation.title = self
+            .newest_metadata_title(now, enforce_ttl)
+            .or_else(|| self.session_title.clone());
         presentation.display_agent = self.newest_metadata_display_agent(now, enforce_ttl);
         presentation.state_labels = self.effective_metadata_state_labels(now, enforce_ttl);
         presentation.custom_status =

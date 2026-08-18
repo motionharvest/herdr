@@ -178,7 +178,7 @@ impl App {
         id: String,
         params: PaneReportAgentParams,
     ) -> String {
-        let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+        let Some(pane_id) = self.parse_reporting_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
@@ -208,7 +208,7 @@ impl App {
         id: String,
         params: PaneReportAgentSessionParams,
     ) -> String {
-        let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+        let Some(pane_id) = self.parse_reporting_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
@@ -235,7 +235,7 @@ impl App {
         id: String,
         params: PaneReportMetadataParams,
     ) -> String {
-        let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+        let Some(pane_id) = self.parse_reporting_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
         let agent_label = match params.agent.as_deref() {
@@ -331,7 +331,7 @@ impl App {
         id: String,
         params: PaneClearAgentAuthorityParams,
     ) -> String {
-        let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+        let Some(pane_id) = self.parse_reporting_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
         self.handle_internal_event(crate::events::AppEvent::HookAuthorityCleared {
@@ -348,7 +348,7 @@ impl App {
         id: String,
         params: PaneReleaseAgentParams,
     ) -> String {
-        let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+        let Some(pane_id) = self.parse_reporting_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
@@ -428,6 +428,9 @@ impl App {
         }
         let workspace_id = self.state.workspaces[ws_idx].id.clone();
         let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
+        // Closing a pane sets its agent down rather than ending it: the agent
+        // keeps running and keeps its table row, with no pane showing it.
+        self.state.set_down_agent_pane_by_id(ws_idx, pane_id);
         let should_close_workspace = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return pane_not_found(id, &target.pane_id);
@@ -555,6 +558,96 @@ mod tests {
             is_linked_worktree: true,
         });
         app
+    }
+
+    fn app_with_two_panes() -> (App, crate::layout::PaneId) {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        let pane_id = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.terminal_id_for_pane(0, pane_id).unwrap();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+        (app, pane_id)
+    }
+
+    #[tokio::test]
+    async fn a_set_down_agent_records_the_session_it_reports_so_a_restart_can_resume_it() {
+        let (mut app, _pane_id) = app_with_two_panes();
+
+        let detached_pane_id = app
+            .start_hidden_agent(
+                std::env::current_dir().unwrap(),
+                &["sleep".to_string(), "30".to_string()],
+                Some(crate::detect::Agent::Claude),
+            )
+            .unwrap_or_else(|_| panic!("hidden agent should start"));
+
+        let response = app.handle_pane_report_agent_session(
+            "report".into(),
+            PaneReportAgentSessionParams {
+                pane_id: format!("p_{}", detached_pane_id.raw()),
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                seq: Some(1),
+                agent_session_id: Some("45ec6637-9d30-4baf-a6fa-78968afab90c".into()),
+                agent_session_path: None,
+            },
+        );
+
+        assert!(
+            !response.contains("pane_not_found"),
+            "an agent set down is still reporting about itself: {response}"
+        );
+        let terminal_id = app.state.detached_agents[0]
+            .pane
+            .attached_terminal_id
+            .clone();
+        let session = app.state.terminals[&terminal_id]
+            .persisted_agent_session
+            .as_ref()
+            .expect("the reported session is the one a restart resumes");
+        assert_eq!(session.agent, "claude");
+        assert_eq!(
+            session.session_ref.value,
+            "45ec6637-9d30-4baf-a6fa-78968afab90c"
+        );
+
+        app.state.close_detached_agent(detached_pane_id);
+        app.shutdown_detached_terminal_runtimes();
+    }
+
+    #[test]
+    fn api_pane_close_sets_its_agent_down() {
+        let (mut app, pane_id) = app_with_two_panes();
+        let terminal_id = app.state.terminal_id_for_pane(0, pane_id).unwrap();
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        app.handle_pane_close(
+            "req".into(),
+            PaneTarget {
+                pane_id: public_pane_id,
+            },
+        );
+
+        assert!(app.state.workspaces[0].pane_state(pane_id).is_none());
+        assert!(app.state.terminals.contains_key(&terminal_id));
+        assert_eq!(app.state.detached_agents.len(), 1);
+        assert_eq!(app.state.detached_agents[0].pane_id, pane_id);
     }
 
     #[test]

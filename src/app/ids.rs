@@ -90,6 +90,34 @@ impl App {
             .or_else(|| self.pane_by_assigned_name(id))
     }
 
+    /// Resolve a pane that is reporting about itself.
+    ///
+    /// Every other lookup answers with the space a pane is in, because every
+    /// other caller has something to do there. A report has nothing to do
+    /// there: it carries what the agent knows about itself, and the terminal
+    /// that takes it is found by pane alone. An agent set down has no place in
+    /// a layout and is otherwise a whole agent, so this is the lookup that
+    /// finds it — without it a set-down agent's report is answered with "no
+    /// such pane", and the session id it was reporting is the one thing a
+    /// restart needs to bring that agent back where it left off.
+    pub(super) fn parse_reporting_pane_id(&self, id: &str) -> Option<crate::layout::PaneId> {
+        if let Some((_, pane_id)) = self.parse_pane_id(id) {
+            return Some(pane_id);
+        }
+        let raw = id.strip_prefix("p_")?.parse::<u32>().ok()?;
+        let pane_id = self
+            .state
+            .pane_id_aliases
+            .get(&raw)
+            .copied()
+            .unwrap_or_else(|| crate::layout::PaneId::from_raw(raw));
+        self.state
+            .detached_agents
+            .iter()
+            .any(|detached| detached.pane_id == pane_id)
+            .then_some(pane_id)
+    }
+
     fn parse_public_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
         let (ws_raw, pane_number_raw) = id.rsplit_once('-')?;
         let ws_idx = self.parse_workspace_id(ws_raw)?;
@@ -161,5 +189,38 @@ mod tests {
         let public_id = app.public_pane_id(0, pane_id).unwrap();
 
         assert_eq!(app.parse_pane_id(&public_id), Some((0, pane_id)));
+    }
+
+    #[test]
+    fn an_agent_set_down_can_still_be_found_by_what_it_reports_about_itself() {
+        let mut app = test_app();
+        let pane_id = crate::layout::PaneId::from_raw(4242);
+        let terminal_id = crate::terminal::TerminalId::alloc();
+        app.state
+            .detached_agents
+            .push(crate::app::state::DetachedAgent {
+                pane_id,
+                pane: crate::pane::PaneState::new(terminal_id),
+            });
+        let reported_id = format!("p_{}", pane_id.raw());
+
+        // A set-down agent has no place in a layout, so every lookup that
+        // answers with one turns its reports away. Its session id arrives on
+        // one of those reports, and without it a restart cannot bring the agent
+        // back where it left off.
+        assert_eq!(app.parse_pane_id(&reported_id), None);
+        assert_eq!(app.parse_reporting_pane_id(&reported_id), Some(pane_id));
+        assert_eq!(app.parse_reporting_pane_id("p_999999"), None);
+    }
+
+    #[test]
+    fn a_pane_in_a_layout_reports_as_itself() {
+        let app = test_app();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+
+        assert_eq!(
+            app.parse_reporting_pane_id(&format!("p_{}", pane_id.raw())),
+            Some(pane_id)
+        );
     }
 }

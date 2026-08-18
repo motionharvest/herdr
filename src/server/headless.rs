@@ -700,9 +700,6 @@ impl HeadlessServer {
         self.app.state.outer_terminal_focus = outer_terminal_focus;
         apply_keybindings(&mut self.app, &keybindings);
         self.sync_visible_server_config_diagnostic(uses_local_keybindings);
-        if outer_terminal_focus == Some(true) {
-            self.app.state.mark_active_tab_seen();
-        }
         if !host_terminal_theme.is_empty() {
             self.app.set_host_terminal_theme(host_terminal_theme);
         }
@@ -739,6 +736,15 @@ impl HeadlessServer {
                     pane_by_terminal.insert(pane.attached_terminal_id.clone(), pane_id.raw());
                 }
             }
+        }
+        // An agent with no pane is still an agent, and an update that dropped
+        // it would end work the user never asked to end. Its terminal is handed
+        // over under its own pane id, the same as any pane on screen.
+        for detached in &self.app.state.detached_agents {
+            pane_by_terminal.insert(
+                detached.pane.attached_terminal_id.clone(),
+                detached.pane_id.raw(),
+            );
         }
         if pane_by_terminal.len() > crate::server::handoff::MAX_FDS_PER_HANDOFF {
             let _ = std::fs::remove_file(&socket_path);
@@ -3564,71 +3570,6 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn foreground_client_applies_client_keybindings() {
-        let mut server = test_headless_server();
-        let local_config: crate::config::Config = toml::from_str(
-            r#"
-[keys]
-prefix = "ctrl+a"
-new_tab = "prefix+t"
-"#,
-        )
-        .unwrap();
-        let local_keybindings = local_config.live_keybinds().unwrap();
-        let (writer_a, _control_a, _render_a) = test_client_writer();
-        let (writer_b, _control_b, _render_b) = test_client_writer();
-
-        assert!(server.handle_server_event(ServerEvent::ClientConnected {
-            client_id: 1,
-            cols: 80,
-            rows: 24,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            render_encoding: RenderEncoding::SemanticFrame,
-            keybindings: Some(Box::new(local_keybindings)),
-            direct_attach_requested: false,
-            writer: writer_a,
-        }));
-        assert_eq!(
-            server.app.state.prefix_code,
-            crossterm::event::KeyCode::Char('a')
-        );
-        assert!(server
-            .app
-            .state
-            .keybinds
-            .new_tab
-            .bindings
-            .iter()
-            .any(|binding| binding.label == "prefix+t"));
-
-        assert!(server.handle_server_event(ServerEvent::ClientConnected {
-            client_id: 2,
-            cols: 80,
-            rows: 24,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            render_encoding: RenderEncoding::SemanticFrame,
-            keybindings: None,
-            direct_attach_requested: false,
-            writer: writer_b,
-        }));
-        assert_eq!(
-            server.app.state.prefix_code,
-            crossterm::event::KeyCode::Char('b')
-        );
-        assert!(server
-            .app
-            .state
-            .keybinds
-            .new_tab
-            .bindings
-            .iter()
-            .any(|binding| binding.label == "prefix+c"));
-    }
-
     #[test]
     fn local_keybinding_client_hides_server_keybinding_warnings() {
         let mut server = test_headless_server();
@@ -3673,73 +3614,6 @@ new_tab = "prefix+t"
             server.server_config_diagnostic
         );
     }
-
-    #[test]
-    fn local_keybinding_client_keeps_local_keybindings_after_settings_save() {
-        let path = std::env::temp_dir().join(format!(
-            "herdr-headless-settings-{}-{}.toml",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::write(&path, "onboarding = false\n").unwrap();
-        let _guard = crate::config::test_config_env_lock().lock().unwrap();
-        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
-
-        let mut server = test_headless_server();
-        let local_config: crate::config::Config = toml::from_str(
-            r#"
-[keys]
-prefix = "ctrl+a"
-new_workspace = "prefix+n"
-next_tab = ""
-"#,
-        )
-        .unwrap();
-        let local_keybindings = local_config.live_keybinds().unwrap();
-        let (writer, _control, _render) = test_client_writer();
-        assert!(server.handle_server_event(ServerEvent::ClientConnected {
-            client_id: 1,
-            cols: 80,
-            rows: 24,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            render_encoding: RenderEncoding::SemanticFrame,
-            keybindings: Some(Box::new(local_keybindings)),
-            direct_attach_requested: false,
-            writer,
-        }));
-        server.app.state.mode = crate::app::Mode::Settings;
-        server.app.state.settings.section = crate::app::state::SettingsSection::Toast;
-        server.app.state.settings.list.selected = 1;
-
-        assert!(server.handle_server_event(ServerEvent::ClientInput {
-            client_id: 1,
-            data: b"\r".to_vec(),
-        }));
-
-        assert_eq!(
-            server.app.state.prefix_code,
-            crossterm::event::KeyCode::Char('a')
-        );
-        assert!(server
-            .app
-            .state
-            .keybinds
-            .new_workspace
-            .bindings
-            .iter()
-            .any(|binding| binding.label == "prefix+n"));
-        assert!(server.app.state.toast.is_none());
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("delivery = \"herdr\""));
-
-        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
-        let _ = std::fs::remove_file(path);
-    }
-
     #[test]
     fn invalid_server_keybindings_do_not_cache_local_keybindings_after_settings_save() {
         let path = std::env::temp_dir().join(format!(

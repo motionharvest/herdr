@@ -21,14 +21,10 @@ enum WheelRouting {
     AlternateScroll,
 }
 
-const WORKSPACE_DRAG_THRESHOLD: u16 = 1;
-const TAB_DRAG_THRESHOLD: u16 = 1;
 const PANE_DRAG_THRESHOLD: u16 = 1;
-/// Agent rows are three lines tall, so a reorder drag has to clear the row it
-/// started on before it counts — otherwise a sloppy click would reshuffle the
-/// list.
-const AGENT_DRAG_THRESHOLD: u16 = 3;
 
+mod agent_table;
+mod composer;
 mod copy_mode;
 mod modal;
 mod mouse;
@@ -36,9 +32,13 @@ mod navigate;
 mod overlays;
 mod selection;
 mod settings;
-mod sidebar;
 mod terminal;
 
+pub(crate) use self::agent_table::{
+    agent_table_delete_intercept, confirm_close_agent_accept, confirm_close_agent_cancel,
+    handle_confirm_close_agent_key,
+};
+pub(crate) use self::composer::{enter_composer_mode, handle_composer_key, ComposerKeyOutcome};
 pub(crate) use self::{
     modal::{
         handle_confirm_close_key, handle_context_menu_key, handle_global_menu_key,
@@ -62,19 +62,29 @@ use super::App;
 
 impl App {
     pub(super) async fn handle_key(&mut self, key: TerminalKey) {
+        if agent_table_delete_intercept(&mut self.state, key) {
+            return;
+        }
         match self.state.mode {
             Mode::Terminal => self.handle_terminal_key(key).await,
             Mode::Prefix => self.handle_prefix_key(key),
             Mode::Navigate => self.handle_navigate_key(key),
             Mode::Copy => self.handle_copy_mode_key(key),
+            Mode::Composer => {
+                match handle_composer_key(&mut self.state, &self.terminal_runtimes, key) {
+                    ComposerKeyOutcome::Submit(pending) => self.submit_composer(*pending),
+                    ComposerKeyOutcome::Trouble(reason) => self.show_composer_trouble(reason),
+                    ComposerKeyOutcome::Edited => {}
+                }
+            }
             _ => {
                 let key_event = key.as_key_event();
                 match self.state.mode {
                     Mode::Onboarding => self.handle_onboarding_key(key_event),
                     Mode::ReleaseNotes => self.handle_release_notes_key(key_event),
                     Mode::ProductAnnouncement => self.handle_product_announcement_key(key_event),
-                    Mode::Prefix | Mode::Navigate | Mode::Copy => unreachable!(),
-                    Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
+                    Mode::Prefix | Mode::Navigate | Mode::Copy | Mode::Composer => unreachable!(),
+                    Mode::RenameWorkspace | Mode::RenamePane => {
                         handle_rename_key(&mut self.state, key_event)
                     }
                     Mode::NewLinkedWorktree => self.handle_worktree_create_key(key_event),
@@ -82,6 +92,11 @@ impl App {
                     Mode::ConfirmRemoveWorktree => self.handle_worktree_remove_key(key_event),
                     Mode::Resize => handle_resize_key(&mut self.state, key),
                     Mode::ConfirmClose => handle_confirm_close_key(&mut self.state, key_event),
+                    Mode::ConfirmCloseAgent => handle_confirm_close_agent_key(
+                        &mut self.state,
+                        &self.terminal_runtimes,
+                        key_event,
+                    ),
                     Mode::ContextMenu => {
                         handle_context_menu_key(
                             &mut self.state,
@@ -102,6 +117,32 @@ impl App {
     }
 
     pub(super) async fn handle_paste(&mut self, text: String) {
+        if self.state.mode == Mode::Composer {
+            match self.state.composer.focus {
+                // A pasted task keeps its lines: the field holds as many as it
+                // takes, and flattening them would join two thoughts into one.
+                crate::composer::Focus::Task => self.state.composer.task.insert_str(&text),
+                // A pasted path is the reason the path field exists, and typing
+                // into the folder control is what opens it — so a paste into it
+                // opens it too. A path is one line, so a paste of several
+                // contributes its first.
+                crate::composer::Focus::Folder => {
+                    if self.state.composer.open != Some(crate::composer::Focus::Folder) {
+                        self.state.refresh_composer_folders(&self.terminal_runtimes);
+                        self.state
+                            .composer
+                            .open_dropdown(crate::composer::Focus::Folder);
+                    }
+                    let first = text.lines().next().unwrap_or_default().to_string();
+                    self.state
+                        .composer
+                        .edit_path(|path| path.insert_str(&first));
+                }
+                crate::composer::Focus::Agent => {}
+            }
+            return;
+        }
+
         if self.state.mode != Mode::Terminal {
             return;
         }
@@ -252,24 +293,8 @@ impl App {
             return;
         }
 
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            && self.state.on_sidebar_divider(mouse.column, mouse.row)
-        {
-            let now = std::time::Instant::now();
-            let is_double_click = self
-                .last_sidebar_divider_click
-                .is_some_and(|last| now.duration_since(last) <= super::SIDEBAR_DOUBLE_CLICK_WINDOW);
-            self.last_sidebar_divider_click = Some(now);
-
-            if is_double_click {
-                self.state.sidebar_width = self.state.default_sidebar_width;
-                self.state.sidebar_width_source =
-                    crate::app::state::SidebarWidthSource::ConfigDefault;
-                self.state.sidebar_width_auto = false;
-                self.state.mark_session_dirty();
-                self.state.drag = None;
-                return;
-            }
+        if self.handle_agent_name_double_click(mouse) {
+            return;
         }
 
         if self.handle_modified_url_click(mouse) {
@@ -278,7 +303,6 @@ impl App {
 
         let handled_pane_double_click = self.handle_pane_double_click(mouse);
 
-        let previous_agent_panel_scope = self.state.agent_panel_scope;
         let previous_settings_section = self.state.settings.section;
         if !handled_pane_double_click {
             if let Some(action) = self.state.handle_mouse(&mut self.terminal_runtimes, mouse) {
@@ -309,10 +333,6 @@ impl App {
         {
             self.refresh_integration_recommendations();
         }
-        if self.state.agent_panel_scope != previous_agent_panel_scope {
-            self.save_agent_panel_scope(self.state.agent_panel_scope);
-        }
-
         if let Some(content) = self.state.request_clipboard_write.take() {
             if self
                 .event_tx
@@ -331,6 +351,46 @@ impl App {
             self.selection_autoscroll_deadline =
                 Some(std::time::Instant::now() + super::SELECTION_AUTOSCROLL_INTERVAL);
         }
+    }
+
+    fn handle_agent_name_double_click(&mut self, mouse: MouseEvent) -> bool {
+        if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) {
+            self.last_agent_name_click = None;
+            return false;
+        }
+
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+
+        if !mouse.modifiers.is_empty() || self.state.mode != Mode::Terminal {
+            self.last_agent_name_click = None;
+            return false;
+        }
+
+        let Some(hit) = self.state.agent_name_target_at(mouse.column, mouse.row) else {
+            self.last_agent_name_click = None;
+            return false;
+        };
+        let click = super::AgentNameClickState {
+            pane_id: hit.pane_id,
+            row: mouse.row,
+            col: mouse.column,
+            at: std::time::Instant::now(),
+        };
+        if !self
+            .last_agent_name_click
+            .is_some_and(|last| last.is_double_click_for(click))
+        {
+            self.last_agent_name_click = Some(click);
+            return false;
+        }
+
+        self.last_agent_name_click = None;
+        self.state.agent_press = None;
+        self.state.drag = None;
+        modal::open_rename_pane(&mut self.state, hit.pane_id);
+        self.state.mode == Mode::RenamePane
     }
 
     fn handle_modified_url_click(&mut self, mouse: MouseEvent) -> bool {
@@ -566,8 +626,6 @@ fn app_for_mouse_test() -> App {
     app.state.mode = Mode::Terminal;
     app.state.update_available = None;
     app.state.latest_release_notes_available = false;
-    app.state.view.sidebar_rect = ratatui::layout::Rect::default();
-    app.state.view.tab_bar_rect = ratatui::layout::Rect::new(0, 0, 106, 1);
     app.state.view.terminal_area = ratatui::layout::Rect::new(0, 1, 106, 19);
     app
 }

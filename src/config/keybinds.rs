@@ -269,6 +269,7 @@ pub struct Keybinds {
     pub close_workspace: ActionKeybinds,
     pub workspace_picker: ActionKeybinds,
     pub goto: ActionKeybinds,
+    pub composer: ActionKeybinds,
     pub detach: ActionKeybinds,
     pub reload_config: ActionKeybinds,
     pub open_notification_target: ActionKeybinds,
@@ -277,13 +278,7 @@ pub struct Keybinds {
     pub previous_agent: ActionKeybinds,
     pub next_agent: ActionKeybinds,
     pub focus_agent: Vec<IndexedKeybind>,
-    pub new_tab: ActionKeybinds,
-    pub rename_tab: ActionKeybinds,
-    pub previous_tab: ActionKeybinds,
-    pub next_tab: ActionKeybinds,
-    pub switch_tab: Vec<IndexedKeybind>,
     pub switch_workspace: Vec<IndexedKeybind>,
-    pub close_tab: ActionKeybinds,
     pub rename_pane: ActionKeybinds,
     pub edit_scrollback: ActionKeybinds,
     pub copy_mode: ActionKeybinds,
@@ -303,7 +298,6 @@ pub struct Keybinds {
     pub close_pane: ActionKeybinds,
     pub zoom: ActionKeybinds,
     pub resize_mode: ActionKeybinds,
-    pub toggle_sidebar: ActionKeybinds,
     pub custom_commands: Vec<CustomCommandKeybind>,
 }
 
@@ -449,6 +443,7 @@ impl Config {
             close_workspace: action!("keys.close_workspace", &self.keys.close_workspace),
             workspace_picker: action!("keys.workspace_picker", &self.keys.workspace_picker),
             goto: action!("keys.goto", &self.keys.goto),
+            composer: action!("keys.composer", &self.keys.composer),
             detach: action!("keys.detach", &self.keys.detach),
             reload_config: action!("keys.reload_config", &self.keys.reload_config),
             open_notification_target: action!(
@@ -460,13 +455,7 @@ impl Config {
             previous_agent: action!("keys.previous_agent", &self.keys.previous_agent),
             next_agent: action!("keys.next_agent", &self.keys.next_agent),
             focus_agent: indexed!("keys.focus_agent", &self.keys.focus_agent),
-            new_tab: action!("keys.new_tab", &self.keys.new_tab),
-            rename_tab: action!("keys.rename_tab", &self.keys.rename_tab),
-            previous_tab: action!("keys.previous_tab", &self.keys.previous_tab),
-            next_tab: action!("keys.next_tab", &self.keys.next_tab),
-            switch_tab: indexed!("keys.switch_tab", &self.keys.switch_tab),
             switch_workspace: indexed!("keys.switch_workspace", &self.keys.switch_workspace),
-            close_tab: action!("keys.close_tab", &self.keys.close_tab),
             rename_pane: action!("keys.rename_pane", &self.keys.rename_pane),
             edit_scrollback: action!("keys.edit_scrollback", &self.keys.edit_scrollback),
             copy_mode: action!("keys.copy_mode", &self.keys.copy_mode),
@@ -489,17 +478,9 @@ impl Config {
             close_pane: action!("keys.close_pane", &self.keys.close_pane),
             zoom: action!("keys.zoom", &self.keys.zoom),
             resize_mode: action!("keys.resize_mode", &self.keys.resize_mode),
-            toggle_sidebar: action!("keys.toggle_sidebar", &self.keys.toggle_sidebar),
             custom_commands: Vec::new(),
         };
 
-        append_legacy_indexed_bindings(
-            &mut keybinds.switch_tab,
-            "keys.indexed.tabs",
-            &self.keys.indexed.tabs,
-            &mut registry,
-            &mut diagnostics,
-        );
         append_legacy_indexed_bindings(
             &mut keybinds.switch_workspace,
             "keys.indexed.workspaces",
@@ -1269,26 +1250,6 @@ prefix = "ö"
             Some((KeyCode::Char('&'), KeyModifiers::empty()))
         );
     }
-
-    #[test]
-    fn prefix_binding_is_not_direct_binding() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-next_tab = "prefix+n"
-"#,
-        )
-        .unwrap();
-        let kb = config.keybinds();
-        assert_eq!(
-            binding_triggers(&kb.next_tab),
-            vec![BindingTrigger::Prefix((
-                KeyCode::Char('n'),
-                KeyModifiers::empty()
-            ))]
-        );
-    }
-
     #[test]
     fn new_worktree_defaults_to_prefix_shift_g() {
         let kb = Config::default().keybinds();
@@ -1337,55 +1298,6 @@ next_tab = "prefix+n"
         let kb = Config::default().keybinds();
         assert!(kb.last_pane.bindings.is_empty());
     }
-
-    #[test]
-    fn array_bindings_allow_prefix_and_modified_direct() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-next_tab = ["prefix+n", "ctrl+alt+]"]
-"#,
-        )
-        .unwrap();
-        let kb = config.keybinds();
-        assert_eq!(
-            binding_triggers(&kb.next_tab),
-            vec![
-                BindingTrigger::Prefix((KeyCode::Char('n'), KeyModifiers::empty())),
-                BindingTrigger::Direct((
-                    KeyCode::Char(']'),
-                    KeyModifiers::CONTROL | KeyModifiers::ALT
-                )),
-            ]
-        );
-        assert_eq!(kb.next_tab.prefix_rhs_label().as_deref(), Some("n"));
-    }
-
-    #[test]
-    fn unsafe_direct_printable_binding_is_disabled_with_diagnostic() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-new_tab = "c"
-close_tab = "X"
-"#,
-        )
-        .unwrap();
-        let diagnostics = config.collect_diagnostics();
-        let keybinds = config.keybinds();
-        assert!(keybinds.new_tab.bindings.is_empty());
-        assert!(keybinds.close_tab.bindings.is_empty());
-        assert!(
-            diagnostics
-                .iter()
-                .any(|diag| diag.contains("unsafe direct keybinding")
-                    && diag.contains("keys.new_tab"))
-        );
-        assert!(diagnostics.iter().any(
-            |diag| diag.contains("unsafe direct keybinding") && diag.contains("keys.close_tab")
-        ));
-    }
-
     #[test]
     fn shifted_letter_binding_matches_uppercase_key_event() {
         let bindings = ActionKeybinds::prefix("shift+n");
@@ -1562,38 +1474,6 @@ navigate_workspace_up = ["esc", "alt+esc", "enter", "1", "tab", "shift+tab", "le
             8
         );
     }
-
-    #[test]
-    fn navigate_bindings_can_reuse_navigate_mode_prefix_rhs_keys() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-navigate_workspace_down = ["n", "f"]
-
-[[keys.command]]
-key = "prefix+f"
-command = "echo hi"
-"#,
-        )
-        .unwrap();
-        let keybinds = config.keybinds();
-        let diagnostics = config.collect_diagnostics();
-
-        assert!(keybinds
-            .navigate
-            .workspace_down
-            .matches_direct_key(TerminalKey::new(KeyCode::Char('n'), KeyModifiers::empty())));
-        assert!(keybinds
-            .navigate
-            .workspace_down
-            .matches_direct_key(TerminalKey::new(KeyCode::Char('f'), KeyModifiers::empty())));
-        assert!(!keybinds.custom_commands.is_empty());
-        assert!(!diagnostics.iter().any(|diag| {
-            diag.contains("disabled keys.navigate_workspace_down")
-                && (diag.contains("keys.next_tab") || diag.contains("keys.command"))
-        }));
-    }
-
     #[test]
     fn navigate_bindings_do_not_conflict_with_general_focus_pane_bindings() {
         let config: Config = toml::from_str(
@@ -1674,29 +1554,6 @@ command = "echo no"
             diag.contains("unsafe direct keybinding") && diag.contains("keys.command[0].key")
         }));
     }
-
-    #[test]
-    fn direct_custom_binding_conflicting_with_builtin_is_disabled() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-new_tab = "ctrl+alt+g"
-
-[[keys.command]]
-key = "ctrl+alt+g"
-command = "echo no"
-"#,
-        )
-        .unwrap();
-        let diagnostics = config.collect_diagnostics();
-        let keybinds = config.keybinds();
-        assert!(!keybinds.new_tab.bindings.is_empty());
-        assert!(keybinds.custom_commands.is_empty());
-        assert!(diagnostics.iter().any(|diag| {
-            diag.contains("kept keys.new_tab") && diag.contains("disabled keys.command[0].key")
-        }));
-    }
-
     #[test]
     fn prefixed_indexed_bindings_support_modifiers() {
         let config: Config = toml::from_str(
@@ -1714,54 +1571,6 @@ switch_workspace = "prefix+shift+1..9"
         );
         assert_eq!(kb.switch_workspace[0].label, "prefix+shift+1");
     }
-
-    #[test]
-    fn default_keymap_is_prefix_first_and_tab_centered() {
-        let kb = Config::default().keybinds();
-        assert_eq!(
-            binding_triggers(&kb.next_tab),
-            vec![BindingTrigger::Prefix((
-                KeyCode::Char('n'),
-                KeyModifiers::empty()
-            ))]
-        );
-        assert_eq!(
-            binding_triggers(&kb.previous_tab),
-            vec![BindingTrigger::Prefix((
-                KeyCode::Char('p'),
-                KeyModifiers::empty()
-            ))]
-        );
-        assert_eq!(kb.switch_tab.len(), 9);
-        assert!(kb
-            .switch_tab
-            .iter()
-            .all(|binding| binding.trigger.is_prefix()));
-        assert!(kb
-            .new_tab
-            .bindings
-            .iter()
-            .all(|binding| binding.trigger.is_prefix()));
-    }
-
-    #[test]
-    fn duplicate_prefix_binding_disables_later_binding() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-next_tab = "prefix+n"
-new_workspace = "prefix+n"
-"#,
-        )
-        .unwrap();
-        let diagnostics = config.collect_diagnostics();
-        let kb = config.keybinds();
-        assert!(kb.next_tab.bindings.is_empty() || kb.new_workspace.bindings.is_empty());
-        assert!(diagnostics.iter().any(|diag| {
-            diag.contains("kept keys.new_workspace") && diag.contains("disabled keys.next_tab")
-        }));
-    }
-
     #[test]
     fn custom_command_with_description_parses() {
         let config: Config = toml::from_str(

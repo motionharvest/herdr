@@ -90,6 +90,7 @@ pub(super) fn global_menu_actions(state: &AppState) -> Vec<GlobalMenuAction> {
 }
 
 pub(super) fn open_global_menu(state: &mut AppState) {
+    state.composer.close_dropdown();
     state.global_menu = MenuListState::new(0);
     state.mode = Mode::GlobalMenu;
 }
@@ -309,52 +310,17 @@ pub(super) fn open_rename_workspace(
     state.mode = Mode::RenameWorkspace;
 }
 
-pub(super) fn open_rename_active_tab(state: &mut AppState, replace_on_type: bool) {
-    state.creating_new_tab = false;
-    state.requested_new_tab_name = None;
-    state.rename_pane_target = None;
-    if let Some(ws) = state.active.and_then(|i| state.workspaces.get(i)) {
-        if let Some(name) = ws.active_tab_display_name() {
-            state.name_input = name;
-            state.name_input_replace_on_type = replace_on_type;
-            state.mode = Mode::RenameTab;
-        }
-    }
-}
-
 pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::PaneId) {
-    let Some(ws) = state.active.and_then(|i| state.workspaces.get(i)) else {
+    let Some(terminal_id) = terminal_id_for_pane(state, pane_id) else {
         return;
     };
-    let Some(pane) = ws.pane_state(pane_id) else {
-        return;
-    };
-    let terminal = state.terminals.get(&pane.attached_terminal_id);
-    state.creating_new_tab = false;
-    state.requested_new_tab_name = None;
+    let terminal = state.terminals.get(&terminal_id);
     state.rename_pane_target = Some(pane_id);
     state.name_input = terminal
         .and_then(|t| t.manual_label.clone())
         .unwrap_or_default();
     state.name_input_replace_on_type = terminal.and_then(|t| t.manual_label.as_ref()).is_none();
     state.mode = Mode::RenamePane;
-}
-
-fn next_new_tab_default_name(state: &AppState) -> String {
-    state
-        .active
-        .and_then(|i| state.workspaces.get(i))
-        .map(|ws| (ws.tabs.len() + 1).to_string())
-        .unwrap_or_else(|| "1".to_string())
-}
-
-pub(super) fn open_new_tab_dialog(state: &mut AppState) {
-    state.creating_new_tab = true;
-    state.requested_new_tab_name = None;
-    state.rename_pane_target = None;
-    state.name_input = next_new_tab_default_name(state);
-    state.name_input_replace_on_type = true;
-    state.mode = Mode::RenameTab;
 }
 
 pub(super) fn leave_modal(state: &mut AppState) {
@@ -427,44 +393,12 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                     crate::logging::workspace_renamed(&workspace_id);
                     state.mark_session_dirty();
                 }
-                Mode::RenameTab if state.creating_new_tab => {
-                    state.request_new_tab = true;
-                    let default_name = next_new_tab_default_name(state);
-                    state.requested_new_tab_name =
-                        if new_name.is_empty() || new_name == default_name {
-                            None
-                        } else {
-                            Some(new_name)
-                        };
-                }
-                Mode::RenameTab => {
-                    if let Some(ws_idx) = state.active {
-                        if let Some(ws) = state.workspaces.get_mut(ws_idx) {
-                            let workspace_id = ws.id.clone();
-                            let active_tab = ws.active_tab;
-                            if let Some(tab) = ws.active_tab_mut() {
-                                let keep_auto_name =
-                                    tab.is_auto_named() && new_name == tab.number.to_string();
-                                if !new_name.is_empty() && !keep_auto_name {
-                                    tab.set_custom_name(new_name);
-                                    let tab_id = format!("{}:{}", workspace_id, active_tab + 1);
-                                    crate::logging::tab_renamed(&workspace_id, &tab_id);
-                                    state.mark_session_dirty();
-                                }
-                            }
-                        }
-                    }
-                }
                 Mode::RenamePane => {
-                    if let (Some(ws_idx), Some(pane_id)) = (state.active, state.rename_pane_target)
-                    {
-                        if let Some(ws) = state.workspaces.get(ws_idx) {
-                            if let Some(pane) = ws.pane_state(pane_id) {
-                                let terminal_id = pane.attached_terminal_id.clone();
-                                if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
-                                    terminal.set_manual_label(new_name);
-                                    state.mark_session_dirty();
-                                }
+                    if let Some(pane_id) = state.rename_pane_target {
+                        if let Some(terminal_id) = terminal_id_for_pane(state, pane_id) {
+                            if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
+                                terminal.set_manual_label(new_name);
+                                state.mark_session_dirty();
                             }
                         }
                     }
@@ -491,6 +425,24 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
         }
         _ => {}
     }
+}
+
+fn terminal_id_for_pane(
+    state: &AppState,
+    pane_id: crate::layout::PaneId,
+) -> Option<crate::terminal::TerminalId> {
+    state
+        .workspaces
+        .iter()
+        .find_map(|workspace| workspace.pane_state(pane_id))
+        .map(|pane| pane.attached_terminal_id.clone())
+        .or_else(|| {
+            state
+                .detached_agents
+                .iter()
+                .find(|agent| agent.pane_id == pane_id)
+                .map(|agent| agent.pane.attached_terminal_id.clone())
+        })
 }
 
 fn clear_rename_input(state: &mut AppState) {
@@ -644,85 +596,28 @@ pub(super) fn apply_context_menu_action(
 ) {
     let item = menu.items().get(idx).copied();
     match (menu.kind, item) {
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
+        (ContextMenuKind::DetachedAgent { pane_id }, Some("Close agent")) => {
+            state.close_detached_agent(pane_id);
+            leave_modal(state);
+        }
+        (ContextMenuKind::Agent { ws_idx, .. }, Some("New worktree")) => {
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete worktree checkout...")) => {
+        (ContextMenuKind::Agent { ws_idx, .. }, Some("Delete worktree checkout...")) => {
             state.request_remove_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open worktree...")) => {
+        (ContextMenuKind::Agent { ws_idx, .. }, Some("Open worktree...")) => {
             state.request_open_existing_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (
-            ContextMenuKind::GitWorkspace {
-                ws_idx, collapsed, ..
-            },
-            Some("Collapse" | "Expand"),
-        ) => {
-            if let Some(key) = state
-                .workspaces
-                .get(ws_idx)
-                .and_then(|ws| ws.worktree_space())
-                .map(|space| space.key.clone())
-            {
-                if collapsed {
-                    state.collapsed_space_keys.remove(&key);
-                } else {
-                    state.collapsed_space_keys.insert(key);
-                }
-                state.mark_session_dirty();
-            }
+        (ContextMenuKind::Agent { pane_id, .. }, Some("Move to new space")) => {
+            state.promote_pane_to_new_workspace(pane_id);
             leave_modal(state);
         }
-        (
-            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("Rename"),
-        ) => {
-            open_rename_workspace(state, terminal_runtimes, ws_idx);
-        }
-        (
-            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("Close" | "Close group"),
-        ) => {
-            state.selected = ws_idx;
-            if state.confirm_close {
-                open_confirm_close(state);
-            } else {
-                state.close_selected_workspace();
-                state.mode = Mode::Navigate;
-            }
-        }
-        (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("New tab")) => {
-            state.selected = ws_idx;
-            state.active = Some(ws_idx);
-            state.switch_tab(tab_idx);
-            open_new_tab_dialog(state);
-        }
-        (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Rename")) => {
-            state.selected = ws_idx;
-            state.active = Some(ws_idx);
-            state.switch_tab(tab_idx);
-            open_rename_active_tab(state, false);
-        }
-        (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Close")) => {
-            state.selected = ws_idx;
-            state.active = Some(ws_idx);
-            state.switch_tab(tab_idx);
-            if !state.close_tab() {
-                state.mode = if state.active.is_some() {
-                    Mode::Terminal
-                } else {
-                    Mode::Navigate
-                };
-            }
-        }
-        (
-            ContextMenuKind::Agent { pane_id, .. } | ContextMenuKind::Pane { pane_id, .. },
-            Some("Rename pane"),
-        ) => {
+        (ContextMenuKind::Agent { pane_id, .. }, Some("Rename agent"))
+        | (ContextMenuKind::Pane { pane_id, .. }, Some("Rename pane")) => {
             open_rename_pane(state, pane_id);
         }
         (ContextMenuKind::Pane { pane_id, .. }, Some("Clear pane name")) => {
@@ -755,10 +650,7 @@ pub(super) fn apply_context_menu_action(
             state.toggle_pane_dimmed(pane_id);
             state.mode = Mode::Terminal;
         }
-        (
-            ContextMenuKind::Agent { pane_id, .. } | ContextMenuKind::Pane { pane_id, .. },
-            Some("Reset agent"),
-        ) => {
+        (ContextMenuKind::Pane { pane_id, .. }, Some("Reset agent")) => {
             state.reset_agent_in_pane(terminal_runtimes, pane_id);
             leave_modal(state);
         }
@@ -830,9 +722,8 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::layout::Rect;
 
-    use super::super::{capture_snapshot, state_with_workspaces};
+    use super::super::state_with_workspaces;
     use super::*;
 
     fn config_env_lock() -> &'static std::sync::Mutex<()> {
@@ -946,96 +837,6 @@ mod tests {
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
-
-    #[test]
-    fn rename_modal_keyboard_and_mouse_share_actions() {
-        let mut state = state_with_workspaces(&["test"]);
-        state.mode = Mode::RenameWorkspace;
-        state.name_input = "hello".into();
-
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-        );
-        assert!(state.name_input.is_empty());
-
-        state.name_input = "renamed".into();
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
-        );
-        assert_eq!(state.mode, Mode::Terminal);
-        assert_eq!(state.workspaces[0].display_name(), "renamed");
-        let snapshot = capture_snapshot(&state);
-        assert_eq!(
-            snapshot.workspaces[0].custom_name.as_deref(),
-            Some("renamed")
-        );
-
-        state.view.sidebar_rect = Rect::new(0, 0, 26, 20);
-        state.view.terminal_area = Rect::new(26, 0, 80, 20);
-        state.mode = Mode::RenameWorkspace;
-        state.name_input = "mouse".into();
-        let inner = state.rename_modal_inner().unwrap();
-        let (save, _, _) = crate::ui::rename_button_rects(inner);
-        let action = modal_action_from_buttons(save.x, save.y, &[(save, ModalAction::Save)]);
-        assert_eq!(action, Some(ModalAction::Save));
-    }
-
-    #[test]
-    fn tab_rename_updates_captured_snapshot() {
-        let mut state = state_with_workspaces(&["test"]);
-        state.mode = Mode::RenameTab;
-        state.name_input = "logs".into();
-
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
-        );
-
-        let snapshot = capture_snapshot(&state);
-        assert_eq!(
-            snapshot.workspaces[0].tabs[0].custom_name.as_deref(),
-            Some("logs")
-        );
-    }
-
-    #[test]
-    fn rename_cancel_returns_to_terminal_when_workspace_is_active() {
-        let mut state = state_with_workspaces(&["test"]);
-        state.mode = Mode::RenameTab;
-        state.name_input = "test".into();
-
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Terminal);
-        assert!(state.name_input.is_empty());
-    }
-
-    #[test]
-    fn rename_modal_replaces_prefilled_text_on_first_type() {
-        let mut state = state_with_workspaces(&["test"]);
-        state.mode = Mode::RenameTab;
-        state.name_input = "2".into();
-        state.name_input_replace_on_type = true;
-
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()),
-        );
-        assert_eq!(state.name_input, "n");
-        assert!(!state.name_input_replace_on_type);
-
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::empty()),
-        );
-        assert_eq!(state.name_input, "ne");
-    }
-
     #[test]
     fn rename_modal_handles_line_editing_shortcuts() {
         let mut state = state_with_workspaces(&["test"]);
@@ -1107,111 +908,6 @@ mod tests {
         );
         assert_eq!(state.name_input, "websiteZ");
     }
-
-    #[test]
-    fn open_rename_active_tab_can_prefill_default_new_tab_name() {
-        let mut state = state_with_workspaces(&["test"]);
-        state.workspaces[0].test_add_tab(None);
-        state.workspaces[0].switch_tab(1);
-
-        open_rename_active_tab(&mut state, true);
-
-        assert_eq!(state.mode, Mode::RenameTab);
-        assert_eq!(state.name_input, "2");
-        assert!(state.name_input_replace_on_type);
-    }
-
-    #[test]
-    fn cancel_new_tab_dialog_leaves_workspace_unchanged() {
-        let mut state = state_with_workspaces(&["test"]);
-        open_new_tab_dialog(&mut state);
-
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Terminal);
-        assert!(!state.creating_new_tab);
-        assert!(!state.request_new_tab);
-        assert!(state.requested_new_tab_name.is_none());
-        assert_eq!(state.workspaces[0].tabs.len(), 1);
-    }
-
-    #[test]
-    fn saving_new_tab_dialog_requests_creation_with_name() {
-        let mut state = state_with_workspaces(&["test"]);
-        open_new_tab_dialog(&mut state);
-        state.name_input = "logs".into();
-        state.name_input_replace_on_type = false;
-
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Terminal);
-        assert!(!state.creating_new_tab);
-        assert!(state.request_new_tab);
-        assert_eq!(state.requested_new_tab_name.as_deref(), Some("logs"));
-    }
-
-    #[test]
-    fn saving_new_tab_dialog_with_default_name_keeps_tab_auto_named() {
-        let mut state = state_with_workspaces(&["test"]);
-        open_new_tab_dialog(&mut state);
-
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Terminal);
-        assert!(!state.creating_new_tab);
-        assert!(state.request_new_tab);
-        assert!(state.requested_new_tab_name.is_none());
-    }
-
-    #[test]
-    fn closing_first_auto_tab_resets_remaining_auto_tab_and_next_prompt() {
-        let mut state = state_with_workspaces(&["test"]);
-        open_new_tab_dialog(&mut state);
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
-        );
-
-        state.workspaces[0].test_add_tab(state.requested_new_tab_name.as_deref());
-        state.request_new_tab = false;
-        state.requested_new_tab_name = None;
-
-        state.workspaces[0].close_tab(0);
-        state.workspaces[0].switch_tab(0);
-
-        assert_eq!(state.workspaces[0].tabs[0].display_name(), "1");
-        assert!(state.workspaces[0].tabs[0].custom_name.is_none());
-
-        open_new_tab_dialog(&mut state);
-        assert_eq!(state.name_input, "2");
-    }
-
-    #[test]
-    fn renaming_auto_tab_to_its_default_number_keeps_it_auto_named() {
-        let mut state = state_with_workspaces(&["test"]);
-        state.workspaces[0].test_add_tab(None);
-        state.workspaces[0].switch_tab(1);
-
-        open_rename_active_tab(&mut state, false);
-        handle_rename_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Terminal);
-        assert!(state.workspaces[0].tabs[1].custom_name.is_none());
-        assert_eq!(state.workspaces[0].tabs[1].display_name(), "2");
-    }
-
     #[test]
     fn confirm_close_keyboard_actions_are_direct_not_focused() {
         let mut state = state_with_workspaces(&["a", "b"]);
@@ -1256,50 +952,6 @@ mod tests {
         assert_eq!(state.workspaces[0].display_name(), "main");
         assert_eq!(state.mode, Mode::Terminal);
     }
-
-    #[test]
-    fn context_menu_close_group_opens_group_close_confirmation() {
-        let mut state = state_with_workspaces(&["main", "issue"]);
-        state.active = Some(0);
-        state.selected = 1;
-        state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr".into(),
-            is_linked_worktree: false,
-        });
-        state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr-issue".into(),
-            is_linked_worktree: true,
-        });
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 0,
-                is_linked_worktree: false,
-                has_worktree_children: true,
-                collapsed: false,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
-        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-
-        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, 1);
-
-        assert_eq!(state.selected, 0);
-        assert_eq!(state.mode, Mode::ConfirmClose);
-
-        confirm_close_accept(&mut state);
-
-        assert!(state.workspaces.is_empty());
-        assert_eq!(state.mode, Mode::Navigate);
-    }
-
     #[test]
     fn context_menu_close_pane_last_parent_group_pane_keeps_confirmation_mode() {
         let mut state = state_with_workspaces(&["main", "issue"]);

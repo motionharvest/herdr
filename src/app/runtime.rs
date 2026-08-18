@@ -7,13 +7,16 @@ use super::{
     ANIMATION_INTERVAL, AUTO_UPDATE_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL,
     MIN_RENDER_INTERVAL, RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
 };
+use crate::detect::AgentState;
 use crate::events::AppEvent;
 use crate::workspace::{GitStatusCacheEntry, Workspace, WorkspaceGitStatus};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceGitRefreshItem {
-    pub(crate) workspace_id: String,
+    /// The space the answer belongs to, or `None` for a set-down agent, which
+    /// belongs to no space and is addressed by its pane alone.
+    pub(crate) workspace_id: Option<String>,
     pub(crate) pane_id: Option<crate::layout::PaneId>,
     pub(crate) resolved_identity_cwd: std::path::PathBuf,
     pub(crate) cache_key: std::path::PathBuf,
@@ -21,7 +24,7 @@ pub(crate) struct WorkspaceGitRefreshItem {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceGitRefreshTarget {
-    pub(crate) workspace_id: String,
+    pub(crate) workspace_id: Option<String>,
     pub(crate) pane_id: Option<crate::layout::PaneId>,
     pub(crate) resolved_identity_cwd: std::path::PathBuf,
 }
@@ -151,7 +154,6 @@ impl App {
                     self.request_full_redraw();
                 }
                 self.state.outer_terminal_focus = Some(true);
-                self.state.mark_active_tab_seen();
                 true
             }
             crate::raw_input::RawInputEvent::OuterFocusLost => {
@@ -318,25 +320,24 @@ impl App {
         }
     }
 
+    /// Whether anything in the table is animating, which is what keeps the
+    /// frame ticking. Only a working agent animates: the done and blocked
+    /// markers are still glyphs, and the done marker now waits to be clicked,
+    /// so counting it here would leave the frame clock running for as long as
+    /// the marker sat there. Every space is asked, because the table lists them
+    /// all, and so is every set-down agent: a row spins whether or not a pane
+    /// is showing that agent.
     fn agent_panel_has_animation(&self) -> bool {
-        match self.state.agent_panel_scope {
-            crate::app::state::AgentPanelScope::CurrentWorkspace => self
-                .state
-                .active
-                .and_then(|idx| self.state.workspaces.get(idx))
-                .is_some_and(|ws| {
-                    ws.has_working_pane(&self.state.terminals)
-                        || ws.has_unseen_idle_pane(&self.state.terminals)
-                        || ws.has_blocked_pane(&self.state.terminals)
-                }),
-            crate::app::state::AgentPanelScope::AllWorkspaces => {
-                self.state.workspaces.iter().any(|ws| {
-                    ws.has_working_pane(&self.state.terminals)
-                        || ws.has_unseen_idle_pane(&self.state.terminals)
-                        || ws.has_blocked_pane(&self.state.terminals)
-                })
-            }
-        }
+        self.state
+            .workspaces
+            .iter()
+            .any(|ws| ws.has_working_pane(&self.state.terminals))
+            || self.state.detached_agents.iter().any(|detached| {
+                self.state
+                    .terminals
+                    .get(&detached.pane.attached_terminal_id)
+                    .is_some_and(|terminal| terminal.state == AgentState::Working)
+            })
     }
 
     pub(crate) fn tick_selection_autoscroll(&mut self, now: Instant) {
@@ -521,6 +522,9 @@ impl App {
                     if terminal.model_info.take().is_some() {
                         cleared = true;
                     }
+                    if terminal.session_title.take().is_some() {
+                        cleared = true;
+                    }
                 }
             }
         }
@@ -608,7 +612,7 @@ impl App {
                 let git_key = crate::workspace::git_status_cache_key(&cwd);
                 let cache_key = git_key.unwrap_or_else(|| cwd.clone());
                 items.push(WorkspaceGitRefreshItem {
-                    workspace_id: ws.id.clone(),
+                    workspace_id: Some(ws.id.clone()),
                     pane_id: None,
                     resolved_identity_cwd: cwd,
                     cache_key,
@@ -625,13 +629,33 @@ impl App {
                     let git_key = crate::workspace::git_status_cache_key(&cwd);
                     let cache_key = git_key.unwrap_or_else(|| cwd.clone());
                     items.push(WorkspaceGitRefreshItem {
-                        workspace_id: ws.id.clone(),
+                        workspace_id: Some(ws.id.clone()),
                         pane_id: Some(pane_id),
                         resolved_identity_cwd: cwd,
                         cache_key,
                     });
                 }
             }
+        }
+        // A set-down agent is still an agent working somewhere, and the table
+        // says where. It has no space to inherit a branch from, so it is asked
+        // for on its own.
+        for detached in &self.state.detached_agents {
+            let Some(cwd) = crate::app::state::detached_agent_cwd(
+                &detached.pane,
+                &self.state.terminals,
+                &self.terminal_runtimes,
+            ) else {
+                continue;
+            };
+            let git_key = crate::workspace::git_status_cache_key(&cwd);
+            let cache_key = git_key.unwrap_or_else(|| cwd.clone());
+            items.push(WorkspaceGitRefreshItem {
+                workspace_id: None,
+                pane_id: Some(detached.pane_id),
+                resolved_identity_cwd: cwd,
+                cache_key,
+            });
         }
         items
     }
@@ -769,13 +793,13 @@ mod tests {
         let output = refresh_workspace_git_statuses_with_cache(
             vec![
                 WorkspaceGitRefreshItem {
-                    workspace_id: "one".into(),
+                    workspace_id: Some("one".into()),
                     pane_id: None,
                     resolved_identity_cwd: nested.clone(),
                     cache_key: repo.clone(),
                 },
                 WorkspaceGitRefreshItem {
-                    workspace_id: "two".into(),
+                    workspace_id: Some("two".into()),
                     pane_id: None,
                     resolved_identity_cwd: other.clone(),
                     cache_key: repo.clone(),
@@ -787,12 +811,12 @@ mod tests {
         assert_eq!(output.cache_updates.len(), 1);
         assert_eq!(output.cache_updates[0].0, repo);
         assert_eq!(output.results.len(), 2);
-        assert_eq!(output.results[0].workspace_id, "one");
+        assert_eq!(output.results[0].workspace_id.as_deref(), Some("one"));
         assert_eq!(
             output.results[0].resolved_identity_cwd,
             PathBuf::from(&nested)
         );
-        assert_eq!(output.results[1].workspace_id, "two");
+        assert_eq!(output.results[1].workspace_id.as_deref(), Some("two"));
         assert_eq!(
             output.results[1].resolved_identity_cwd,
             PathBuf::from(&other)
@@ -1117,5 +1141,43 @@ mod tests {
             .pending_agent_resume_plan
             .is_some());
         assert!(app.pending_agent_resume_deadline.is_none());
+    }
+
+    fn push_detached_agent(app: &mut super::super::App, agent_state: AgentState, seen: bool) {
+        let terminal_id = crate::terminal::TerminalId::alloc();
+        let mut terminal =
+            crate::terminal::TerminalState::new(terminal_id.clone(), PathBuf::from("/tmp"));
+        terminal.state = agent_state;
+        app.state.terminals.insert(terminal_id.clone(), terminal);
+        let mut pane = crate::pane::PaneState::new(terminal_id);
+        pane.seen = seen;
+        app.state.detached_agents.push(state::DetachedAgent {
+            pane_id: crate::layout::PaneId::alloc(),
+            pane,
+        });
+    }
+
+    #[test]
+    fn working_detached_agent_keeps_the_animation_timer_running() {
+        let (mut app, _pane_id) = test_app_with_pane();
+        app.state.workspaces.clear();
+        app.state.active = None;
+        push_detached_agent(&mut app, AgentState::Working, true);
+
+        app.sync_animation_timer(Instant::now());
+
+        assert!(app.next_animation_tick.is_some());
+    }
+
+    #[test]
+    fn quiet_detached_agent_leaves_the_animation_timer_off() {
+        let (mut app, _pane_id) = test_app_with_pane();
+        app.state.workspaces.clear();
+        app.state.active = None;
+        push_detached_agent(&mut app, AgentState::Idle, true);
+
+        app.sync_animation_timer(Instant::now());
+
+        assert!(app.next_animation_tick.is_none());
     }
 }

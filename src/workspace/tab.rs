@@ -177,11 +177,6 @@ impl Tab {
             .clone()
             .unwrap_or_else(|| self.number.to_string())
     }
-
-    pub fn is_auto_named(&self) -> bool {
-        self.custom_name.is_none()
-    }
-
     pub fn set_custom_name(&mut self, name: String) {
         self.custom_name = Some(name);
     }
@@ -365,6 +360,43 @@ impl Tab {
             terminal,
             runtime,
         })
+    }
+
+    /// Cut `target` in two and put a set-down pane in the new half. Nothing is
+    /// spawned and no id changes hands: the pane comes back exactly as it was
+    /// set down, still wired to its running terminal.
+    pub fn attach_detached_at_edge(
+        &mut self,
+        target: PaneId,
+        side: crate::layout::SplitSide,
+        detached: DetachedPane,
+    ) -> bool {
+        let (pane_id, pane) = detached;
+        if !self.layout.insert_pane_at_edge(target, side, pane_id) {
+            return false;
+        }
+        self.panes.insert(pane_id, pane);
+        self.zoomed = false;
+        true
+    }
+
+    /// Put a set-down pane where `target` is, and hand `target` back set down
+    /// in its turn. The room keeps its shape; the pane in it changes.
+    pub fn replace_pane_with_detached(
+        &mut self,
+        target: PaneId,
+        detached: DetachedPane,
+    ) -> Option<DetachedPane> {
+        let (pane_id, pane) = detached;
+        if !self.layout.replace_pane(target, pane_id) {
+            return None;
+        }
+        let displaced = self.panes.remove(&target)?;
+        self.panes.insert(pane_id, pane);
+        if self.root_pane == target {
+            self.root_pane = pane_id;
+        }
+        Some((target, displaced))
     }
 
     pub fn close_focused(&mut self) -> Option<DetachedPane> {

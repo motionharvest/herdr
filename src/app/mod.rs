@@ -9,6 +9,7 @@ mod agent_resume;
 mod agents;
 mod api;
 mod api_helpers;
+mod composer;
 mod config_io;
 mod creation;
 mod ids;
@@ -29,8 +30,13 @@ use std::time::{Duration, Instant};
 
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 pub(crate) const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
-pub(crate) const HEADLESS_ANIMATION_INTERVAL: Duration = Duration::from_millis(128);
-pub(crate) const HEADLESS_ANIMATION_TICK_STEP: u32 = 8;
+/// How many animation ticks stand for one spinner frame. Five 16ms ticks is the
+/// 80ms the `dots3` set is written to be drawn at, and the headless server steps
+/// the same count per push so a remote spinner turns at the same rate as a local
+/// one rather than a coarser one.
+pub(crate) const ANIMATION_TICKS_PER_FRAME: u32 = 5;
+pub(crate) const HEADLESS_ANIMATION_INTERVAL: Duration = Duration::from_millis(80);
+pub(crate) const HEADLESS_ANIMATION_TICK_STEP: u32 = ANIMATION_TICKS_PER_FRAME;
 pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
@@ -38,10 +44,6 @@ pub(crate) const AGENT_MODEL_REFRESH_INTERVAL: Duration = Duration::from_secs(5)
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
-const SIDEBAR_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
-/// Even split between the sidebar's spaces and agent sections, used until a
-/// saved session or a drag says otherwise.
-const DEFAULT_SIDEBAR_SECTION_SPLIT: f32 = 0.5;
 const PANE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_COPY_HIGHLIGHT_DURATION: Duration = Duration::from_millis(500);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
@@ -87,6 +89,23 @@ impl PaneClickState {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AgentNameClickState {
+    pane_id: crate::layout::PaneId,
+    row: u16,
+    col: u16,
+    at: Instant,
+}
+
+impl AgentNameClickState {
+    fn is_double_click_for(self, next: Self) -> bool {
+        self.pane_id == next.pane_id
+            && next.at.duration_since(self.at) <= PANE_DOUBLE_CLICK_WINDOW
+            && self.row.abs_diff(next.row) <= 1
+            && self.col.abs_diff(next.col) <= 1
+    }
+}
+
 pub struct App {
     pub state: AppState,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
@@ -109,8 +128,8 @@ pub struct App {
     pub(crate) agent_model_refresh_in_flight: bool,
     pub(crate) agent_model_cache:
         HashMap<crate::terminal::TerminalId, crate::agent_model::AgentModelCacheEntry>,
-    pub(crate) last_sidebar_divider_click: Option<Instant>,
     pub(crate) last_pane_click: Option<PaneClickState>,
+    pub(crate) last_agent_name_click: Option<AgentNameClickState>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_animation_tick: Option<Instant>,
     pub(crate) next_auto_update_check: Option<Instant>,
@@ -190,71 +209,6 @@ fn auto_updates_enabled(_no_session: bool) -> bool {
     false
 }
 
-/// The sidebar's shape as it comes back from a saved session: how wide it is,
-/// where its two sections split, and which of them the user left folded away.
-/// Restored as one unit so a new session opens the panel the way it was left,
-/// rather than resetting every fold to expanded.
-struct RestoredSidebar {
-    width: u16,
-    width_source: state::SidebarWidthSource,
-    section_split: f32,
-    collapsed: bool,
-    spaces_collapsed: bool,
-    collapsed_space_keys: std::collections::HashSet<String>,
-    collapsed_agent_space_ids: std::collections::HashSet<String>,
-}
-
-impl RestoredSidebar {
-    /// The shape a session with nothing saved starts in: config width, even
-    /// split, everything expanded.
-    fn from_config(config: &Config) -> Self {
-        Self {
-            width: config.ui.sidebar_width,
-            width_source: state::SidebarWidthSource::ConfigDefault,
-            section_split: DEFAULT_SIDEBAR_SECTION_SPLIT,
-            collapsed: false,
-            spaces_collapsed: false,
-            collapsed_space_keys: std::collections::HashSet::new(),
-            collapsed_agent_space_ids: std::collections::HashSet::new(),
-        }
-    }
-
-    fn from_snapshot(snap: &crate::persist::SessionSnapshot, config: &Config) -> Self {
-        Self {
-            width: snap.sidebar_width.unwrap_or(config.ui.sidebar_width),
-            width_source: if snap.sidebar_width.is_some() {
-                state::SidebarWidthSource::Persisted
-            } else {
-                state::SidebarWidthSource::ConfigDefault
-            },
-            section_split: snap
-                .sidebar_section_split
-                .unwrap_or(DEFAULT_SIDEBAR_SECTION_SPLIT),
-            collapsed: snap.sidebar_collapsed,
-            spaces_collapsed: snap.spaces_collapsed,
-            collapsed_space_keys: snap.collapsed_space_keys.clone(),
-            collapsed_agent_space_ids: snap.collapsed_agent_space_ids.clone(),
-        }
-    }
-
-    /// Drop folds recorded for spaces that did not come back. Space ids are
-    /// minted fresh when a space is created, so a stale id can never match a
-    /// later space — it would only sit in the session file forever.
-    fn prune_to_workspaces(&mut self, workspaces: &[crate::workspace::Workspace]) {
-        self.collapsed_agent_space_ids
-            .retain(|id| workspaces.iter().any(|ws| &ws.id == id));
-    }
-}
-
-fn agent_panel_scope_from_config(
-    scope: crate::config::AgentPanelScopeConfig,
-) -> state::AgentPanelScope {
-    match scope {
-        crate::config::AgentPanelScopeConfig::Current => state::AgentPanelScope::CurrentWorkspace,
-        crate::config::AgentPanelScopeConfig::All => state::AgentPanelScope::AllWorkspaces,
-    }
-}
-
 /// Parse the configured agent name list into a deduplicated set of `Agent`
 /// values. Unknown agent names are silently dropped so a typo cannot disable
 /// other valid entries.
@@ -327,22 +281,20 @@ impl App {
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
         let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let (workspaces, active, selected, _restored_agent_panel_scope, mut sidebar) = if no_session
-        {
-            (
-                Vec::new(),
-                None,
-                0,
-                state::AgentPanelScope::CurrentWorkspace,
-                RestoredSidebar::from_config(config),
-            )
+        let mut restored_detached_agents = Vec::new();
+        let mut restored_agent_order = Vec::new();
+        let mut restored_composer_agent = None;
+        let (workspaces, active, selected) = if no_session {
+            (Vec::new(), None, 0)
         } else if let Some(snap) = crate::persist::load() {
+            restored_agent_order = snap.agent_order.clone();
+            restored_composer_agent = snap.composer_agent.clone();
             let history = config
                 .experimental
                 .pane_history
                 .then(crate::persist::load_history)
                 .flatten();
-            let (ws, terminals, terminal_runtimes) = crate::persist::restore(
+            let (ws, terminals, terminal_runtimes, detached_agents) = crate::persist::restore(
                 &snap,
                 history.as_ref(),
                 24,
@@ -357,44 +309,19 @@ impl App {
             );
             restored_terminals = terminals;
             restored_terminal_runtimes = terminal_runtimes.into();
-            let sidebar = RestoredSidebar::from_snapshot(&snap, config);
+            restored_detached_agents = detached_agents;
             if ws.is_empty() {
                 crate::logging::session_restored(0, "empty");
-                (Vec::new(), None, 0, snap.agent_panel_scope, sidebar)
+                (Vec::new(), None, 0)
             } else {
                 crate::logging::session_restored(ws.len(), "ok");
                 let active = snap.active.filter(|&i| i < ws.len());
                 let selected = snap.selected.min(ws.len().saturating_sub(1));
-                (ws, active, selected, snap.agent_panel_scope, sidebar)
+                (ws, active, selected)
             }
         } else {
-            (
-                Vec::new(),
-                None,
-                0,
-                state::AgentPanelScope::CurrentWorkspace,
-                RestoredSidebar::from_config(config),
-            )
+            (Vec::new(), None, 0)
         };
-        sidebar.prune_to_workspaces(&workspaces);
-
-        let agent_panel_scope = agent_panel_scope_from_config(config.ui.agent_panel_scope);
-
-        // Validate sidebar bounds before they reach any `u16::clamp(min, max)`
-        // call: `clamp` panics when `min > max`. On bad config, fall back to
-        // the built-in defaults rather than crashing on the first render.
-        let (sidebar_min_width, sidebar_max_width) = crate::config::validated_sidebar_bounds(
-            config.ui.sidebar_min_width,
-            config.ui.sidebar_max_width,
-        )
-        .unwrap_or_else(|| {
-            tracing::warn!(
-                min = config.ui.sidebar_min_width,
-                max = config.ui.sidebar_max_width,
-                "ui.sidebar_min_width is greater than sidebar_max_width; falling back to default bounds (18, 36)"
-            );
-            (18, 36)
-        });
 
         let worktree_directory =
             crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
@@ -424,8 +351,15 @@ impl App {
             state::Mode::Navigate
         };
 
+        let mut composer = crate::composer::ComposerState::default();
+        if let Some(agent) = restored_composer_agent {
+            composer.restore_agent(&agent);
+        }
+
         let mut state = AppState {
             terminals: std::collections::HashMap::new(),
+            detached_agents: restored_detached_agents,
+            detached_git_statuses: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
             pane_id_aliases: std::collections::HashMap::new(),
             workspaces,
@@ -456,11 +390,10 @@ impl App {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory,
-            collapsed_space_keys: sidebar.collapsed_space_keys,
-            collapsed_agent_space_ids: sidebar.collapsed_agent_space_ids,
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
+            composer,
             release_notes: None,
             product_announcement: startup_product_announcement.map(|announcement| {
                 state::ProductAnnouncementState {
@@ -475,22 +408,14 @@ impl App {
             keybind_help: state::KeybindHelpState { scroll: 0 },
             navigator: state::NavigatorState::default(),
             copy_mode: None,
-            workspace_scroll: 0,
-            tab_scroll: 0,
-            tab_scroll_follow_active: true,
+            agent_order: restored_agent_order,
+            agent_table_scroll: 0,
             mobile_switcher_scroll: 0,
             view: state::ViewState {
                 layout: state::ViewLayout::Desktop,
-                sidebar_rect: Rect::default(),
-                workspace_card_areas: Vec::new(),
-                agent_row_areas: Vec::new(),
-                agent_folder_areas: Vec::new(),
+                composer: crate::ui::ComposerLayout::default(),
+                agent_table: crate::ui::AgentTableLayout::default(),
                 agent_locations: std::collections::HashMap::new(),
-                tab_bar_rect: Rect::default(),
-                tab_hit_areas: Vec::new(),
-                tab_scroll_left_hit_area: Rect::default(),
-                tab_scroll_right_hit_area: Rect::default(),
-                new_tab_hit_area: Rect::default(),
                 terminal_area: Rect::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),
@@ -501,11 +426,10 @@ impl App {
                 split_borders: Vec::new(),
             },
             drag: None,
-            workspace_press: None,
-            tab_press: None,
             pane_press: None,
             agent_press: None,
-            agent_folder_press: None,
+            agent_table_focus: None,
+            confirm_close_agent: None,
             selection: None,
             selection_autoscroll: None,
             context_menu: None,
@@ -519,17 +443,7 @@ impl App {
             outer_terminal_focus: None,
             prefix_code,
             prefix_mods,
-            default_sidebar_width: config.ui.sidebar_width,
-            sidebar_width: sidebar.width,
-            sidebar_min_width,
-            sidebar_max_width,
             mobile_width_threshold: config.ui.mobile_width_threshold,
-            sidebar_width_source: sidebar.width_source,
-            sidebar_width_auto: false,
-            sidebar_collapsed: sidebar.collapsed,
-            spaces_collapsed: sidebar.spaces_collapsed,
-            sidebar_section_split: sidebar.section_split,
-            agent_panel_scope,
             mouse_capture: config.ui.mouse_capture,
             right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
             right_click_passthrough: None,
@@ -537,7 +451,6 @@ impl App {
             hide_cursor_when_unfocused: config.ui.hide_cursor_when_unfocused,
             mouse_scroll_lines: config.ui.mouse_scroll_lines(),
             confirm_close: config.ui.confirm_close,
-            prompt_new_tab_name: config.ui.prompt_new_tab_name,
             nerd_font: config.ui.nerd_font,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             pane_history_persistence: config.experimental.pane_history,
@@ -620,8 +533,8 @@ impl App {
             last_agent_model_refresh: Instant::now() - AGENT_MODEL_REFRESH_INTERVAL,
             agent_model_refresh_in_flight: false,
             agent_model_cache: HashMap::new(),
-            last_sidebar_divider_click: None,
             last_pane_click: None,
+            last_agent_name_click: None,
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
             next_animation_tick: None,
             next_auto_update_check: auto_updates_enabled(no_session)
@@ -663,7 +576,7 @@ impl App {
         >,
     ) -> io::Result<Self> {
         let mut app = Self::new(config, true, config_diagnostic, api_rx, event_hub);
-        let (workspaces, terminals, runtimes) = crate::persist::restore_handoff(
+        let (workspaces, terminals, runtimes, detached_agents) = crate::persist::restore_handoff(
             snapshot,
             config.advanced.scrollback_limit_bytes,
             &config.terminal.default_shell,
@@ -680,6 +593,7 @@ impl App {
         app.state.pane_id_aliases = pane_id_aliases;
         app.state.workspaces = workspaces;
         app.state.terminals = terminals;
+        app.state.detached_agents = detached_agents;
         app.terminal_runtimes = runtimes.into();
         app.state.active = snapshot
             .active
@@ -687,18 +601,13 @@ impl App {
         app.state.selected = snapshot
             .selected
             .min(app.state.workspaces.len().saturating_sub(1));
-        app.state.agent_panel_scope = snapshot.agent_panel_scope;
-        if let Some(width) = snapshot.sidebar_width {
-            app.state.sidebar_width = width;
-            app.state.sidebar_width_source = state::SidebarWidthSource::Persisted;
+        // A saved agent is checked against the table rather than trusted: the
+        // name may have been written by a version that knew a harness this one
+        // does not, and a band showing an agent that cannot be started is a
+        // band whose first Enter fails.
+        if let Some(agent) = snapshot.composer_agent.as_deref() {
+            app.state.composer.restore_agent(agent);
         }
-        if let Some(split) = snapshot.sidebar_section_split {
-            app.state.sidebar_section_split = split;
-        }
-        app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
-        app.state.collapsed_agent_space_ids = snapshot.collapsed_agent_space_ids.clone();
-        app.state.sidebar_collapsed = snapshot.sidebar_collapsed;
-        app.state.spaces_collapsed = snapshot.spaces_collapsed;
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
         } else {
@@ -1195,60 +1104,29 @@ impl App {
         }
 
         if !invalid_section("ui") {
-            // Validate sidebar bounds before they reach any `u16::clamp` call.
-            // On `min > max`, treat the entire `[ui]` section as invalid: keep
-            // the previous settings and skip the section so the re-clamp below
-            // — and every subsequent render/drag — can never panic.
-            if crate::config::validated_sidebar_bounds(
-                config.ui.sidebar_min_width,
-                config.ui.sidebar_max_width,
-            )
-            .is_none()
-            {
-                diagnostics.push(format!(
-                    "ui.sidebar_min_width ({}) is greater than sidebar_max_width ({}); keeping previous [ui] settings",
-                    config.ui.sidebar_min_width, config.ui.sidebar_max_width,
-                ));
-            } else {
-                diagnostics.extend(config.ui.sound.diagnostics());
+            diagnostics.extend(config.ui.sound.diagnostics());
 
-                self.state.default_sidebar_width = config.ui.sidebar_width;
-                if self.state.sidebar_width_source == state::SidebarWidthSource::ConfigDefault {
-                    self.state.sidebar_width = config.ui.sidebar_width;
-                }
-                self.state.sidebar_min_width = config.ui.sidebar_min_width;
-                self.state.sidebar_max_width = config.ui.sidebar_max_width;
-                self.state.mobile_width_threshold = config.ui.mobile_width_threshold;
-                // Re-clamp the live width to the new bounds. No source guard — bounds
-                // always apply, including to widths owned by Persisted or Manual.
-                self.state.sidebar_width = self
-                    .state
-                    .sidebar_width
-                    .clamp(self.state.sidebar_min_width, self.state.sidebar_max_width);
-                self.state.mouse_capture = config.ui.mouse_capture;
-                if self.state.redraw_on_focus_gained != config.ui.redraw_on_focus_gained {
-                    self.state.request_client_config_reload = true;
-                }
-                self.state.redraw_on_focus_gained = config.ui.redraw_on_focus_gained;
-                self.state.hide_cursor_when_unfocused = config.ui.hide_cursor_when_unfocused;
-                self.state.mouse_scroll_lines = config.ui.mouse_scroll_lines();
-                self.state.right_click_passthrough_modifiers =
-                    config.ui.right_click_passthrough_modifiers();
-                self.state.confirm_close = config.ui.confirm_close;
-                self.state.prompt_new_tab_name = config.ui.prompt_new_tab_name;
-                self.state.nerd_font = config.ui.nerd_font;
-                self.state.show_agent_labels_on_pane_borders =
-                    config.ui.show_agent_labels_on_pane_borders;
-                self.state.agent_panel_scope =
-                    agent_panel_scope_from_config(config.ui.agent_panel_scope);
-                self.state.accent = crate::config::parse_color(&config.ui.accent);
-                if !self.state.local_sound_playback && self.state.sound != config.ui.sound {
-                    self.state.request_client_config_reload = true;
-                }
-                self.state.sound = config.ui.sound.clone();
-                self.state.notify_active_tab = config.ui.notify_active_tab;
-                self.state.toast_config = config.ui.toast.clone();
+            self.state.mobile_width_threshold = config.ui.mobile_width_threshold;
+            self.state.mouse_capture = config.ui.mouse_capture;
+            if self.state.redraw_on_focus_gained != config.ui.redraw_on_focus_gained {
+                self.state.request_client_config_reload = true;
             }
+            self.state.redraw_on_focus_gained = config.ui.redraw_on_focus_gained;
+            self.state.hide_cursor_when_unfocused = config.ui.hide_cursor_when_unfocused;
+            self.state.mouse_scroll_lines = config.ui.mouse_scroll_lines();
+            self.state.right_click_passthrough_modifiers =
+                config.ui.right_click_passthrough_modifiers();
+            self.state.confirm_close = config.ui.confirm_close;
+            self.state.nerd_font = config.ui.nerd_font;
+            self.state.show_agent_labels_on_pane_borders =
+                config.ui.show_agent_labels_on_pane_borders;
+            self.state.accent = crate::config::parse_color(&config.ui.accent);
+            if !self.state.local_sound_playback && self.state.sound != config.ui.sound {
+                self.state.request_client_config_reload = true;
+            }
+            self.state.sound = config.ui.sound.clone();
+            self.state.notify_active_tab = config.ui.notify_active_tab;
+            self.state.toast_config = config.ui.toast.clone();
         }
 
         if !invalid_section("experimental") {
@@ -1365,7 +1243,9 @@ impl App {
                     let key_id = repeat_key_identity(&key);
                     match key.kind {
                         crossterm::event::KeyEventKind::Press => {
-                            if self.state.mode == Mode::Terminal {
+                            if input::agent_table_delete_intercept(&mut self.state, key) {
+                                self.suppressed_repeat_keys.insert(key_id);
+                            } else if self.state.mode == Mode::Terminal {
                                 self.suppressed_repeat_keys.remove(&key_id);
                                 self.handle_terminal_key_headless(key);
                             } else {
@@ -1396,7 +1276,9 @@ impl App {
                     }
                 }
                 crate::raw_input::RawInputEvent::Paste(text) => {
-                    if self.state.mode == Mode::Terminal {
+                    if self.state.mode == Mode::Composer {
+                        self.state.composer.task.insert_str(&text);
+                    } else if self.state.mode == Mode::Terminal {
                         if let Some(ws_idx) = self.state.active {
                             if let Some(ws) = self.state.workspaces.get(ws_idx) {
                                 if let Some(focused) = ws.focused_pane_id() {
@@ -1451,7 +1333,16 @@ impl App {
             Mode::Copy => {
                 self.handle_copy_mode_key(key);
             }
-            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
+            Mode::Composer => {
+                match input::handle_composer_key(&mut self.state, &self.terminal_runtimes, key) {
+                    input::ComposerKeyOutcome::Submit(pending) => self.submit_composer(*pending),
+                    input::ComposerKeyOutcome::Trouble(reason) => {
+                        self.show_composer_trouble(reason)
+                    }
+                    input::ComposerKeyOutcome::Edited => {}
+                }
+            }
+            Mode::RenameWorkspace | Mode::RenamePane => {
                 input::handle_rename_key(&mut self.state, key_event);
             }
             Mode::NewLinkedWorktree => {
@@ -1468,6 +1359,13 @@ impl App {
             }
             Mode::ConfirmClose => {
                 input::handle_confirm_close_key(&mut self.state, key_event);
+            }
+            Mode::ConfirmCloseAgent => {
+                input::handle_confirm_close_agent_key(
+                    &mut self.state,
+                    &self.terminal_runtimes,
+                    key_event,
+                );
             }
             Mode::ContextMenu => {
                 input::handle_context_menu_key(
@@ -1752,7 +1650,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
             results: vec![crate::workspace::WorkspaceGitStatus {
-                workspace_id,
+                workspace_id: Some(workspace_id),
                 pane_id: None,
                 resolved_identity_cwd,
                 branch: Some("render-dirty-test".into()),
@@ -1855,21 +1753,6 @@ mod tests {
         );
         assert!(app.event_rx.try_recv().is_err());
     }
-
-    #[test]
-    fn startup_uses_configured_agent_panel_scope() {
-        let mut config = Config::default();
-        config.ui.agent_panel_scope = crate::config::AgentPanelScopeConfig::Current;
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
-
-        assert_eq!(
-            app.state.agent_panel_scope,
-            state::AgentPanelScope::CurrentWorkspace
-        );
-    }
-
     #[test]
     fn startup_uses_redraw_on_focus_gained_config() {
         let mut config = Config::default();
@@ -2010,149 +1893,6 @@ mod tests {
         restore_xdg_state_home(original_xdg_state_home);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
-
-    #[test]
-    fn reload_config_updates_live_state() {
-        let _guard = config_env_lock().lock().unwrap();
-        let path = temp_config_path("reload-config-success");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            "[terminal]\ndefault_shell = \"nu\"\nshell_mode = \"non_login\"\nnew_cwd = \"home\"\n[keys]\nnew_workspace = \"prefix+m\"\nprefix = \"ctrl+a\"\n[ui]\nagent_panel_scope = \"current\"\nredraw_on_focus_gained = false\nright_click_passthrough_modifier = \"ctrl\"\n[ui.toast]\ndelivery = \"herdr\"\n[experimental]\nswitch_ascii_input_source_in_prefix = true\n",
-        )
-        .unwrap();
-        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
-
-        let mut app = test_app();
-        let report = app.reload_config();
-
-        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
-        assert_eq!(app.state.prefix_code, KeyCode::Char('a'));
-        assert_eq!(app.state.prefix_mods, KeyModifiers::CONTROL);
-        assert!(app
-            .state
-            .keybinds
-            .new_workspace
-            .matches_prefix(&KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty())));
-        assert_eq!(
-            app.state.toast_config.delivery,
-            crate::config::ToastDelivery::Herdr
-        );
-        assert_eq!(
-            app.state.agent_panel_scope,
-            state::AgentPanelScope::CurrentWorkspace
-        );
-        assert!(!app.state.redraw_on_focus_gained);
-        assert_eq!(
-            app.state.right_click_passthrough_modifiers,
-            Some(KeyModifiers::CONTROL)
-        );
-        assert!(app.state.request_client_config_reload);
-        assert_eq!(app.state.default_shell, "nu");
-        assert_eq!(
-            app.state.shell_mode,
-            crate::config::ShellModeConfig::NonLogin
-        );
-        assert_eq!(
-            app.state.new_terminal_cwd,
-            crate::config::NewTerminalCwdConfig::Home
-        );
-        assert!(app.state.switch_ascii_input_source_in_prefix);
-        assert!(app.state.config_diagnostic.is_none());
-        let toast = app.state.toast.as_ref().unwrap();
-        assert_eq!(toast.kind, crate::app::state::ToastKind::UpdateInstalled);
-        assert_eq!(toast.title, "reloaded config");
-        assert_eq!(toast.context, "using config.toml");
-
-        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
-    fn reload_config_updates_sidebar_width_only_when_config_owned() {
-        let _guard = config_env_lock().lock().unwrap();
-        let path = temp_config_path("reload-config-sidebar-width");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
-
-        let mut app = test_app();
-        assert_eq!(
-            app.state.sidebar_width_source,
-            state::SidebarWidthSource::ConfigDefault
-        );
-
-        std::fs::write(&path, "[ui]\nsidebar_width = 34\n").unwrap();
-        let report = app.reload_config();
-        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
-        assert_eq!(app.state.default_sidebar_width, 34);
-        assert_eq!(app.state.sidebar_width, 34);
-
-        app.state.sidebar_width = 31;
-        app.state.sidebar_width_source = state::SidebarWidthSource::Manual;
-        std::fs::write(&path, "[ui]\nsidebar_width = 35\n").unwrap();
-        let report = app.reload_config();
-        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
-        assert_eq!(app.state.default_sidebar_width, 35);
-        assert_eq!(app.state.sidebar_width, 31);
-
-        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
-    fn reload_config_updates_sidebar_bounds_and_reclamps() {
-        let _guard = config_env_lock().lock().unwrap();
-        let path = temp_config_path("reload-config-sidebar-bounds");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
-
-        let mut app = test_app();
-        // Default bounds.
-        assert_eq!(app.state.sidebar_min_width, 18);
-        assert_eq!(app.state.sidebar_max_width, 36);
-        assert_eq!(
-            app.state.mobile_width_threshold,
-            crate::config::DEFAULT_MOBILE_WIDTH_THRESHOLD
-        );
-
-        // Manually set a width and flip the source so the existing
-        // sidebar_width-only-when-config-owned guard does NOT update it.
-        app.state.sidebar_width = 30;
-        app.state.sidebar_width_source = state::SidebarWidthSource::Manual;
-
-        // Tightening max below the current width must re-clamp the live width
-        // even when source is Manual — bounds always apply.
-        std::fs::write(&path, "[ui]\nsidebar_max_width = 24\n").unwrap();
-        let report = app.reload_config();
-        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
-        assert_eq!(app.state.sidebar_max_width, 24);
-        assert_eq!(
-            app.state.sidebar_width, 24,
-            "manual width must re-clamp to new max"
-        );
-
-        // Loosening max leaves the live width alone (it's already within bounds).
-        app.state.sidebar_width = 24;
-        std::fs::write(&path, "[ui]\nsidebar_max_width = 60\n").unwrap();
-        let report = app.reload_config();
-        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
-        assert_eq!(app.state.sidebar_max_width, 60);
-        assert_eq!(app.state.sidebar_width, 24);
-
-        // Raising min above the current width re-clamps upward.
-        std::fs::write(&path, "[ui]\nsidebar_min_width = 30\n").unwrap();
-        let report = app.reload_config();
-        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
-        assert_eq!(app.state.sidebar_min_width, 30);
-        assert_eq!(
-            app.state.sidebar_width, 30,
-            "manual width must re-clamp up to new min"
-        );
-
-        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
     #[test]
     fn reload_config_updates_mobile_width_threshold() {
         let _guard = config_env_lock().lock().unwrap();
@@ -2175,71 +1915,6 @@ mod tests {
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
-
-    #[test]
-    fn app_new_falls_back_to_default_bounds_on_inverted_config() {
-        let mut config = Config::default();
-        config.ui.sidebar_min_width = 50;
-        config.ui.sidebar_max_width = 30;
-
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
-
-        assert_eq!(
-            app.state.sidebar_min_width, 18,
-            "App::new must fall back to default min when bounds are inverted"
-        );
-        assert_eq!(
-            app.state.sidebar_max_width, 36,
-            "App::new must fall back to default max when bounds are inverted"
-        );
-    }
-
-    #[test]
-    fn reload_config_invalid_sidebar_bounds_keeps_previous_ui_and_returns_partial() {
-        let _guard = config_env_lock().lock().unwrap();
-        let path = temp_config_path("reload-config-invalid-sidebar-bounds");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
-
-        let mut app = test_app();
-        let original_min = app.state.sidebar_min_width;
-        let original_max = app.state.sidebar_max_width;
-        let original_mouse_capture = app.state.mouse_capture;
-        // Pair the bad bounds with another `[ui]` field change to confirm the
-        // entire section is treated as invalid (not just the bounds).
-        let target_mouse_capture = !original_mouse_capture;
-        std::fs::write(
-            &path,
-            format!(
-                "[ui]\nsidebar_min_width = 50\nsidebar_max_width = 30\nmouse_capture = {}\n",
-                target_mouse_capture
-            ),
-        )
-        .unwrap();
-
-        let report = app.reload_config();
-        assert_eq!(report.status, crate::config::ConfigReloadStatus::Partial);
-        assert_eq!(app.state.sidebar_min_width, original_min);
-        assert_eq!(app.state.sidebar_max_width, original_max);
-        assert_eq!(
-            app.state.mouse_capture, original_mouse_capture,
-            "[ui] is treated as invalid on bad bounds; mouse_capture must not apply"
-        );
-        assert!(app
-            .state
-            .config_diagnostic
-            .as_deref()
-            .is_some_and(|message| {
-                message.contains("sidebar_min_width")
-                    && message.contains("sidebar_max_width")
-                    && message.contains("greater")
-            }));
-
-        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
     #[test]
     fn reload_config_keeps_current_keybinds_on_invalid_binding_but_applies_other_sections() {
         let _guard = config_env_lock().lock().unwrap();
@@ -2378,35 +2053,6 @@ mod tests {
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
-
-    #[test]
-    fn save_agent_panel_scope_persists_then_applies_live_config() {
-        let _guard = config_env_lock().lock().unwrap();
-        let path = temp_config_path("save-agent-panel-scope");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "onboarding = false\n").unwrap();
-        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
-
-        let mut app = test_app();
-        assert_eq!(
-            app.state.agent_panel_scope,
-            state::AgentPanelScope::AllWorkspaces
-        );
-
-        app.save_agent_panel_scope(state::AgentPanelScope::CurrentWorkspace);
-
-        assert_eq!(
-            app.state.agent_panel_scope,
-            state::AgentPanelScope::CurrentWorkspace
-        );
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("agent_panel_scope = \"current\""));
-        assert!(app.state.config_diagnostic.is_none());
-
-        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
     #[test]
     fn settings_save_pane_history_persists_then_applies_live_config() {
         let _guard = config_env_lock().lock().unwrap();
@@ -2493,7 +2139,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn outer_focus_gained_marks_visible_done_panes_seen() {
+    async fn outer_focus_gained_leaves_every_done_marker_standing() {
         let mut app = test_app();
         let mut workspace = Workspace::test_new("test");
         let root_pane = workspace.tabs[0].root_pane;
@@ -2550,8 +2196,8 @@ mod tests {
 
         assert!(handled);
         assert_eq!(app.state.outer_terminal_focus, Some(true));
-        assert!(app.state.workspaces[0].tabs[0].panes[&root_pane].seen);
-        assert!(app.state.workspaces[0].tabs[0].panes[&split_pane].seen);
+        assert!(!app.state.workspaces[0].tabs[0].panes[&root_pane].seen);
+        assert!(!app.state.workspaces[0].tabs[0].panes[&split_pane].seen);
         assert!(!app.state.workspaces[0].tabs[background_tab].panes[&background_pane].seen);
     }
 
@@ -3192,35 +2838,6 @@ mod tests {
             runtime.shutdown();
         }
     }
-
-    #[test]
-    fn pane_close_request_closes_only_the_target_tab_when_other_tabs_exist() {
-        let mut app = test_app();
-        let mut workspace = Workspace::test_new("api-pane-close");
-        let second_tab = workspace.test_add_tab(Some("logs"));
-        workspace.switch_tab(second_tab);
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
-
-        let target_pane = app.state.workspaces[0].tabs[second_tab].root_pane;
-        let target_pane_id = app.pane_info(0, target_pane).unwrap().pane_id;
-
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req_pane_close".into(),
-            method: crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
-                pane_id: target_pane_id,
-            }),
-        });
-        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
-
-        assert_eq!(response["result"]["type"], "ok");
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
-        assert_eq!(app.state.workspaces[0].display_name(), "api-pane-close");
-    }
-
     #[test]
     fn pane_close_request_closes_workspace_when_it_removes_the_last_pane() {
         let mut app = test_app();
@@ -3844,61 +3461,5 @@ last_pane = "prefix+tab"
             &input[events[1].start..events[1].start + events[1].len],
             b"a"
         );
-    }
-
-    fn snapshot_with_sidebar_folds(
-        space_ids: &[&str],
-        sidebar_collapsed: bool,
-        spaces_collapsed: bool,
-    ) -> crate::persist::SessionSnapshot {
-        crate::persist::SessionSnapshot {
-            version: 3,
-            workspaces: Vec::new(),
-            active: None,
-            selected: 0,
-            agent_panel_scope: state::AgentPanelScope::CurrentWorkspace,
-            sidebar_width: Some(29),
-            sidebar_section_split: Some(0.4),
-            collapsed_space_keys: std::collections::HashSet::from(["repo-key".to_string()]),
-            collapsed_agent_space_ids: space_ids.iter().map(|id| (*id).to_string()).collect(),
-            sidebar_collapsed,
-            spaces_collapsed,
-        }
-    }
-
-    #[test]
-    fn restored_sidebar_carries_folds_from_the_session_file() {
-        let snapshot = snapshot_with_sidebar_folds(&["space-a"], true, true);
-
-        let sidebar = RestoredSidebar::from_snapshot(&snapshot, &Config::default());
-
-        assert_eq!(sidebar.width, 29);
-        assert_eq!(sidebar.section_split, 0.4);
-        assert!(sidebar.collapsed);
-        assert!(sidebar.spaces_collapsed);
-        assert!(sidebar.collapsed_space_keys.contains("repo-key"));
-        assert!(sidebar.collapsed_agent_space_ids.contains("space-a"));
-    }
-
-    #[test]
-    fn sidebar_with_nothing_saved_opens_fully_expanded() {
-        let sidebar = RestoredSidebar::from_config(&Config::default());
-
-        assert!(!sidebar.collapsed);
-        assert!(!sidebar.spaces_collapsed);
-        assert!(sidebar.collapsed_agent_space_ids.is_empty());
-    }
-
-    #[test]
-    fn restored_sidebar_drops_agent_folds_for_spaces_that_did_not_come_back() {
-        let snapshot = snapshot_with_sidebar_folds(&["space-a", "gone"], false, false);
-        let mut sidebar = RestoredSidebar::from_snapshot(&snapshot, &Config::default());
-        let mut workspace = Workspace::test_new("one");
-        workspace.id = "space-a".to_string();
-
-        sidebar.prune_to_workspaces(&[workspace]);
-
-        assert!(sidebar.collapsed_agent_space_ids.contains("space-a"));
-        assert!(!sidebar.collapsed_agent_space_ids.contains("gone"));
     }
 }

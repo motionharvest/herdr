@@ -1,4 +1,4 @@
-//! Model and reasoning-effort detection for agent sessions.
+//! Model, reasoning-effort, and session-title detection for agent sessions.
 //!
 //! Agents that report a session id through the herdr integration also write a
 //! session log on disk (Claude Code transcripts, Codex rollouts). The log
@@ -6,6 +6,14 @@
 //! stays correct across mid-session model switches. A background refresh
 //! resolves each terminal's session file, tail-reads it when its mtime
 //! changes, and reports the latest model info back to the main loop.
+//!
+//! The same read answers a second question for harnesses that have no way to
+//! announce one. Claude Code names its own session and herdr's statusline
+//! reports that name, so a Claude pane wears a title the harness wrote. Codex
+//! never names a session, and its hooks carry only the session id, so a Codex
+//! pane had nothing to show. The rollout does record what the user last asked
+//! for, so that prompt becomes the title instead: the summary column then says
+//! what a Codex agent is working on rather than staying blank.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -19,6 +27,14 @@ use crate::terminal::TerminalId;
 /// large tool-result lines, so the window is generous; reads only happen
 /// when the file's mtime changes.
 const TAIL_READ_BYTES: u64 = 256 * 1024;
+
+/// How far back the first title scan of a session reaches. A prompt is written
+/// once, at the start of a turn, and everything the agent then does is written
+/// after it, so in a long session the current prompt sits far from the end —
+/// past the tail window the model read uses. The first scan is therefore
+/// generous. Every scan after it starts where the previous one stopped, so it
+/// reads only what the session has written since, which is small.
+const TITLE_FIRST_SCAN_BYTES: u64 = 32 * 1024 * 1024;
 
 /// The model an agent session is running, as recorded in its session log.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +63,14 @@ pub struct AgentModelCacheEntry {
     pub session_file: PathBuf,
     pub modified: SystemTime,
     pub info: Option<AgentModelInfo>,
+    /// A title read out of the session log, for harnesses that never report
+    /// one themselves. `None` for a harness whose integration announces its
+    /// own title, so a probe can never overwrite what the harness said.
+    pub title: Option<String>,
+    /// Byte offset the title scan has read up to, always on a line boundary.
+    /// The next scan starts here, so a prompt is found once and the growing
+    /// session log is never re-read.
+    pub title_scanned_len: u64,
 }
 
 #[derive(Debug)]
@@ -102,7 +126,20 @@ fn refresh_job(job: AgentModelRefreshJob) -> Option<AgentModelRefreshResult> {
     }
     // The tail window can land past the last model-bearing entry (e.g. a huge
     // trailing tool result); hold the previous observation instead of blanking.
-    .or_else(|| job.cached.and_then(|cached| cached.info));
+    .or_else(|| job.cached.as_ref().and_then(|cached| cached.info.clone()));
+
+    let (title, title_scanned_len) = match job.agent {
+        Agent::Codex => scan_session_title(
+            &session_file,
+            job.cached
+                .as_ref()
+                .filter(|cached| cached.session_file == session_file)
+                .map(|cached| cached.title_scanned_len),
+            parse_codex_rollout_title,
+        ),
+        _ => (None, 0),
+    };
+    let title = title.or_else(|| job.cached.and_then(|cached| cached.title));
 
     Some(AgentModelRefreshResult {
         terminal_id: job.terminal_id,
@@ -111,6 +148,8 @@ fn refresh_job(job: AgentModelRefreshJob) -> Option<AgentModelRefreshResult> {
             session_file,
             modified,
             info,
+            title,
+            title_scanned_len,
         },
     })
 }
@@ -187,6 +226,47 @@ fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Read whatever the session has written since the last scan and look for a
+/// title in it, returning the title found and the offset the next scan starts
+/// from.
+///
+/// `scanned_len` is `None` the first time a session is probed, and is dropped
+/// when it is past the end of the file — a log that shrank is a different log,
+/// under the same name — so both cases fall back to the generous first scan.
+/// The returned offset stops at the last newline, so a line half-written when
+/// the read happened is read whole by the next one.
+fn scan_session_title(
+    path: &Path,
+    scanned_len: Option<u64>,
+    parse: fn(&str) -> Option<String>,
+) -> (Option<String>, u64) {
+    let Ok(len) = fs::metadata(path).map(|metadata| metadata.len()) else {
+        return (None, scanned_len.unwrap_or(0));
+    };
+    let start = scanned_len
+        .filter(|start| *start <= len)
+        .unwrap_or_else(|| len.saturating_sub(TITLE_FIRST_SCAN_BYTES));
+    if start >= len {
+        return (None, start);
+    }
+    let Ok(chunk) = read_from(path, start) else {
+        return (None, start);
+    };
+    let consumed = match chunk.rfind('\n') {
+        Some(last_newline) => start + last_newline as u64 + 1,
+        None => start,
+    };
+    (parse(&chunk), consumed)
+}
+
+fn read_from(path: &Path, start: u64) -> std::io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Latest main-conversation assistant entry: `message.model` plus the
 /// top-level `effort` field newer Claude Code versions stamp per response.
 fn parse_claude_transcript_tail(tail: &str) -> Option<AgentModelInfo> {
@@ -246,6 +326,74 @@ fn parse_codex_rollout_tail(tail: &str) -> Option<AgentModelInfo> {
         });
     }
     None
+}
+
+/// A session title is a row in a table and a line under a pane name, so it is
+/// cut to a length either can hold before it ever reaches the screen.
+const SESSION_TITLE_MAX_CHARS: usize = 120;
+
+/// The last thing the user actually asked for, taken from the newest `user`
+/// message in the rollout.
+///
+/// Codex writes more than typed prompts into the `user` role: the project's
+/// `AGENTS.md`, and context blocks wrapped in tags such as
+/// `<environment_context>`. Those are the harness talking to its own model, not
+/// a task, so a message that opens a tag or opens the `AGENTS.md` header is
+/// skipped and the scan keeps walking backwards.
+fn parse_codex_rollout_title(tail: &str) -> Option<String> {
+    for line in tail.lines().rev() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if entry.get("type").and_then(|entry_type| entry_type.as_str()) != Some("response_item") {
+            continue;
+        }
+        let Some(payload) = entry.get("payload") else {
+            continue;
+        };
+        if payload.get("type").and_then(|kind| kind.as_str()) != Some("message")
+            || payload.get("role").and_then(|role| role.as_str()) != Some("user")
+        {
+            continue;
+        }
+        let Some(text) = payload
+            .get("content")
+            .and_then(|content| content.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|part| part.get("text").and_then(|text| text.as_str()))
+            .find(|text| !text.trim().is_empty())
+        else {
+            continue;
+        };
+        if let Some(title) = session_title_from_prompt(text) {
+            return Some(title);
+        }
+    }
+    None
+}
+
+/// One line, cut to length — or nothing at all when the text is the harness
+/// briefing its model rather than a person asking for something.
+fn session_title_from_prompt(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('<') || trimmed.starts_with("# AGENTS.md instructions") {
+        return None;
+    }
+    let condensed = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    if condensed.is_empty() {
+        return None;
+    }
+    if condensed.chars().count() <= SESSION_TITLE_MAX_CHARS {
+        return Some(condensed);
+    }
+    Some(
+        condensed
+            .chars()
+            .take(SESSION_TITLE_MAX_CHARS.saturating_sub(1))
+            .collect::<String>()
+            + "…",
+    )
 }
 
 /// Prettify a raw model id: `claude-fable-5` → `Fable 5`,
@@ -393,6 +541,132 @@ mod tests {
     }
 
     #[test]
+    fn codex_title_is_the_newest_typed_prompt() {
+        let tail = concat!(
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /home/user/lab\n\nrules"}]}}"##,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the pane border"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"reorder\n  the   agent list"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/home/user/lab</cwd>\n</environment_context>"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"on it"}]}}"#,
+            "\n",
+        );
+
+        assert_eq!(
+            parse_codex_rollout_title(tail).as_deref(),
+            Some("reorder the agent list"),
+            "the newest typed prompt wins, on one line, past the injected context blocks"
+        );
+    }
+
+    #[test]
+    fn codex_title_is_absent_until_the_user_asks_for_something() {
+        let tail = concat!(
+            r#"{"type":"session_meta","payload":{"id":"abc"}}"#,
+            "\n",
+            r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            "\n",
+        );
+
+        assert_eq!(parse_codex_rollout_title(tail), None);
+    }
+
+    #[test]
+    fn a_long_prompt_is_cut_to_a_title() {
+        let prompt = "word ".repeat(60);
+        let title = session_title_from_prompt(&prompt).unwrap();
+        assert_eq!(title.chars().count(), SESSION_TITLE_MAX_CHARS);
+        assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn claude_sessions_report_their_own_title_so_the_probe_reads_none() {
+        let tail = r#"{"type":"user","message":{"role":"user","content":"fix the tests"}}"#;
+        // Only the Codex branch of `refresh_job` looks for a title; a Claude
+        // transcript is read for its model alone.
+        assert_eq!(parse_codex_rollout_title(tail), None);
+    }
+
+    #[test]
+    fn a_title_scan_reads_only_what_the_session_wrote_since_the_last_one() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-agent-model-title-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let rollout = root.join("rollout.jsonl");
+        let prompt = |text: &str| {
+            format!(
+                r#"{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{text}"}}]}}}}"#
+            )
+        };
+        let noise = r#"{"type":"response_item","payload":{"type":"reasoning"}}"#;
+
+        fs::write(&rollout, format!("{}\n{noise}\n", prompt("first ask"))).unwrap();
+        let (title, scanned) = scan_session_title(&rollout, None, parse_codex_rollout_title);
+        assert_eq!(title.as_deref(), Some("first ask"));
+        assert_eq!(scanned, fs::metadata(&rollout).unwrap().len());
+
+        // A turn's worth of output and no new prompt: nothing found, and the
+        // caller keeps what it already had.
+        fs::write(
+            &rollout,
+            format!("{}\n{noise}\n{noise}\n", prompt("first ask")),
+        )
+        .unwrap();
+        let (title, scanned_again) =
+            scan_session_title(&rollout, Some(scanned), parse_codex_rollout_title);
+        assert_eq!(title, None);
+        assert_eq!(scanned_again, fs::metadata(&rollout).unwrap().len());
+
+        // The next prompt is found in the bytes written after it.
+        fs::write(
+            &rollout,
+            format!(
+                "{}\n{noise}\n{noise}\n{}\n",
+                prompt("first ask"),
+                prompt("second ask")
+            ),
+        )
+        .unwrap();
+        let (title, _) =
+            scan_session_title(&rollout, Some(scanned_again), parse_codex_rollout_title);
+        assert_eq!(title.as_deref(), Some("second ask"));
+
+        // A line still being written is left for the next scan.
+        let complete = fs::metadata(&rollout).unwrap().len();
+        fs::write(
+            &rollout,
+            format!(
+                "{}\n{noise}\n{noise}\n{}\n{{\"type\":\"resp",
+                prompt("first ask"),
+                prompt("second ask")
+            ),
+        )
+        .unwrap();
+        let (_, scanned_partial) =
+            scan_session_title(&rollout, Some(scanned_again), parse_codex_rollout_title);
+        assert_eq!(
+            scanned_partial, complete,
+            "the scan stops at the last newline"
+        );
+
+        // A log that shrank is a different log: the scan starts over.
+        fs::write(&rollout, format!("{}\n", prompt("a fresh session"))).unwrap();
+        let (title, _) = scan_session_title(&rollout, Some(u64::MAX), parse_codex_rollout_title);
+        assert_eq!(title.as_deref(), Some("a fresh session"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn probe_session_ids_that_are_not_path_safe_are_rejected() {
         assert!(valid_probe_session_id(
             "f9b54ddd-8bf9-47d9-81d7-a3b37ee93a93"
@@ -472,6 +746,8 @@ mod tests {
                 session_file: session_file.clone(),
                 modified,
                 info: Some(info.clone()),
+                title: None,
+                title_scanned_len: 0,
             }),
         });
         assert!(unchanged.is_none());
@@ -485,6 +761,8 @@ mod tests {
                 session_file: session_file.clone(),
                 modified: modified - std::time::Duration::from_secs(60),
                 info: Some(info.clone()),
+                title: None,
+                title_scanned_len: 0,
             }),
         })
         .unwrap();

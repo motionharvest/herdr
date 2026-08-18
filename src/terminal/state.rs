@@ -70,6 +70,10 @@ pub struct TerminalState {
     /// Model + reasoning effort observed in the agent's session log; refreshed
     /// in the background from the session reported for this terminal.
     pub model_info: Option<crate::agent_model::AgentModelInfo>,
+    /// A title read out of that same session log, for a harness that never
+    /// announces one. It stands in only when no reported title exists, so a
+    /// harness that names its own sessions always wins.
+    pub session_title: Option<String>,
     hook_report_sequences: HashMap<String, u64>,
     metadata_report_sequences: HashMap<String, u64>,
     pub state: AgentState,
@@ -77,6 +81,13 @@ pub struct TerminalState {
     pub launch_argv: Option<Vec<String>>,
     pub respawn_shell_on_exit: bool,
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
+    /// Whether this agent is coming back up after a restore rather than doing
+    /// work of its own. A restarted agent's harness boots, which reads as
+    /// working and then as finishing, and the marker beside its row must not
+    /// answer to either: the row was saved wearing what the agent last did, and
+    /// booting is not the next thing it did. Startup ends the first time the
+    /// agent settles.
+    starting_up: bool,
 }
 
 impl TerminalState {
@@ -97,12 +108,14 @@ impl TerminalState {
             manual_label: None,
             agent_name: None,
             model_info: None,
+            session_title: None,
             hook_report_sequences: HashMap::new(),
             metadata_report_sequences: HashMap::new(),
             state: AgentState::Unknown,
             revision: 0,
             launch_argv: None,
             respawn_shell_on_exit: false,
+            starting_up: false,
             pending_agent_resume_plan: None,
         }
     }
@@ -123,6 +136,39 @@ impl TerminalState {
     ) -> Self {
         self.pending_agent_resume_plan = Some(plan);
         self
+    }
+
+    /// Mark this agent as coming back up after a restore, so the marker beside
+    /// its row keeps what it was saved wearing while the harness boots.
+    pub fn with_restore_startup(mut self) -> Self {
+        self.begin_restore_startup();
+        self
+    }
+
+    pub fn begin_restore_startup(&mut self) {
+        self.starting_up = true;
+    }
+
+    #[cfg(test)]
+    pub fn is_starting_up(&self) -> bool {
+        self.starting_up
+    }
+
+    /// Whether `state` is part of this agent's startup rather than work of its
+    /// own, ending startup when the agent settles.
+    ///
+    /// Settling is the end of it because that is where a booting harness stops:
+    /// it comes up, it reads as working while it draws itself, and then it is
+    /// idle and waiting. From the first idle onward the agent is answering for
+    /// itself again, so the next run it starts is a real one.
+    pub fn consume_restore_startup(&mut self, state: AgentState) -> bool {
+        if !self.starting_up {
+            return false;
+        }
+        if state == AgentState::Idle {
+            self.starting_up = false;
+        }
+        true
     }
 
     #[cfg(test)]
@@ -729,6 +775,7 @@ impl TerminalState {
         self.hook_authority = None;
         self.persisted_agent_session = None;
         self.model_info = None;
+        self.session_title = None;
         self.agent_metadata.clear();
         self.state = AgentState::Unknown;
         self.launch_argv = None;

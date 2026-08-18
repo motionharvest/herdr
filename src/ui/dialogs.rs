@@ -56,8 +56,6 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
 
     let title = match app.mode {
         Mode::RenameWorkspace => "rename workspace",
-        Mode::RenameTab if app.creating_new_tab => "new tab",
-        Mode::RenameTab => "rename tab",
         Mode::RenamePane => "rename pane",
         _ => return,
     };
@@ -730,6 +728,114 @@ pub(super) fn render_confirm_close_overlay(app: &AppState, frame: &mut Frame, ar
     }
 }
 
+/// The question the delete key asks about the agent a table row picked out.
+/// It names the agent, because the row that was clicked is behind the popup
+/// and the answer ends a running process.
+pub(super) fn render_confirm_close_agent_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    let Some(pending) = &app.confirm_close_agent else {
+        return;
+    };
+
+    super::dim_background(frame, area);
+
+    let Some(popup) = confirm_close_agent_popup_rect(area) else {
+        return;
+    };
+
+    let Some(inner) = render_panel_shell(frame, popup, app.palette.red, app.palette.panel_bg)
+    else {
+        return;
+    };
+    if inner.height < 3 {
+        return;
+    }
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas::<4>(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " Remove agent?",
+            Style::default()
+                .fg(app.palette.red)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(
+                    " {}",
+                    truncate_text(&pending.name, inner.width.saturating_sub(2) as usize)
+                ),
+                Style::default()
+                    .fg(app.palette.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if pending.docked {
+                    " — ends the agent, keeps the pane"
+                } else {
+                    " — ends the set-down agent"
+                },
+                Style::default().fg(app.palette.overlay0),
+            ),
+        ])),
+        rows[1],
+    );
+
+    let (confirm_rect, cancel_rect) = confirm_close_agent_button_rects(inner);
+    render_action_button(
+        frame,
+        confirm_rect,
+        Some("↵"),
+        "remove",
+        Style::default()
+            .fg(panel_contrast_fg(&app.palette))
+            .bg(app.palette.red)
+            .add_modifier(Modifier::BOLD),
+    );
+    render_action_button(
+        frame,
+        cancel_rect,
+        Some("esc"),
+        "cancel",
+        Style::default()
+            .fg(app.palette.text)
+            .bg(app.palette.surface0)
+            .add_modifier(Modifier::BOLD),
+    );
+}
+
+pub(crate) fn confirm_close_agent_popup_rect(area: Rect) -> Option<Rect> {
+    centered_popup_rect(area, 64, 6)
+}
+
+pub(crate) fn confirm_close_agent_button_rects(inner: Rect) -> (Rect, Rect) {
+    let rects = action_button_row_rects(
+        inner,
+        &[
+            ActionButtonSpec {
+                hint: Some("↵"),
+                label: "remove",
+            },
+            ActionButtonSpec {
+                hint: Some("esc"),
+                label: "cancel",
+            },
+        ],
+        2,
+        3,
+    );
+    (rects[0], rects[1])
+}
+
 pub(crate) fn confirm_close_popup_rect(area: Rect) -> Option<Rect> {
     centered_popup_rect(area, 64, 6)
 }
@@ -756,8 +862,54 @@ pub(crate) fn confirm_close_button_rects(inner: Rect) -> (Rect, Rect) {
 #[cfg(test)]
 mod tests {
     use crate::{app::AppState, workspace::Workspace};
+    use ratatui::layout::Rect;
 
-    use super::confirm_close_overlay_text;
+    use super::{confirm_close_agent_button_rects, confirm_close_overlay_text};
+
+    #[test]
+    fn the_remove_agent_question_draws_its_two_buttons_where_a_click_finds_them() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("space")];
+        app.active = Some(0);
+        app.selected = 0;
+        app.ensure_test_terminals();
+        let pane_id = app.workspaces[0].tabs[0].root_pane;
+        app.mode = crate::app::Mode::ConfirmCloseAgent;
+        app.confirm_close_agent = Some(crate::app::state::PendingAgentClose {
+            docked: true,
+            pane_id,
+            name: "worker".into(),
+        });
+        let area = Rect::new(0, 0, 106, 20);
+        app.view.terminal_area = area;
+        crate::ui::compute_view(&mut app, area);
+
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(106, 20))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| crate::ui::render(&app, frame))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+
+        let text_at = |rect: Rect| {
+            (rect.x..rect.x + rect.width)
+                .map(|x| buffer[(x, rect.y)].symbol().to_string())
+                .collect::<String>()
+        };
+        let popup = super::confirm_close_agent_popup_rect(app.view.terminal_area).expect("popup");
+        let inner = Rect::new(
+            popup.x + 1,
+            popup.y + 1,
+            popup.width.saturating_sub(2),
+            popup.height.saturating_sub(2),
+        );
+        let (confirm, cancel) = confirm_close_agent_button_rects(inner);
+
+        assert!(text_at(Rect::new(inner.x, inner.y, inner.width, 1)).contains("Remove agent?"));
+        assert!(text_at(Rect::new(inner.x, inner.y + 1, inner.width, 1)).contains("worker"));
+        assert!(text_at(confirm).contains("remove"));
+        assert!(text_at(cancel).contains("cancel"));
+    }
 
     #[test]
     fn confirm_close_text_reports_parent_group_scope() {

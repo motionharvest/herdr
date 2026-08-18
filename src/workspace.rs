@@ -17,11 +17,25 @@ mod aggregate;
 mod git;
 mod tab;
 
-#[cfg(test)]
-use self::git::git_ahead_behind;
+/// A path written the way it is read: under `~` when it is inside the home
+/// directory, and in full when it is not. Pane titles, sidebar rows, and the
+/// composer's folder list all name the same folders, so they name them the same
+/// way.
+pub fn display_path_with_home(path: &std::path::Path) -> String {
+    if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+        if let Ok(stripped) = path.strip_prefix(std::path::Path::new(&home)) {
+            if stripped.as_os_str().is_empty() {
+                return "~".to_string();
+            }
+            return format!("~/{}", stripped.display());
+        }
+    }
+    path.display().to_string()
+}
+
 pub use self::{
     git::{
-        derive_label_from_cwd, git_branch, git_space_metadata, git_status_cache_key,
+        derive_label_from_cwd, git_branch, git_space_metadata, git_status_cache_key, in_git_repo,
         GitSpaceMetadata, GitStatusCacheEntry,
     },
     tab::Tab,
@@ -38,7 +52,9 @@ pub struct WorktreeSpaceMembership {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceGitStatus {
-    pub workspace_id: String,
+    /// The space the answer belongs to, or `None` for a set-down agent, which
+    /// belongs to no space and is addressed by its pane alone.
+    pub workspace_id: Option<String>,
     pub pane_id: Option<PaneId>,
     pub resolved_identity_cwd: PathBuf,
     pub branch: Option<String>,
@@ -67,7 +83,7 @@ pub struct WorkspaceGitStatusSnapshot {
 impl WorkspaceGitStatusSnapshot {
     pub fn into_workspace_status(
         self,
-        workspace_id: String,
+        workspace_id: Option<String>,
         pane_id: Option<PaneId>,
         resolved_identity_cwd: PathBuf,
     ) -> WorkspaceGitStatus {
@@ -273,19 +289,11 @@ impl Workspace {
     pub fn active_tab_mut(&mut self) -> Option<&mut Tab> {
         self.tabs.get_mut(self.active_tab)
     }
-
-    pub fn active_tab_display_name(&self) -> Option<String> {
-        self.active_tab().map(Tab::display_name)
-    }
-
+    /// Switching to a tab shows its agents; it does not acknowledge them. The
+    /// done marker comes off when it is clicked, and nowhere else.
     pub fn switch_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.active_tab = idx;
-            if let Some(tab) = self.tabs.get_mut(idx) {
-                for pane in tab.panes.values_mut() {
-                    pane.seen = true;
-                }
-            }
         }
     }
 
@@ -381,33 +389,6 @@ impl Workspace {
         }
         true
     }
-
-    pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) -> bool {
-        if source_idx >= self.tabs.len() || insert_idx > self.tabs.len() {
-            return false;
-        }
-
-        let target_idx = if source_idx < insert_idx {
-            insert_idx.saturating_sub(1)
-        } else {
-            insert_idx
-        }
-        .min(self.tabs.len().saturating_sub(1));
-
-        if source_idx == target_idx {
-            return false;
-        }
-
-        let active_root_pane = self.tabs.get(self.active_tab).map(|tab| tab.root_pane);
-        let tab = self.tabs.remove(source_idx);
-        self.tabs.insert(target_idx, tab);
-        self.renumber_tabs();
-        self.active_tab = active_root_pane
-            .and_then(|root_pane| self.tabs.iter().position(|tab| tab.root_pane == root_pane))
-            .unwrap_or(target_idx);
-        true
-    }
-
     pub fn close_active_tab(&mut self) -> bool {
         self.close_tab(self.active_tab)
     }
@@ -591,6 +572,46 @@ impl Workspace {
         false
     }
 
+    /// Dock a set-down pane against one side of `target`, cutting that pane in
+    /// two.
+    pub fn dock_detached_at_edge(
+        &mut self,
+        target: PaneId,
+        side: crate::layout::SplitSide,
+        detached: (PaneId, crate::pane::PaneState),
+    ) -> bool {
+        let pane_id = detached.0;
+        let Some(tab_idx) = self.find_tab_index_for_pane(target) else {
+            return false;
+        };
+        let Some(tab) = self.tabs.get_mut(tab_idx) else {
+            return false;
+        };
+        if !tab.attach_detached_at_edge(target, side, detached) {
+            return false;
+        }
+        self.register_new_pane(pane_id);
+        true
+    }
+
+    /// Put a set-down pane where `target` is; `target` comes back set down.
+    pub fn replace_pane_with_detached(
+        &mut self,
+        target: PaneId,
+        detached: (PaneId, crate::pane::PaneState),
+    ) -> Option<(PaneId, crate::pane::PaneState)> {
+        let pane_id = detached.0;
+        let tab_idx = self.find_tab_index_for_pane(target)?;
+        let displaced = self
+            .tabs
+            .get_mut(tab_idx)?
+            .replace_pane_with_detached(target, detached)?;
+        self.unregister_pane(target);
+        self.register_new_pane(pane_id);
+        self.pane_git_statuses.remove(&target);
+        Some(displaced)
+    }
+
     /// Take a pane out of this workspace for rehoming (keeps the live terminal).
     /// Returns `None` when the pane is missing, the tab is zoomed, or it is the
     /// last pane in its tab.
@@ -729,14 +750,6 @@ impl Workspace {
         self.worktree_space.as_ref()
     }
 
-    #[cfg(test)]
-    pub fn refresh_git_ahead_behind(&mut self) {
-        let cwd = self.resolved_identity_cwd();
-        self.cached_git_branch = cwd.as_deref().and_then(git_branch);
-        self.cached_git_ahead_behind = cwd.as_deref().and_then(git_ahead_behind);
-        self.cached_git_space = cwd.as_deref().and_then(git_space_metadata);
-    }
-
     pub fn git_status_snapshot_for_cwd_with_cache(
         resolved_identity_cwd: &std::path::Path,
         cached: Option<&GitStatusCacheEntry>,
@@ -832,18 +845,6 @@ impl Workspace {
         ordered.extend(missing);
         ordered
     }
-
-    /// Replace the sidebar order outright. The caller has already arranged the
-    /// panes — grouping agents under their folders, say — so this stores the
-    /// arrangement as given, keeping only panes the space still has.
-    pub fn set_agent_order(&mut self, order: Vec<PaneId>) {
-        let natural = self.natural_pane_order();
-        self.agent_order = order
-            .into_iter()
-            .filter(|id| natural.contains(id))
-            .collect();
-    }
-
     fn unregister_pane(&mut self, pane_id: PaneId) {
         self.pane_git_statuses.remove(&pane_id);
         self.agent_order.retain(|id| *id != pane_id);
@@ -978,25 +979,5 @@ mod tests {
             ws.resolved_identity_cwd_from(&terminals, &terminal_runtimes),
             Some(PathBuf::from("/herdr-test/pion"))
         );
-    }
-
-    #[test]
-    fn moving_tab_keeps_active_identity_and_renumbers_auto_tabs() {
-        let mut ws = Workspace::test_new("test");
-        let moved_root = ws.tabs[0].root_pane;
-        ws.test_add_tab(Some("foo"));
-        let final_auto_idx = ws.test_add_tab(None);
-        let active_root = ws.tabs[final_auto_idx].root_pane;
-        ws.switch_tab(final_auto_idx);
-
-        assert!(ws.move_tab(0, ws.tabs.len()));
-
-        let labels: Vec<_> = ws.tabs.iter().map(|tab| tab.display_name()).collect();
-        assert_eq!(labels, vec!["foo", "2", "3"]);
-        assert_eq!(ws.tabs[0].custom_name.as_deref(), Some("foo"));
-        assert!(ws.tabs[1].custom_name.is_none());
-        assert!(ws.tabs[2].custom_name.is_none());
-        assert_eq!(ws.tabs[2].root_pane, moved_root);
-        assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
     }
 }

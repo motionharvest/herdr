@@ -18,9 +18,8 @@ pub use self::{
         IndexedKeybind, Keybinds, LiveKeybindConfig,
     },
     model::{
-        validated_sidebar_bounds, AgentPanelScopeConfig, Config, ConfigReloadReport,
-        ConfigReloadStatus, KeysConfig, NewTerminalCwdConfig, ShellModeConfig, ToastConfig,
-        ToastDelivery, UpdateChannelConfig,
+        Config, ConfigReloadReport, ConfigReloadStatus, KeysConfig, NewTerminalCwdConfig,
+        ShellModeConfig, ToastConfig, ToastDelivery, UpdateChannelConfig,
     },
     sound::SoundConfig,
     theme::{parse_color, CustomThemeColors, ThemeConfig},
@@ -100,7 +99,7 @@ mod tests {
             r#"
 [keys]
 prefix = "ctrl+a"
-new_tab = "prefix+t"
+zoom = "prefix+t"
 
 [[keys.command]]
 key = "prefix+g"
@@ -112,8 +111,7 @@ command = "lazygit"
         let profile = config.local_keybindings_profile_toml().unwrap();
         assert!(profile.contains("[keys]"));
         assert!(profile.contains("prefix = \"ctrl+a\""));
-        assert!(profile.contains("new_tab = \"prefix+t\""));
-        assert!(profile.contains("next_tab = \"prefix+n\""));
+        assert!(profile.contains("zoom = \"prefix+t\""));
         assert!(!profile.contains("lazygit"));
         assert!(!profile.contains("command ="));
         assert!(!profile.contains("[[keys.command]]"));

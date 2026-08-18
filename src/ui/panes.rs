@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -357,46 +357,50 @@ fn pane_chrome_title_for_pane(
     let assigned_name = terminal.and_then(|terminal| {
         crate::pane_names::assigned_names(&app.terminals).remove(&terminal.id)
     });
-    let git_status = ws.git_status_for_pane(pane_id);
-    let repo_path = git_status
-        .space
-        .as_ref()
-        .map(|space| display_path_with_home(&space.repo_root));
     PaneChromeTitle {
-        pane_type: pane_type_label(terminal),
         folder_name: pane_name_label(terminal, assigned_name, ws.public_pane_number(pane_id)),
-        repo_path,
-        branch: git_status.branch.filter(|branch| !branch.is_empty()),
-        worktree_state: git_status.worktree_state,
     }
 }
 
-pub(super) fn pane_swap_preview_target(app: &AppState) -> Option<crate::layout::PaneId> {
-    let crate::app::state::DragState {
-        target:
-            crate::app::state::DragTarget::PaneSwap {
-                moved: true,
-                hovered_pane_id: Some(target),
-                ..
-            },
-    } = app.drag.as_ref()?
-    else {
-        return None;
-    };
-    Some(*target)
+/// The pane a drop is aimed at and where on it, whether the thing being carried
+pub(super) fn pane_swap_preview_target(
+    app: &AppState,
+) -> Option<(crate::layout::PaneId, crate::layout::DropZone)> {
+    match &app.drag.as_ref()?.target {
+        crate::app::state::DragTarget::PaneSwap {
+            moved: true,
+            hovered_pane_id: Some(target),
+            drop_zone,
+            ..
+        }
+        | crate::app::state::DragTarget::AgentDock {
+            hovered_pane_id: Some(target),
+            drop_zone,
+            ..
+        } => Some((*target, *drop_zone)),
+        _ => None,
+    }
 }
 
-fn render_pane_swap_drop_overlay(app: &AppState, frame: &mut Frame, area: Rect, highlighted: bool) {
+/// What a drop would do, said in the room it would take. The same movement
+/// means a swap or a cut depending only on where the pointer is, so the room
+/// itself has to say which — a message alone would leave the two looking the
+/// same until it was too late to aim again.
+fn render_pane_swap_drop_overlay(
+    app: &AppState,
+    frame: &mut Frame,
+    area: Rect,
+    zone: crate::layout::DropZone,
+) {
+    let area = crate::layout::drop_zone_rect(area, zone);
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let edge_color = if highlighted {
-        app.palette.focused_pane_border()
-    } else {
-        app.palette.overlay0
-    };
-    let edge_style = Style::default().fg(edge_color).bg(Color::Reset);
+    let edge_style = Style::default()
+        .fg(app.palette.focused_pane_border())
+        .bg(Color::Reset);
+    frame.render_widget(Clear, area);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -406,12 +410,13 @@ fn render_pane_swap_drop_overlay(app: &AppState, frame: &mut Frame, area: Rect, 
         area,
     );
 
-    if area.height == 0 {
-        return;
-    }
+    let message = match zone {
+        crate::layout::DropZone::Over => "Drop to swap",
+        crate::layout::DropZone::Edge(_) => "Drop to split",
+    };
     let message_y = area.y + area.height.saturating_sub(1) / 2;
     frame.render_widget(
-        Paragraph::new("Drop to swap")
+        Paragraph::new(message)
             .alignment(Alignment::Center)
             .style(edge_style),
         Rect {
@@ -473,69 +478,15 @@ fn truncate_to_width(text: &str, width: usize) -> String {
 }
 
 struct PaneChromeTitle {
-    pane_type: String,
     folder_name: Option<String>,
-    repo_path: Option<String>,
-    branch: Option<String>,
-    worktree_state: crate::workspace::GitWorktreeState,
 }
 
 impl PaneChromeTitle {
     fn formatted_title(&self) -> String {
-        let folder = self.folder_name.as_deref().unwrap_or("Workspace");
-        let agent = &self.pane_type;
-        // Format: "Pane Name {Pi}"
-        let mut result = format!("{} {{{}}}", folder, agent);
-
-        if let (Some(repo_path), Some(branch)) = (&self.repo_path, &self.branch) {
-            let status = worktree_state_marker(self.worktree_state);
-            // Format: " ~/lab/code-ui (feat/git-status ✓)"
-            result.push_str(&format!(" {} ({} {})", repo_path, branch, status));
-        }
-
-        result
+        self.folder_name
+            .clone()
+            .unwrap_or_else(|| "Workspace".to_string())
     }
-}
-
-/// Split a formatted pane title into its name section and its git section.
-///
-/// The git section is everything that follows the agent label's closing brace,
-/// so the boundary is found the same way `push_title_name_spans` finds the
-/// label itself. Returns `None` when there is no agent label or nothing follows
-/// it, which is the case for panes with no git status attached.
-fn split_title_git_suffix(text: &str) -> Option<(&str, &str)> {
-    let brace_start = text.find(" {")?;
-    let close_idx = brace_start + text[brace_start..].find('}')?;
-    let (name, git) = text.split_at(close_idx + '}'.len_utf8());
-    (!git.is_empty()).then_some((name, git))
-}
-
-pub(super) fn push_title_name_spans(
-    spans: &mut Vec<Span<'static>>,
-    text: &str,
-    pane_name_style: Style,
-    agent_label_style: Style,
-    brace_style: Style,
-) {
-    if let Some((name, rest)) = text.split_once(" {") {
-        // `rest` is the agent label plus a closing brace, optionally followed by
-        // more title text (e.g. a trailing space before the git section). Locate
-        // the closing brace rather than requiring it to be the final character so
-        // the agent label keeps its distinct style in those cases too.
-        if let Some(close_idx) = rest.find('}') {
-            let (agent, after_brace) = rest.split_at(close_idx);
-            let after = &after_brace["}".len()..];
-            spans.push(Span::styled(name.to_string(), pane_name_style));
-            spans.push(Span::styled(" {".to_string(), brace_style));
-            spans.push(Span::styled(agent.to_string(), agent_label_style));
-            spans.push(Span::styled("}".to_string(), brace_style));
-            if !after.is_empty() {
-                spans.push(Span::styled(after.to_string(), pane_name_style));
-            }
-            return;
-        }
-    }
-    spans.push(Span::styled(text.to_string(), pane_name_style));
 }
 
 fn render_code_ui_pane_chrome(
@@ -602,33 +553,10 @@ fn render_code_ui_pane_chrome(
     let layout = pane_title_chrome_layout(title_width, &title, maximized);
     let (controls_text, controls_width) = pane_controls_text(title_width, maximized);
 
-    let rule_glyph = if focused || highlighted { '═' } else { '─' };
-    // On unfocused panes the whole title (name, braces, agent label, git info)
-    // drops to the muted overlay color, matching the dimmed rule glyphs and
-    // controls. Only the focused/highlighted pane keeps the distinct colors.
+    let rule_glyph = '─';
     let unfocused_style = Style::default().fg(app.palette.overlay0).bg(Color::Reset);
     let pane_name_style = if chrome_active {
         Style::default().fg(focus_accent(app)).bg(Color::Reset)
-    } else {
-        unfocused_style
-    };
-    let agent_label_style = unfocused_style;
-    let repo_path_style = if chrome_active {
-        Style::default()
-            .fg(Color::Rgb(0x36, 0xF9, 0xF6))
-            .bg(Color::Reset)
-    } else {
-        unfocused_style
-    };
-    let git_style = if chrome_active {
-        Style::default()
-            .fg(match title.worktree_state {
-                crate::workspace::GitWorktreeState::Clean => Color::Green,
-                crate::workspace::GitWorktreeState::Staged => Color::Blue,
-                crate::workspace::GitWorktreeState::Unstaged => Color::Red,
-                crate::workspace::GitWorktreeState::Mixed => Color::Rgb(0xBE, 0x9A, 0x4A),
-            })
-            .bg(Color::Reset)
     } else {
         unfocused_style
     };
@@ -643,31 +571,10 @@ fn render_code_ui_pane_chrome(
         String::new()
     };
 
-    let mut spans = vec![Span::styled("╭─ ".to_string(), edge_style)];
-    if let Some((name_text, git_text)) = split_title_git_suffix(&title_text) {
-        push_title_name_spans(
-            &mut spans,
-            name_text,
-            pane_name_style,
-            agent_label_style,
-            pane_name_style,
-        );
-        if let Some(paren_start) = git_text.rfind(" (") {
-            let (repo_path, branch_status) = git_text.split_at(paren_start);
-            spans.push(Span::styled(repo_path.to_string(), repo_path_style));
-            spans.push(Span::styled(branch_status.to_string(), git_style));
-        } else {
-            spans.push(Span::styled(git_text.to_string(), repo_path_style));
-        }
-    } else {
-        push_title_name_spans(
-            &mut spans,
-            &title_text,
-            pane_name_style,
-            agent_label_style,
-            pane_name_style,
-        );
-    }
+    let mut spans = vec![
+        Span::styled("╭─ ".to_string(), edge_style),
+        Span::styled(title_text, pane_name_style),
+    ];
     spans.push(Span::styled(" ".to_string(), edge_style));
     if !rule_text.is_empty() {
         spans.push(Span::styled(rule_text, edge_style));
@@ -708,49 +615,7 @@ fn pane_name_label(
         .or_else(|| pane_number.map(|number| format!("Pane {number}")))
 }
 
-fn pane_type_label(terminal: Option<&crate::terminal::TerminalState>) -> String {
-    terminal
-        .and_then(|terminal| {
-            terminal
-                .effective_display_agent()
-                .or_else(|| terminal.effective_agent_label().map(format_agent_label))
-        })
-        .unwrap_or_else(|| "Terminal".to_string())
-}
-
-fn format_agent_label(label: &str) -> String {
-    match label.to_ascii_lowercase().as_str() {
-        "pi" => "Pi".to_string(),
-        "codex" => "Codex".to_string(),
-        "opencode" => "OpenCode".to_string(),
-        "cursor" => "Cursor-CLI".to_string(),
-        "claude" => "Claude Code".to_string(),
-        _ => label
-            .split(['-', '_', ' '])
-            .filter(|part| !part.is_empty())
-            .map(|part| {
-                let mut chars = part.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
-                    None => String::new(),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
-    }
-}
-
-pub(super) fn display_path_with_home(path: &std::path::Path) -> String {
-    if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
-        if let Ok(stripped) = path.strip_prefix(std::path::Path::new(&home)) {
-            if stripped.as_os_str().is_empty() {
-                return "~".to_string();
-            }
-            return format!("~/{}", stripped.display());
-        }
-    }
-    path.display().to_string()
-}
+pub(super) use crate::workspace::display_path_with_home;
 
 /// Single-glyph dirty marker for a worktree state, shared by pane chrome and
 /// the agent panel.
@@ -949,7 +814,14 @@ pub(super) fn render_panes(
 
     for info in &app.view.pane_infos {
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            let is_swap_preview = swap_preview == Some(info.id);
+            let preview_zone = swap_preview
+                .filter(|(target, _)| *target == info.id)
+                .map(|(_, zone)| zone);
+            let is_swap_preview = preview_zone.is_some();
+            // A cut takes half the pane, so the other half has to go on being
+            // read: the preview is drawn over the pane rather than instead of
+            // it. A swap takes the whole pane, and there is nothing left to see.
+            let covers_pane = preview_zone == Some(crate::layout::DropZone::Over);
             if framed {
                 let terminal = ws
                     .pane_state(info.id)
@@ -957,21 +829,12 @@ pub(super) fn render_panes(
                 let assigned_name = terminal.and_then(|terminal| {
                     crate::pane_names::assigned_names(&app.terminals).remove(&terminal.id)
                 });
-                let git_status = ws.git_status_for_pane(info.id);
-                let repo_path = git_status
-                    .space
-                    .as_ref()
-                    .map(|space| display_path_with_home(&space.repo_root));
                 let title = PaneChromeTitle {
-                    pane_type: pane_type_label(terminal),
                     folder_name: pane_name_label(
                         terminal,
                         assigned_name,
                         ws.public_pane_number(info.id),
                     ),
-                    repo_path,
-                    branch: git_status.branch.filter(|branch| !branch.is_empty()),
-                    worktree_state: git_status.worktree_state,
                 };
                 render_code_ui_pane_chrome(
                     app,
@@ -990,15 +853,17 @@ pub(super) fn render_panes(
                 render_pane_inner_padding(frame, content_rect, padded_rect);
             }
 
-            if is_swap_preview {
-                render_pane_swap_drop_overlay(app, frame, info.inner_rect, true);
-            } else {
+            if !covers_pane {
                 let show_cursor = info.is_focused
                     && terminal_active
                     && !pane_is_scrolled_back(rt)
-                    && !cursor_hidden_by_host_focus(app);
+                    && !cursor_hidden_by_host_focus(app)
+                    && !is_swap_preview;
                 rt.render(frame, info.inner_rect, show_cursor);
                 render_pane_scrollbar(app, frame, info, rt);
+            }
+            if let Some(zone) = preview_zone {
+                render_pane_swap_drop_overlay(app, frame, info.inner_rect, zone);
             }
 
             let pane_dimmed = ws.pane_state(info.id).is_some_and(|pane| pane.dimmed);
@@ -1419,11 +1284,7 @@ mod tests {
     fn pane_title_hit_area_excludes_rule_glyphs() {
         let area = Rect::new(0, 0, 80, 10);
         let title = PaneChromeTitle {
-            pane_type: "Cursor-CLI".to_string(),
             folder_name: Some("Agent Work".to_string()),
-            repo_path: Some("~/lab/herdr".to_string()),
-            branch: Some("messin".to_string()),
-            worktree_state: crate::workspace::GitWorktreeState::Unstaged,
         };
         let layout = pane_title_chrome_layout(area.width, &title, false);
         let hit = pane_title_hit_area(area, &title, false).expect("title hit area");
@@ -1452,11 +1313,7 @@ mod tests {
                     frame,
                     area,
                     PaneChromeTitle {
-                        pane_type: "Pi".to_string(),
                         folder_name: Some("panel".to_string()),
-                        repo_path: None,
-                        branch: None,
-                        worktree_state: crate::workspace::GitWorktreeState::Clean,
                     },
                     PaneId::from_raw(1),
                     true,
@@ -1591,11 +1448,7 @@ mod tests {
                         frame,
                         area,
                         PaneChromeTitle {
-                            pane_type: "Pi".to_string(),
                             folder_name: Some("panel".to_string()),
-                            repo_path: None,
-                            branch: None,
-                            worktree_state: crate::workspace::GitWorktreeState::Clean,
                         },
                         PaneId::from_raw(1),
                         true,
@@ -1632,11 +1485,7 @@ mod tests {
                     frame,
                     Rect::new(0, 0, 20, 5),
                     PaneChromeTitle {
-                        pane_type: "Pi".to_string(),
                         folder_name: Some("panel".to_string()),
-                        repo_path: None,
-                        branch: None,
-                        worktree_state: crate::workspace::GitWorktreeState::Clean,
                     },
                     PaneId::from_raw(1),
                     true,
@@ -1771,11 +1620,7 @@ mod tests {
                     frame,
                     right,
                     PaneChromeTitle {
-                        pane_type: "Pi".to_string(),
                         folder_name: Some("panel".to_string()),
-                        repo_path: None,
-                        branch: None,
-                        worktree_state: crate::workspace::GitWorktreeState::Clean,
                     },
                     PaneId::from_raw(2),
                     false,
@@ -1829,11 +1674,7 @@ mod tests {
                     frame,
                     right,
                     PaneChromeTitle {
-                        pane_type: "Pi".to_string(),
                         folder_name: Some("panel".to_string()),
-                        repo_path: None,
-                        branch: None,
-                        worktree_state: crate::workspace::GitWorktreeState::Clean,
                     },
                     PaneId::from_raw(2),
                     true,
@@ -1971,70 +1812,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_chrome_git_status_symbol_uses_state_color() {
-        let cases = [
-            (crate::workspace::GitWorktreeState::Clean, "✓", Color::Green),
-            (crate::workspace::GitWorktreeState::Staged, "+", Color::Blue),
-            (
-                crate::workspace::GitWorktreeState::Unstaged,
-                "!",
-                Color::Red,
-            ),
-            (
-                crate::workspace::GitWorktreeState::Mixed,
-                "±",
-                Color::Rgb(0xBE, 0x9A, 0x4A),
-            ),
-        ];
-
-        for (worktree_state, symbol, expected_color) in cases {
-            let app = AppState::test_new();
-            let area = Rect::new(0, 0, 80, 5);
-            let backend = ratatui::backend::TestBackend::new(80, 5);
-            let mut terminal = ratatui::Terminal::new(backend).unwrap();
-
-            terminal
-                .draw(|frame| {
-                    render_code_ui_pane_chrome(
-                        &app,
-                        frame,
-                        area,
-                        PaneChromeTitle {
-                            pane_type: "Pi".to_string(),
-                            folder_name: Some("Pane".to_string()),
-                            repo_path: Some("~/lab/herdr".to_string()),
-                            branch: Some("feat/git-status".to_string()),
-                            worktree_state,
-                        },
-                        PaneId::from_raw(1),
-                        true,
-                        false,
-                        false,
-                        ExposedSides::all(),
-                        None,
-                    );
-                })
-                .unwrap();
-
-            let buffer = terminal.backend().buffer();
-            let repo_path_col = (0..area.width)
-                .find(|x| buffer[(*x, 0)].symbol() == "~")
-                .expect("repo path should render");
-            assert_eq!(buffer[(repo_path_col, 0)].fg, Color::Rgb(0x36, 0xF9, 0xF6));
-
-            let paren_col = (0..area.width)
-                .find(|x| buffer[(*x, 0)].symbol() == "(")
-                .expect("branch status parenthesis should render");
-            assert_eq!(buffer[(paren_col, 0)].fg, expected_color);
-            let marker_col = (0..area.width)
-                .find(|x| buffer[(*x, 0)].symbol() == symbol)
-                .expect("git status symbol should render");
-            assert_eq!(buffer[(marker_col, 0)].fg, expected_color);
-        }
-    }
-
-    #[test]
-    fn pane_chrome_title_styles_name_agent_and_braces_separately() {
+    fn pane_chrome_renders_only_the_pane_name_with_a_single_line_rule() {
         let app = AppState::test_new();
         let area = Rect::new(0, 0, 80, 5);
         let backend = ratatui::backend::TestBackend::new(80, 5);
@@ -2047,11 +1825,7 @@ mod tests {
                     frame,
                     area,
                     PaneChromeTitle {
-                        pane_type: "Pi".to_string(),
-                        folder_name: Some("~/lab/herdr".to_string()),
-                        repo_path: None,
-                        branch: None,
-                        worktree_state: crate::workspace::GitWorktreeState::Clean,
+                        folder_name: Some("Review notes".to_string()),
                     },
                     PaneId::from_raw(1),
                     true,
@@ -2064,69 +1838,11 @@ mod tests {
             .unwrap();
 
         let buffer = terminal.backend().buffer();
-        let name_col = (0..area.width)
-            .find(|x| buffer[(*x, 0)].symbol() == "~")
-            .expect("pane name should render");
-        assert_eq!(buffer[(name_col, 0)].fg, app.palette.focused_pane_border());
-
-        let open_brace_col = (0..area.width)
-            .find(|x| buffer[(*x, 0)].symbol() == "{")
-            .expect("agent brace should render");
-        assert_eq!(
-            buffer[(open_brace_col, 0)].fg,
-            app.palette.focused_pane_border()
-        );
-
-        let agent_col = (0..area.width)
-            .find(|x| buffer[(*x, 0)].symbol() == "P")
-            .expect("agent label should render");
-        assert_eq!(buffer[(agent_col, 0)].fg, app.palette.overlay0);
-    }
-
-    #[test]
-    fn pane_chrome_title_styles_agent_label_when_git_section_present() {
-        let app = AppState::test_new();
-        let area = Rect::new(0, 0, 120, 5);
-        let backend = ratatui::backend::TestBackend::new(120, 5);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-
-        terminal
-            .draw(|frame| {
-                render_code_ui_pane_chrome(
-                    &app,
-                    frame,
-                    area,
-                    PaneChromeTitle {
-                        pane_type: "Pi".to_string(),
-                        folder_name: Some("~/lab/herdr".to_string()),
-                        repo_path: Some("~/lab/herdr".to_string()),
-                        branch: Some("main".to_string()),
-                        worktree_state: crate::workspace::GitWorktreeState::Clean,
-                    },
-                    PaneId::from_raw(1),
-                    true,
-                    false,
-                    false,
-                    ExposedSides::all(),
-                    None,
-                );
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        // The agent label keeps the muted overlay color even though the git
-        // section follows the closing brace (regression: the trailing space
-        // before the git icon used to collapse the whole title to one color).
-        let agent_col = (0..area.width)
-            .find(|x| buffer[(*x, 0)].symbol() == "P")
-            .expect("agent label should render");
-        assert_eq!(buffer[(agent_col, 0)].fg, app.palette.overlay0);
-
-        let name_col = (0..area.width)
-            .find(|x| buffer[(*x, 0)].symbol() == "~")
-            .expect("pane name should render");
-        assert_eq!(buffer[(name_col, 0)].fg, app.palette.focused_pane_border());
-        assert_ne!(buffer[(agent_col, 0)].fg, buffer[(name_col, 0)].fg);
+        let top_row: String = (0..area.width)
+            .map(|x| buffer[(x, area.y)].symbol())
+            .collect();
+        assert!(top_row.starts_with("╭─ Review notes "), "{top_row:?}");
+        assert!(!top_row.contains('═'), "{top_row:?}");
     }
 
     #[test]
@@ -2143,11 +1859,7 @@ mod tests {
                     frame,
                     area,
                     PaneChromeTitle {
-                        pane_type: "Pi".to_string(),
-                        folder_name: Some("~/lab/herdr".to_string()),
-                        repo_path: Some("~/lab/herdr".to_string()),
-                        branch: Some("main".to_string()),
-                        worktree_state: crate::workspace::GitWorktreeState::Clean,
+                        folder_name: Some("Review notes".to_string()),
                     },
                     PaneId::from_raw(1),
                     false, // unfocused
@@ -2160,9 +1872,7 @@ mod tests {
             .unwrap();
 
         let buffer = terminal.backend().buffer();
-        // On an unfocused pane the whole title (name, braces, agent label) uses
-        // the muted overlay color rather than the focused/bright colors.
-        for symbol in ["~", "{", "P", "}"] {
+        for symbol in ["R", "n"] {
             let col = (0..area.width)
                 .find(|x| buffer[(*x, 0)].symbol() == symbol)
                 .unwrap_or_else(|| panic!("title glyph {symbol:?} should render"));
@@ -2188,15 +1898,11 @@ mod tests {
     }
 
     #[test]
-    fn pane_name_and_agent_type_are_separate() {
+    fn pane_name_prefers_manual_label_over_assigned_name() {
         let terminal_id = crate::terminal::TerminalId::alloc();
         let mut terminal = crate::terminal::TerminalState::new(
             terminal_id,
             std::path::PathBuf::from("/tmp/herdr"),
-        );
-        terminal.set_detected_state(
-            Some(crate::detect::Agent::Pi),
-            crate::detect::AgentState::Idle,
         );
         terminal.set_manual_label("review notes".into());
 
@@ -2204,14 +1910,11 @@ mod tests {
             pane_name_label(Some(&terminal), Some("Olivia".into()), Some(2)).as_deref(),
             Some("review notes")
         );
-        assert_eq!(pane_type_label(Some(&terminal)), "Pi");
-
         terminal.clear_manual_label();
         assert_eq!(
             pane_name_label(Some(&terminal), Some("Olivia".into()), Some(2)).as_deref(),
             Some("Olivia")
         );
-        assert_eq!(pane_type_label(Some(&terminal)), "Pi");
     }
 
     #[test]

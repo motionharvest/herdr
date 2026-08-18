@@ -53,6 +53,95 @@ pub enum SplitSide {
     Right,
 }
 
+impl SplitSide {
+    /// Which way a pane is cut to put something against this side.
+    pub fn direction(self) -> Direction {
+        match self {
+            SplitSide::Top | SplitSide::Bottom => Direction::Vertical,
+            SplitSide::Left | SplitSide::Right => Direction::Horizontal,
+        }
+    }
+
+    /// Whether whatever is put against this side takes the first half of the
+    /// cut. The first half is the top one of a vertical cut and the left one of
+    /// a horizontal cut, which is what `split_rect` hands back first.
+    pub fn takes_first(self) -> bool {
+        matches!(self, SplitSide::Top | SplitSide::Left)
+    }
+}
+
+/// How much of a pane counts as its edge — a quarter, measured from whichever
+/// edge is nearest. Anything further in is the middle of it.
+const EDGE_SHARE: u32 = 4;
+/// The denominator the four distances are compared in, so a width and a height
+/// can be weighed against each other without either becoming a fraction.
+const DROP_SCALE: u32 = 1000;
+/// A pane narrower or shorter than this is not cut that way: two halves of it
+/// would have room for their borders and little else.
+const LEAST_SPLIT_WIDTH: u16 = 12;
+const LEAST_SPLIT_HEIGHT: u16 = 5;
+
+/// Where a drop lands on the pane under the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropZone {
+    /// Over the middle of the pane, which trades the two panes' places.
+    Over,
+    /// Against one of its edges, which cuts that pane in two and puts the
+    /// dropped pane in the half against that edge.
+    Edge(SplitSide),
+}
+
+/// Where on a pane a pointer is: against the nearest edge when it is within a
+/// quarter of one, and over the middle otherwise.
+///
+/// The four distances are measured as shares of the span they cross, so a wide
+/// short pane answers the way it looks rather than the way its numbers read. A
+/// pane too small to be cut a given way cannot be dropped on that way, so its
+/// edges answer the same as its middle: half a pane nobody can read is not a
+/// pane, and refusing the cut is better than making one.
+pub fn drop_zone_at(area: Rect, col: u16, row: u16) -> DropZone {
+    let width = u32::from(area.width.max(1));
+    let height = u32::from(area.height.max(1));
+    let left = u32::from(col.saturating_sub(area.x)).min(width - 1);
+    let top = u32::from(row.saturating_sub(area.y)).min(height - 1);
+    let share = |distance: u32, span: u32| distance * DROP_SCALE / span;
+    [
+        (SplitSide::Left, share(left, width)),
+        (SplitSide::Right, share(width - 1 - left, width)),
+        (SplitSide::Top, share(top, height)),
+        (SplitSide::Bottom, share(height - 1 - top, height)),
+    ]
+    .into_iter()
+    .filter(|(side, _)| splits_that_way(area, *side))
+    .min_by_key(|(_, share)| *share)
+    .filter(|(_, share)| share * EDGE_SHARE < DROP_SCALE)
+    .map_or(DropZone::Over, |(side, _)| DropZone::Edge(side))
+}
+
+/// The room a drop would take: the whole pane, or the half of it against the
+/// edge the pointer is nearest.
+pub fn drop_zone_rect(area: Rect, zone: DropZone) -> Rect {
+    match zone {
+        DropZone::Over => area,
+        DropZone::Edge(side) => {
+            let (first, second) = split_rect(area, side.direction(), 0.5);
+            if side.takes_first() {
+                first
+            } else {
+                second
+            }
+        }
+    }
+}
+
+/// Whether a pane that size has room to be cut that way.
+fn splits_that_way(area: Rect, side: SplitSide) -> bool {
+    match side.direction() {
+        Direction::Horizontal => area.width >= 2 * LEAST_SPLIT_WIDTH,
+        Direction::Vertical => area.height >= 2 * LEAST_SPLIT_HEIGHT,
+    }
+}
+
 /// Snapshot of a pane's position and focus state after layout.
 #[derive(Clone)]
 pub struct PaneInfo {
@@ -234,6 +323,39 @@ impl TileLayout {
         new_id
     }
 
+    /// Cut `target` in two and put an existing pane id against one side of it.
+    /// The inserted pane takes focus, the way every other split's new pane
+    /// does. The id is the caller's because a docked agent brings its own: the
+    /// id its terminal has been wired to since it was spawned.
+    pub fn insert_pane_at_edge(&mut self, target: PaneId, side: SplitSide, new_id: PaneId) -> bool {
+        if !contains_pane_id(&self.root, target) || contains_pane_id(&self.root, new_id) {
+            return false;
+        }
+        let placement = if side.takes_first() {
+            SplitPlacement::Before
+        } else {
+            SplitPlacement::After
+        };
+        let placeholder = PaneId::from_raw(0);
+        let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
+        self.root = split_at(old, target, side.direction(), new_id, placement);
+        self.focus = new_id;
+        true
+    }
+
+    /// Rename the leaf holding `target` to `replacement`. The room does not
+    /// change shape; the pane in it becomes a different pane.
+    pub fn replace_pane(&mut self, target: PaneId, replacement: PaneId) -> bool {
+        if !contains_pane_id(&self.root, target) || contains_pane_id(&self.root, replacement) {
+            return false;
+        }
+        rename_leaf(&mut self.root, target, replacement);
+        if self.focus == target {
+            self.focus = replacement;
+        }
+        true
+    }
+
     /// Close the focused pane. Returns false if it's the last pane.
     pub fn close_focused(&mut self) -> bool {
         if self.pane_count() <= 1 {
@@ -352,6 +474,37 @@ impl TileLayout {
         true
     }
 
+    /// Take a pane out of wherever it is and put it against one edge of
+    /// another, cutting that pane in two. The pane keeps its id, so whatever is
+    /// attached to it — its terminal, its scrollback, its name — moves with it.
+    ///
+    /// It is taken out first, which is what makes dropping a pane against its
+    /// own neighbour work: the room it leaves behind closes up before the room
+    /// it lands in is cut.
+    pub fn move_pane_to_edge(&mut self, source: PaneId, target: PaneId, side: SplitSide) -> bool {
+        if source == target
+            || !contains_pane_id(&self.root, source)
+            || !contains_pane_id(&self.root, target)
+        {
+            return false;
+        }
+        let placement = if side.takes_first() {
+            SplitPlacement::Before
+        } else {
+            SplitPlacement::After
+        };
+        let placeholder = PaneId::from_raw(0);
+        let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
+        let Some(rest) = remove_pane(old, source) else {
+            self.root = Node::Pane(target);
+            self.focus = target;
+            return false;
+        };
+        self.root = split_at(rest, target, side.direction(), source, placement);
+        self.focus = source;
+        true
+    }
+
     /// Access the tree root for serialization.
     pub fn root(&self) -> &Node {
         &self.root
@@ -424,6 +577,20 @@ fn contains_pane_id(node: &Node, pane_id: PaneId) -> bool {
         Node::Pane(id) => *id == pane_id,
         Node::Split { first, second, .. } => {
             contains_pane_id(first, pane_id) || contains_pane_id(second, pane_id)
+        }
+    }
+}
+
+fn rename_leaf(node: &mut Node, from: PaneId, to: PaneId) {
+    match node {
+        Node::Pane(id) => {
+            if *id == from {
+                *id = to;
+            }
+        }
+        Node::Split { first, second, .. } => {
+            rename_leaf(first, from, to);
+            rename_leaf(second, from, to);
         }
     }
 }
@@ -773,5 +940,87 @@ mod tests {
             .unwrap()
             .rect;
         assert_ne!(after_unknown, before_left);
+    }
+
+    #[test]
+    fn middle_of_a_pane_is_a_swap_and_its_edges_are_cuts() {
+        let area = Rect::new(0, 0, 100, 20);
+        assert_eq!(drop_zone_at(area, 50, 10), DropZone::Over);
+        assert_eq!(drop_zone_at(area, 1, 10), DropZone::Edge(SplitSide::Left));
+        assert_eq!(drop_zone_at(area, 98, 10), DropZone::Edge(SplitSide::Right));
+        assert_eq!(drop_zone_at(area, 50, 0), DropZone::Edge(SplitSide::Top));
+        assert_eq!(
+            drop_zone_at(area, 50, 19),
+            DropZone::Edge(SplitSide::Bottom)
+        );
+    }
+
+    #[test]
+    fn edges_are_measured_as_shares_so_a_wide_pane_reads_the_way_it_looks() {
+        // Ten columns into a hundred-wide pane is a tenth of the way across and
+        // an edge; ten rows into a twenty-tall pane is halfway down and is not.
+        let area = Rect::new(0, 0, 100, 20);
+        assert_eq!(drop_zone_at(area, 10, 10), DropZone::Edge(SplitSide::Left));
+        assert_eq!(drop_zone_at(area, 50, 10), DropZone::Over);
+    }
+
+    #[test]
+    fn a_pane_too_small_to_cut_answers_its_edges_as_its_middle() {
+        // Wide enough to cut across, too short to cut down.
+        let area = Rect::new(0, 0, 100, 6);
+        assert_eq!(drop_zone_at(area, 1, 0), DropZone::Edge(SplitSide::Left));
+        assert_eq!(drop_zone_at(area, 50, 0), DropZone::Over);
+        assert_eq!(drop_zone_at(area, 50, 5), DropZone::Over);
+    }
+
+    #[test]
+    fn a_drop_takes_the_half_against_the_edge_it_is_nearest() {
+        let area = Rect::new(0, 0, 100, 20);
+        assert_eq!(drop_zone_rect(area, DropZone::Over), area);
+        assert_eq!(
+            drop_zone_rect(area, DropZone::Edge(SplitSide::Left)),
+            Rect::new(0, 0, 50, 20)
+        );
+        assert_eq!(
+            drop_zone_rect(area, DropZone::Edge(SplitSide::Right)),
+            Rect::new(50, 0, 50, 20)
+        );
+        assert_eq!(
+            drop_zone_rect(area, DropZone::Edge(SplitSide::Bottom)),
+            Rect::new(0, 10, 100, 10)
+        );
+    }
+
+    #[test]
+    fn pinning_a_pane_to_an_edge_cuts_the_target_and_keeps_the_pane_id() {
+        let (mut layout, left) = TileLayout::new();
+        let right =
+            layout.split_focused_with_placement(Direction::Horizontal, SplitPlacement::After);
+        let area = Rect::new(0, 0, 100, 20);
+
+        assert!(layout.move_pane_to_edge(left, right, SplitSide::Bottom));
+        assert_eq!(layout.pane_count(), 2);
+        assert_eq!(layout.focused(), left);
+
+        let panes = layout.panes(area);
+        let left_rect = panes.iter().find(|pane| pane.id == left).unwrap().rect;
+        let right_rect = panes.iter().find(|pane| pane.id == right).unwrap().rect;
+        // The cut the pane left behind closed up, so what was two columns is
+        // now one column cut in two, with the moved pane in the lower half.
+        assert_eq!(right_rect, Rect::new(0, 0, 100, 10));
+        assert_eq!(left_rect, Rect::new(0, 10, 100, 10));
+    }
+
+    #[test]
+    fn a_pane_cannot_be_pinned_to_itself_or_to_a_pane_that_is_not_there() {
+        let (mut layout, left) = TileLayout::new();
+        let right =
+            layout.split_focused_with_placement(Direction::Horizontal, SplitPlacement::After);
+        let unknown = PaneId::alloc();
+
+        assert!(!layout.move_pane_to_edge(left, left, SplitSide::Left));
+        assert!(!layout.move_pane_to_edge(left, unknown, SplitSide::Left));
+        assert!(!layout.move_pane_to_edge(unknown, right, SplitSide::Left));
+        assert_eq!(layout.pane_count(), 2);
     }
 }

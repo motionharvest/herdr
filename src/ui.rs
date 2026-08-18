@@ -5,6 +5,8 @@ use ratatui::{
     Frame,
 };
 
+mod agent_table;
+mod composer;
 mod dialogs;
 mod keybind_help;
 mod menus;
@@ -15,14 +17,20 @@ mod panes;
 mod release_notes;
 mod scrollbar;
 mod settings;
-mod sidebar;
 mod status;
-mod tabs;
 mod widgets;
 
+use self::agent_table::render_global_launcher;
+pub(crate) use self::agent_table::{
+    agent_panel_entries, agent_panel_entries_from, compute_agent_locations, render_agent_table,
+    split_agent_table, AgentLocation, AgentTableLayout, AgentTableRow,
+};
+pub(crate) use self::composer::ComposerLayout;
+use self::composer::{render_composer, render_composer_dropdown};
 use self::dialogs::{
-    render_confirm_close_overlay, render_new_linked_worktree_overlay,
-    render_open_existing_worktree_overlay, render_remove_worktree_overlay, render_rename_overlay,
+    render_confirm_close_agent_overlay, render_confirm_close_overlay,
+    render_new_linked_worktree_overlay, render_open_existing_worktree_overlay,
+    render_remove_worktree_overlay, render_rename_overlay,
 };
 use self::keybind_help::render_keybind_help_overlay;
 use self::menus::{
@@ -46,16 +54,26 @@ pub(crate) use self::release_notes::{
 use self::release_notes::{render_product_announcement_overlay, render_release_notes_overlay};
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
-    scrollbar_offset_from_row, scrollbar_thumb_grab_offset, should_show_scrollbar,
+    scrollbar_offset_from_row, scrollbar_thumb_grab_offset,
 };
 use self::settings::render_settings_overlay;
 use self::status::{
     render_config_diagnostic, render_copy_feedback, render_toast_notification,
     toast_notification_rect,
 };
-use self::tabs::render_tab_bar;
+pub(crate) use self::{
+    composer::split_composer,
+    keybind_help::keybind_help_lines,
+    mobile::{
+        mobile_switcher_areas, mobile_switcher_max_scroll, mobile_switcher_target_at,
+        mobile_switcher_workspace_doc_range, MobileSwitcherTarget,
+    },
+    panes::{cursor_hidden_by_host_focus, pane_is_scrolled_back},
+    widgets::{centered_popup_rect, modal_stack_areas},
+};
 pub(crate) use self::{
     dialogs::{
+        confirm_close_agent_button_rects, confirm_close_agent_popup_rect,
         confirm_close_button_rects, confirm_close_popup_rect, new_linked_worktree_button_rects,
         new_linked_worktree_inner_rect, open_existing_worktree_button_rects,
         open_existing_worktree_inner_rect, open_existing_worktree_max_visible_rows,
@@ -66,38 +84,22 @@ pub(crate) use self::{
         settings_button_rects, settings_show_primary_action, SOUND_ALERT_ROWS_OFFSET,
         SOUND_CHOICE_ROWS_OFFSET,
     },
-    sidebar::{
-        agent_folder_position, agent_panel_entries, collapsed_sidebar_sections,
-        collapsed_sidebar_toggle_rect, compute_agent_locations, compute_workspace_card_areas,
-        compute_workspace_list_areas, expanded_sidebar_toggle_rect, new_workspace_button_rect,
-        normalized_workspace_scroll, render_sidebar, spaces_section_collapsed,
-        spaces_section_header_rect, workspace_agent_groups, workspace_agents_expanded,
-        workspace_drop_indicator_row, workspace_list_entries, workspace_list_rect,
-        workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
-        AgentFolderGroup, AgentLocation, WorkspaceListEntry,
-    },
-};
-pub(crate) use self::{
-    keybind_help::keybind_help_lines,
-    mobile::{
-        mobile_switcher_areas, mobile_switcher_max_scroll, mobile_switcher_target_at,
-        mobile_switcher_workspace_doc_range, MobileSwitcherTarget,
-    },
-    panes::{cursor_hidden_by_host_focus, pane_is_scrolled_back},
-    tabs::compute_tab_bar_view,
-    widgets::{centered_popup_rect, modal_stack_areas},
 };
 use crate::app::state::ViewLayout;
 use crate::app::{AppState, Mode};
 use crate::terminal::TerminalRuntimeRegistry;
 
-// Braille spinner frames — smooth rotation
-const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// The `arc` set from FGRibreau's spinners: an arc segment sweeping around a
+/// circle. Not braille, on purpose — a braille cell is drawn small and faint in
+/// many terminal fonts, which turns a spinner into a character that twitches
+/// rather than a shape that turns. These six frames are quadrant arcs, which
+/// every font draws at full weight.
+const SPINNERS: &[&str] = &["◜", "◠", "◝", "◞", "◡", "◟"];
 
-/// Map spinner_tick (incremented every frame at ~60fps) to a spinner frame.
-/// We want ~8 updates/sec so divide by 8.
+/// Map spinner_tick, which counts 16ms animation ticks, to a spinner frame. The
+/// set holds one frame per 80ms, so every fifth tick turns it.
 pub(super) fn spinner_frame(tick: u32) -> &'static str {
-    SPINNERS[(tick as usize / 8) % SPINNERS.len()]
+    SPINNERS[(tick / crate::app::ANIMATION_TICKS_PER_FRAME) as usize % SPINNERS.len()]
 }
 
 /// Compute view geometry and reconcile pane sizes.
@@ -173,52 +175,30 @@ fn compute_view_internal(
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
+    // Agent order is session state, not geometry. Capture newcomers before
+    // either desktop or mobile computes rows so later pane rearrangement can
+    // never feed back into the list.
+    agent_table::sync_agent_order(app);
+
+    // The composer is carved off first and spans the whole frame, so it
+    // survives every layout below it: sidebar, tabs, panes, and the mobile
+    // header all lay out inside what is left.
+    let (composer, area) = split_composer(app, area);
+
     if is_mobile_width(area, app.mobile_width_threshold) {
-        compute_mobile_view(app, terminal_runtimes, area, resize_panes, cell_size);
+        compute_mobile_view(
+            app,
+            terminal_runtimes,
+            area,
+            composer,
+            resize_panes,
+            cell_size,
+        );
         return;
     }
 
-    let sidebar_width = desktop_sidebar_width(app, area.width);
-    let sidebar_rect = if sidebar_width > 0 {
-        Rect::new(area.x, area.y, sidebar_width, area.height)
-    } else {
-        Rect::default()
-    };
-    let main_area = Rect::new(
-        area.x.saturating_add(sidebar_width),
-        area.y,
-        area.width.saturating_sub(sidebar_width),
-        area.height,
-    );
-
-    let has_tabs = app.active.and_then(|i| app.workspaces.get(i)).is_some();
-    let (tab_bar_rect, terminal_area) = if has_tabs && main_area.height > 1 {
-        let [tab_bar_rect, terminal_area] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(main_area);
-        (tab_bar_rect, terminal_area)
-    } else {
-        (Rect::default(), main_area)
-    };
     app.view.agent_locations = compute_agent_locations(app, terminal_runtimes);
-    // Keep where the sidebar is scrolled across frames — this runs on every
-    // render, so resetting here would snap the list back to the top between
-    // wheel notches. Re-clamp instead, in case the sidebar just got shorter.
-    app.workspace_scroll = normalized_workspace_scroll(app, sidebar_rect, app.workspace_scroll);
-
-    let tab_bar_view = app
-        .active
-        .and_then(|i| app.workspaces.get(i))
-        .map(|ws| {
-            compute_tab_bar_view(
-                ws,
-                tab_bar_rect,
-                app.tab_scroll,
-                app.tab_scroll_follow_active,
-                app.mouse_capture,
-            )
-        })
-        .unwrap_or_default();
-    app.tab_scroll = tab_bar_view.scroll;
+    let (agent_table, terminal_area) = split_agent_table(app, area);
 
     let split_borders = app
         .active
@@ -248,24 +228,12 @@ fn compute_view_internal(
         .map(|toast| toast_notification_rect(terminal_area, toast, app.config_diagnostic.is_some()))
         .unwrap_or_default();
 
-    let (workspace_card_areas, agent_row_areas, agent_folder_areas) = if app.sidebar_collapsed {
-        (Vec::new(), Vec::new(), Vec::new())
-    } else {
-        compute_workspace_list_areas(app, sidebar_rect)
-    };
     let agent_locations = std::mem::take(&mut app.view.agent_locations);
     app.view = crate::app::ViewState {
         layout: ViewLayout::Desktop,
-        sidebar_rect,
-        workspace_card_areas,
-        agent_row_areas,
-        agent_folder_areas,
+        composer,
+        agent_table,
         agent_locations,
-        tab_bar_rect,
-        tab_hit_areas: tab_bar_view.tab_hit_areas,
-        tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
-        tab_scroll_right_hit_area: tab_bar_view.scroll_right_hit_area,
-        new_tab_hit_area: tab_bar_view.new_tab_hit_area,
         terminal_area,
         mobile_header_rect: Rect::default(),
         mobile_menu_hit_area: Rect::default(),
@@ -279,33 +247,11 @@ fn compute_view_internal(
     app.view.pane_title_hit_areas = self::panes::compute_pane_title_hit_areas(app);
 }
 
-fn desktop_sidebar_width(app: &AppState, total_width: u16) -> u16 {
-    if total_width == 0 {
-        return 0;
-    }
-
-    const MIN_MAIN_WIDTH: u16 = 20;
-
-    let max_width = if total_width > MIN_MAIN_WIDTH {
-        total_width - MIN_MAIN_WIDTH
-    } else if total_width > 1 {
-        1
-    } else {
-        total_width
-    };
-    let desired_width = if app.sidebar_collapsed {
-        1
-    } else {
-        app.sidebar_width
-            .clamp(app.sidebar_min_width, app.sidebar_max_width)
-    };
-    desired_width.min(max_width)
-}
-
 fn compute_mobile_view(
     app: &mut AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     area: Rect,
+    composer: crate::ui::composer::ComposerLayout,
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
@@ -355,16 +301,9 @@ fn compute_mobile_view(
 
     app.view = crate::app::ViewState {
         layout: ViewLayout::Mobile,
-        sidebar_rect: Rect::default(),
-        workspace_card_areas: Vec::new(),
-        agent_row_areas: Vec::new(),
-        agent_folder_areas: Vec::new(),
+        composer,
+        agent_table: crate::ui::AgentTableLayout::default(),
         agent_locations: std::collections::HashMap::new(),
-        tab_bar_rect: Rect::default(),
-        tab_hit_areas: Vec::new(),
-        tab_scroll_left_hit_area: Rect::default(),
-        tab_scroll_right_hit_area: Rect::default(),
-        new_tab_hit_area: Rect::default(),
         terminal_area,
         mobile_header_rect: header_rect,
         mobile_menu_hit_area: header_hits.menu,
@@ -390,15 +329,17 @@ pub fn render_with_runtime_registry(
     terminal_runtimes: &TerminalRuntimeRegistry,
     frame: &mut Frame,
 ) {
-    let tab_bar_area = app.view.tab_bar_rect;
     let terminal_area = app.view.terminal_area;
+
+    render_composer(app, frame, &app.view.composer);
 
     if app.view.layout == ViewLayout::Mobile {
         render_mobile_header(app, terminal_runtimes, frame, app.view.mobile_header_rect);
     }
     if app.view.layout != ViewLayout::Mobile {
-        render_sidebar(app, terminal_runtimes, frame, app.view.sidebar_rect);
-        render_tab_bar(app, frame, tab_bar_area);
+        let entries = agent_panel_entries_from(app, terminal_runtimes);
+        render_agent_table(app, frame, &app.view.agent_table, &entries);
+        render_global_launcher(app, frame);
     }
     render_panes(app, terminal_runtimes, frame, terminal_area);
 
@@ -417,13 +358,12 @@ pub fn render_with_runtime_registry(
         Mode::Copy => render_copy_mode_overlay(app, frame, terminal_area),
         Mode::Resize => render_resize_overlay(app, frame, terminal_area),
         Mode::ConfirmClose => render_confirm_close_overlay(app, frame, terminal_area),
+        Mode::ConfirmCloseAgent => render_confirm_close_agent_overlay(app, frame, terminal_area),
         Mode::ContextMenu => {
             render_context_menu(app, frame);
         }
         Mode::Settings => render_settings_overlay(app, frame, frame.area()),
-        Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
-            render_rename_overlay(app, frame, frame.area())
-        }
+        Mode::RenameWorkspace | Mode::RenamePane => render_rename_overlay(app, frame, frame.area()),
         Mode::NewLinkedWorktree => render_new_linked_worktree_overlay(app, frame, frame.area()),
         Mode::OpenExistingWorktree => {
             render_open_existing_worktree_overlay(app, frame, frame.area())
@@ -432,15 +372,24 @@ pub fn render_with_runtime_registry(
         Mode::GlobalMenu => render_global_launcher_menu(app, frame),
         Mode::KeybindHelp => render_keybind_help_overlay(app, frame),
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),
-        Mode::Terminal => {}
+        // The composer band is chrome, not an overlay: it draws itself above.
+        Mode::Composer | Mode::Terminal => {}
     }
+
+    // A config warning outranks whatever is open: a broken config is the one
+    // fact the user must be able to see from anywhere, so it is drawn over
+    // every overlay rather than under them.
+    if let Some(message) = &app.config_diagnostic {
+        render_config_diagnostic(frame, terminal_area, message, &app.palette);
+    }
+
+    // Its open list is an overlay, though, and hangs over the panes — so it
+    // goes on last, after everything it covers has been drawn.
+    render_composer_dropdown(app, frame, &app.view.composer);
 }
 
 fn render_notifications(app: &AppState, frame: &mut Frame, terminal_area: Rect) {
     let has_config_diagnostic = app.config_diagnostic.is_some();
-    if let Some(message) = &app.config_diagnostic {
-        render_config_diagnostic(frame, terminal_area, message, &app.palette);
-    }
     let mut copy_feedback_offset = u16::from(has_config_diagnostic);
     if let Some(toast) = &app.toast {
         if app.view.layout == ViewLayout::Mobile {
@@ -507,7 +456,6 @@ mod tests {
     use super::scrollbar::scrollbar_thumb;
     use super::*;
     use crate::{app::state::ViewLayout, layout::PaneInfo, workspace::Workspace};
-    use ratatui::style::Color;
     use ratatui::{backend::TestBackend, Terminal};
 
     #[tokio::test]
@@ -548,29 +496,6 @@ mod tests {
             .backend_mut()
             .assert_cursor_position((focused.inner_rect.x + 4, focused.inner_rect.y));
     }
-
-    #[test]
-    fn mobile_width_uses_header_and_full_width_terminal() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("one")];
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::Terminal;
-
-        compute_view(&mut app, Rect::new(0, 0, 44, 20));
-
-        assert_eq!(app.view.layout, ViewLayout::Mobile);
-        assert_eq!(app.view.sidebar_rect, Rect::default());
-        assert_eq!(app.view.tab_bar_rect, Rect::default());
-        assert_eq!(app.view.mobile_header_rect, Rect::new(0, 0, 44, 2));
-        assert_eq!(app.view.terminal_area, Rect::new(0, 2, 44, 18));
-        assert_eq!(app.view.mobile_menu_hit_area.height, 2);
-        assert_eq!(
-            app.view.mobile_menu_hit_area.x + app.view.mobile_menu_hit_area.width,
-            44
-        );
-    }
-
     #[test]
     fn configured_mobile_width_threshold_controls_layout_switch() {
         let mut app = crate::app::state::AppState::test_new();
@@ -585,338 +510,40 @@ mod tests {
         app.mobile_width_threshold = 90;
         compute_view(&mut app, Rect::new(0, 0, 80, 20));
         assert_eq!(app.view.layout, ViewLayout::Mobile);
-        assert_eq!(app.view.mobile_header_rect, Rect::new(0, 0, 80, 2));
-        assert_eq!(app.view.terminal_area, Rect::new(0, 2, 80, 18));
+        assert_eq!(app.view.mobile_header_rect, Rect::new(0, 4, 80, 2));
+        assert_eq!(app.view.terminal_area, Rect::new(0, 6, 80, 14));
     }
 
     #[test]
-    fn product_announcement_renders_above_config_diagnostic() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("one")];
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::ProductAnnouncement;
-        app.product_announcement = Some(crate::app::state::ProductAnnouncementState {
-            version: "0.6.0".into(),
-            id: "keybinding-v2".into(),
-            title: "Keybinding syntax changed".into(),
-            body: "### Update\n- Body".into(),
-            scroll: 0,
-            preview: false,
-        });
-        app.config_diagnostic = Some(
-            "unsafe direct keybinding: keys.new_workspace = \"n\"\nunsafe direct keybinding: keys.new_tab = \"c\""
-                .into(),
-        );
-
-        let area = Rect::new(0, 0, 44, 20);
-        compute_view(&mut app, area);
-
-        let backend = TestBackend::new(area.width, area.height);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(&app, frame)).unwrap();
-        let buffer = terminal.backend().buffer();
-
-        let popup = centered_popup_rect(
-            area,
-            PRODUCT_ANNOUNCEMENT_MODAL_SIZE.0,
-            PRODUCT_ANNOUNCEMENT_MODAL_SIZE.1,
-        )
-        .expect("announcement popup");
-        let title_row = popup.y + 1;
-        let row = buffer_row_text(buffer, Rect::new(0, title_row, area.width, 1), title_row);
-
-        assert!(row.contains("Keybinding syntax changed"));
-        assert!(!row.contains("config warning"));
-    }
-
-    #[test]
-    fn desktop_layout_reserves_sidebar_space() {
+    fn desktop_top_row_draws_menu_at_far_right() {
         let mut app = crate::app::state::AppState::test_new();
         app.workspaces = vec![Workspace::test_new("one")];
         app.active = Some(0);
         app.selected = 0;
         app.mode = Mode::Terminal;
+        app.mouse_capture = true;
 
         compute_view(&mut app, Rect::new(0, 0, 100, 20));
+        let launcher = app.global_launcher_rect();
+        assert_eq!(launcher.x + launcher.width, 100);
+        assert_eq!(launcher.y, 0);
 
-        assert_eq!(app.view.sidebar_rect, Rect::new(0, 0, 26, 20));
-        assert_eq!(app.view.tab_bar_rect, Rect::new(26, 0, 74, 1));
-        assert_eq!(app.view.terminal_area, Rect::new(26, 1, 74, 19));
-    }
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| render(&app, frame))
+            .expect("draw desktop UI");
 
-    #[test]
-    fn expanded_sidebar_renders_upper_left_chevron() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("one")];
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::Terminal;
-
-        compute_view(&mut app, Rect::new(0, 0, 100, 20));
-
-        let backend = TestBackend::new(100, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(&app, frame)).unwrap();
-
-        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "‹");
-    }
-
-    #[test]
-    fn collapsed_sidebar_renders_upper_left_chevron() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("one")];
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::Terminal;
-        app.sidebar_collapsed = true;
-
-        compute_view(&mut app, Rect::new(0, 0, 100, 20));
-
-        let backend = TestBackend::new(100, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(&app, frame)).unwrap();
-
-        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "›");
-    }
-
-    #[test]
-    fn expanded_sidebar_workspace_rows_show_state_before_name_without_numbers() {
-        let mut app = crate::app::state::AppState::test_new();
-        let mut ws = Workspace::test_new("one");
-        let repo = temp_git_repo("main");
-        ws.identity_cwd = repo.clone();
-        let root_pane = ws.tabs[0].root_pane;
-        ws.refresh_git_ahead_behind();
-
-        app.workspaces = vec![ws];
-        app.ensure_test_terminals();
-        let root_terminal_id = app.workspaces[0].tabs[0].panes[&root_pane]
-            .attached_terminal_id
-            .clone();
-        app.terminals.get_mut(&root_terminal_id).unwrap().cwd = repo.clone();
-        app.selected = 0;
-        app.mode = Mode::Navigate;
-
-        compute_view(&mut app, Rect::new(0, 0, 80, 20));
-        app.view.sidebar_rect = Rect::new(0, 0, 26, 20);
-        app.view.workspace_card_areas = compute_workspace_card_areas(&app, app.view.sidebar_rect);
-
-        // Border, name, border: the branch row the card used to carry is gone.
-        let card = app.view.workspace_card_areas[0].rect;
-        assert_eq!(card.height, 3);
-        assert_eq!(card.x, 0);
-
-        std::fs::remove_dir_all(repo).ok();
-    }
-
-    #[test]
-    fn sidebar_lists_agents_under_their_space_until_the_space_is_folded() {
-        let mut app = crate::app::state::AppState::test_new();
-        let ws = Workspace::test_new("one");
-        let root_pane = ws.tabs[0].root_pane;
-
-        app.workspaces = vec![ws];
-        app.ensure_test_terminals();
-        let terminal_id = app.workspaces[0].tabs[0].panes[&root_pane]
-            .attached_terminal_id
-            .clone();
-        app.terminals.get_mut(&terminal_id).unwrap().detected_agent =
-            Some(crate::detect::Agent::Claude);
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::Terminal;
-
-        compute_view(&mut app, Rect::new(0, 0, 100, 24));
-
-        // The agent nests under its space card in the merged list.
-        let card = app.view.workspace_card_areas[0];
-        let agent_row = app.view.agent_row_areas[0];
-        assert_eq!(agent_row.ws_idx, card.ws_idx);
-        assert_eq!(agent_row.pane_id, root_pane);
-        // The first agent starts right under the card: the card's own floor row
-        // is the only padding between the space name and its agents, and the
-        // folder header the agent carries takes the row after it.
-        assert!(agent_row.location_header);
-        assert_eq!(agent_row.rect.y, card.rect.y + card.rect.height + 1);
-        assert_eq!(agent_row.rect.height, 2);
-
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(&app, frame)).unwrap();
-        let buffer = terminal.backend().buffer();
-
-        // Status bar glyph runs down the agent entry's left edge, inset far
-        // enough to clear the space outline.
-        for row in agent_row.rect.y..agent_row.rect.y + agent_row.rect.height {
-            assert_eq!(buffer[(agent_row.rect.x + 3, row)].symbol(), "▎");
-        }
-
-        // Folding the space drops its agent rows from the list.
-        assert!(workspace_agents_expanded(&app, card.ws_idx));
-        app.collapsed_agent_space_ids
-            .insert(app.workspaces[0].id.clone());
-        compute_view(&mut app, Rect::new(0, 0, 100, 24));
-        assert!(!workspace_agents_expanded(&app, card.ws_idx));
-        assert!(app.view.agent_row_areas.is_empty());
-    }
-
-    #[test]
-    fn tab_bar_dims_auto_named_tabs_and_emphasizes_custom_tabs() {
-        let mut app = crate::app::state::AppState::test_new();
-        let mut ws = Workspace::test_new("test");
-        let custom_tab = ws.test_add_tab(Some("logs"));
-        ws.switch_tab(custom_tab);
-
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::Terminal;
-
-        compute_view(&mut app, Rect::new(0, 0, 80, 20));
-
-        let backend = TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(&app, frame)).unwrap();
-        let buffer = terminal.backend().buffer();
-
-        let auto_rect = app.view.tab_hit_areas[0];
-        let custom_rect = app.view.tab_hit_areas[1];
-        let auto_style = buffer[(auto_rect.x + 1, auto_rect.y)].style();
-        let custom_style = buffer[(custom_rect.x + 1, custom_rect.y)].style();
-
-        assert_eq!(auto_style.fg, Some(app.palette.overlay0));
-        assert!(auto_style.add_modifier.contains(Modifier::DIM));
-        assert_eq!(custom_style.fg, Some(app.palette.panel_bg));
-        assert!(custom_style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn tab_bar_uses_surface_dim_when_panel_background_resets() {
-        let mut app = crate::app::state::AppState::test_new();
-        let mut ws = Workspace::test_new("test");
-        let custom_tab = ws.test_add_tab(Some("logs"));
-        ws.switch_tab(custom_tab);
-
-        app.palette.panel_bg = Color::Reset;
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::Terminal;
-
-        compute_view(&mut app, Rect::new(0, 0, 80, 20));
-
-        let backend = TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(&app, frame)).unwrap();
-        let buffer = terminal.backend().buffer();
-
-        let custom_rect = app.view.tab_hit_areas[1];
-        let custom_style = buffer[(custom_rect.x + 1, custom_rect.y)].style();
-
-        assert_eq!(custom_style.bg, Some(app.palette.accent));
-        assert_eq!(custom_style.fg, Some(app.palette.surface_dim));
-        assert!(custom_style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn new_tab_button_tracks_rightmost_tab_when_tabs_fit() {
-        let mut app = crate::app::state::AppState::test_new();
-        let mut ws = Workspace::test_new("test");
-        ws.test_add_tab(Some("logs"));
-
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::Terminal;
-
-        compute_view(&mut app, Rect::new(0, 0, 80, 20));
-
-        let last_visible = app
-            .view
-            .tab_hit_areas
-            .iter()
-            .rev()
-            .find(|rect| rect.width > 0)
-            .copied()
-            .expect("last visible tab");
-
-        assert_eq!(
-            app.view.new_tab_hit_area.x,
-            last_visible.x + last_visible.width
-        );
-    }
-
-    #[test]
-    fn tab_bar_shows_scroll_controls_when_tabs_overflow() {
-        let mut app = crate::app::state::AppState::test_new();
-        let mut ws = Workspace::test_new("test");
-        for name in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"] {
-            ws.test_add_tab(Some(name));
-        }
-
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::Terminal;
-        app.tab_scroll_follow_active = false;
-        app.tab_scroll = 2;
-
-        compute_view(&mut app, Rect::new(0, 0, 65, 20));
-
-        assert!(app.view.tab_scroll_left_hit_area.width > 0);
-        assert!(app.view.tab_scroll_right_hit_area.width > 0);
-        assert_eq!(app.view.tab_hit_areas[0].width, 0);
-        assert_eq!(app.view.tab_hit_areas[1].width, 0);
-        assert!(app.view.tab_hit_areas[2].width > 0);
-        assert!(app.view.new_tab_hit_area.width > 0);
-
-        let last_visible = app
-            .view
-            .tab_hit_areas
-            .iter()
-            .rev()
-            .find(|rect| rect.width > 0)
-            .copied()
-            .expect("last visible tab");
-
-        assert_eq!(
-            app.view.tab_scroll_right_hit_area.x,
-            last_visible.x + last_visible.width
-        );
-        assert_eq!(
-            app.view.new_tab_hit_area.x,
-            app.view.tab_scroll_right_hit_area.x + app.view.tab_scroll_right_hit_area.width
-        );
-    }
-
-    #[test]
-    fn tab_bar_clamps_manual_scroll_at_last_visible_tab() {
-        let mut app = crate::app::state::AppState::test_new();
-        let mut ws = Workspace::test_new("test");
-        for name in [
-            "one", "two", "three", "four", "five", "six", "seven", "eight",
-        ] {
-            ws.test_add_tab(Some(name));
-        }
-
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::Terminal;
-        app.tab_scroll_follow_active = false;
-        app.tab_scroll = usize::MAX;
-
-        compute_view(&mut app, Rect::new(0, 0, 65, 20));
-
-        let last_idx = app.workspaces[0].tabs.len() - 1;
-        assert!(app.view.tab_hit_areas[last_idx].width > 0);
-        let clamped_scroll = app.tab_scroll;
-
-        app.scroll_tabs_right();
-
-        assert_eq!(app.tab_scroll, clamped_scroll);
-        assert!(app.view.tab_hit_areas[last_idx].width > 0);
+        let rendered = (launcher.x..launcher.x + launcher.width)
+            .map(|x| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((x, launcher.y))
+                    .expect("launcher cell")
+                    .symbol()
+            })
+            .collect::<String>();
+        assert_eq!(rendered.trim(), "menu");
     }
 
     #[test]
@@ -979,7 +606,7 @@ mod tests {
             viewport_rows: 5,
         };
 
-        assert!(!should_show_scrollbar(metrics));
+        assert!(!self::scrollbar::should_show_scrollbar(metrics));
     }
 
     #[test]
@@ -990,7 +617,7 @@ mod tests {
             viewport_rows: 5,
         };
 
-        assert!(should_show_scrollbar(metrics));
+        assert!(self::scrollbar::should_show_scrollbar(metrics));
     }
 
     #[test]
@@ -1034,30 +661,6 @@ mod tests {
 
         assert_eq!(scrollbar_offset_from_drag_row(metrics, track, row, grab), 7);
     }
-
-    fn buffer_row_text(buffer: &ratatui::buffer::Buffer, area: Rect, row: u16) -> String {
-        (area.x..area.x + area.width)
-            .map(|x| buffer[(x, row)].symbol())
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-    }
-
-    fn temp_git_repo(branch: &str) -> std::path::PathBuf {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("unix time")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("herdr-ui-test-{unique}"));
-        std::fs::create_dir_all(root.join(".git")).expect("create .git dir");
-        std::fs::write(
-            root.join(".git/HEAD"),
-            format!("ref: refs/heads/{branch}\n"),
-        )
-        .expect("write HEAD");
-        root
-    }
-
     #[test]
     fn prefix_mode_renders_prefix_indicator() {
         let mut app = crate::app::state::AppState::test_new();
@@ -1087,8 +690,8 @@ mod tests {
 
         let workspace_tab = groups
             .iter()
-            .find(|(name, _)| *name == "workspaces / tabs")
-            .expect("workspace tab group")
+            .find(|(name, _)| *name == "spaces / agents")
+            .expect("spaces group")
             .1
             .clone();
         let panes = groups
@@ -1172,5 +775,48 @@ mod tests {
             .join("");
         assert!(rendered_help.contains("open lazygit"));
         assert!(rendered_help.contains("custom command"));
+    }
+
+    #[test]
+    fn the_done_marker_becomes_a_check_once_it_is_acknowledged() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("space");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0]
+            .pane_state(pane_id)
+            .expect("agent pane")
+            .attached_terminal_id
+            .clone();
+        let terminal = app.terminals.get_mut(&terminal_id).expect("agent terminal");
+        terminal.set_agent_name("codex".into());
+        terminal.state = crate::detect::AgentState::Idle;
+        let pane = app.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("agent pane");
+        pane.seen = false;
+        pane.completed = true;
+
+        let marker = |app: &crate::app::state::AppState| {
+            let row = app.view.agent_table.rows[0].clone();
+            let backend = TestBackend::new(106, 20);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| render(app, frame)).unwrap();
+            terminal.backend().buffer()[(row.rect.x, row.rect.y)]
+                .symbol()
+                .to_string()
+        };
+
+        compute_view(&mut app, Rect::new(0, 0, 106, 20));
+        assert_eq!(marker(&app), "\u{25cf}");
+
+        assert!(app.acknowledge_agent_completion(pane_id));
+        compute_view(&mut app, Rect::new(0, 0, 106, 20));
+        assert_eq!(marker(&app), "\u{2713}");
     }
 }

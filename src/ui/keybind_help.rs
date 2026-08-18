@@ -62,6 +62,7 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
                 "prefix mode",
             ),
             help_entry(keybind_label(&kb.help), "keybinds"),
+            help_entry(keybind_label(&kb.composer), "start an agent"),
             help_entry(keybind_label(&kb.settings), "settings"),
             help_entry(keybind_label(&kb.detach), "detach"),
             help_entry(keybind_label(&kb.reload_config), "reload config"),
@@ -118,14 +119,8 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
         help_entry(keybind_label(&kb.previous_agent), "previous agent"),
         help_entry(keybind_label(&kb.next_agent), "next agent"),
         help_entry(indexed_label(&kb.focus_agent), "focus agent 1-9"),
-        help_entry(keybind_label(&kb.new_tab), "new tab"),
-        help_entry(keybind_label(&kb.rename_tab), "rename tab"),
-        help_entry(keybind_label(&kb.previous_tab), "previous tab"),
-        help_entry(keybind_label(&kb.next_tab), "next tab"),
-        help_entry(indexed_label(&kb.switch_tab), "switch tab 1-9"),
-        help_entry(keybind_label(&kb.close_tab), "close tab"),
     ];
-    groups.push(("workspaces / tabs", workspace_tab));
+    groups.push(("spaces / agents", workspace_tab));
 
     let panes = vec![
         help_entry(keybind_label(&kb.split_vertical), "split vertical"),
@@ -136,7 +131,6 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
         help_entry(keybind_label(&kb.copy_mode), "copy mode"),
         help_entry(keybind_label(&kb.zoom), "zoom pane"),
         help_entry(keybind_label(&kb.resize_mode), "resize mode"),
-        help_entry(keybind_label(&kb.toggle_sidebar), "toggle sidebar"),
         help_entry(keybind_label(&kb.focus_pane_left), "focus pane left"),
         help_entry(keybind_label(&kb.focus_pane_down), "focus pane down"),
         help_entry(keybind_label(&kb.focus_pane_up), "focus pane up"),

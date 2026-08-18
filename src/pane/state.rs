@@ -3,11 +3,20 @@ use crate::terminal::TerminalId;
 /// Viewport state for a pane.
 ///
 /// Terminal identity, cwd, labels, and agent metadata live in TerminalState.
+#[derive(Clone)]
 pub struct PaneState {
     pub attached_terminal_id: TerminalId,
-    /// Whether the user has seen this pane since its last state change to Idle.
-    /// False = "Done" (agent finished while user was in another workspace).
+    /// Whether the finish has been acknowledged. False = "Done": the agent
+    /// finished and nobody has said so out loud yet. Only clicking the marker
+    /// sets this, because looking at a pane is something that happens by
+    /// accident and losing the marker to an accident is losing the answer to
+    /// "which one finished".
     pub seen: bool,
+    /// Whether the agent has finished a run since it last worked. Together with
+    /// `seen` this is the whole marker: not finished shows nothing, finished
+    /// and unacknowledged shows the done dot, finished and acknowledged shows
+    /// the check until the agent works again.
+    pub completed: bool,
     /// Render all cell colors as the muted palette color (user toggled Dim).
     pub dimmed: bool,
 }
@@ -17,6 +26,7 @@ impl PaneState {
         Self {
             attached_terminal_id,
             seen: true,
+            completed: false,
             dimmed: false,
         }
     }

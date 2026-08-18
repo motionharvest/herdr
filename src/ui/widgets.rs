@@ -6,7 +6,6 @@ use ratatui::{
     Frame,
 };
 
-use super::panes::contrast_ratio;
 use crate::app::state::Palette;
 
 pub(super) fn render_panel_shell(
@@ -34,27 +33,6 @@ pub(super) fn panel_contrast_fg(p: &Palette) -> Color {
     match p.panel_bg {
         Color::Reset => p.surface_dim,
         color => color,
-    }
-}
-
-/// The palette tone that reads against `fill` for text sitting inside it.
-///
-/// Text on a bright fill is a hole punched through to the panel behind it; on a
-/// dark fill that hole is invisible, so the text has to sit on top in the
-/// panel's own text tone instead. Picking whichever of the two has more
-/// contrast covers both without a brightness threshold to tune per theme.
-/// Fills or palettes that cannot be measured keep the knockout, which is the
-/// long-standing behavior.
-pub(super) fn contrasting_label_fg(p: &Palette, fill: Color) -> Color {
-    let knockout = panel_contrast_fg(p);
-    let Some(fill) = super::panes::color_to_rgb(fill) else {
-        return knockout;
-    };
-    let contrast =
-        |color: Color| super::panes::color_to_rgb(color).map(|rgb| contrast_ratio(fill, rgb));
-    match (contrast(knockout), contrast(p.text)) {
-        (Some(knocked_out), Some(on_top)) if on_top > knocked_out => p.text,
-        _ => knockout,
     }
 }
 

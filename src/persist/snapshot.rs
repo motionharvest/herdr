@@ -20,24 +20,45 @@ pub struct SessionSnapshot {
     pub workspaces: Vec<WorkspaceSnapshot>,
     pub active: Option<usize>,
     pub selected: usize,
+    /// The agent the composer was left showing, by name. A name rather than a
+    /// row number because the rows are what this machine can start, and that
+    /// can differ between the session that wrote this and the one that reads it.
     #[serde(default)]
-    pub agent_panel_scope: crate::app::state::AgentPanelScope,
+    pub composer_agent: Option<String>,
+    /// Manual order of the session-wide agent table. Terminal ids are stable
+    /// across pane rearrangement and are restored from pane snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_order: Vec<crate::terminal::TerminalId>,
+    /// The agents with no pane showing them. They are saved beside the spaces
+    /// rather than inside one, because that is where they are: an agent set
+    /// down or started hidden belongs to the session, not to a layout.
     #[serde(default)]
-    pub sidebar_width: Option<u16>,
+    pub detached_agents: Vec<DetachedAgentSnapshot>,
+}
+
+/// An agent that was running with no pane showing it.
+#[derive(Serialize, Deserialize)]
+pub struct DetachedAgentSnapshot {
+    /// The pane id it was running under. It has no room in a layout, but it
+    /// still has an id, and a live handoff hands its terminal over under that
+    /// id the same way it does for a pane on screen.
+    pub pane_id: u32,
+    pub pane: PaneSnapshot,
+    /// The marker as it was saved beside the agent rather than inside its pane.
+    /// The pane snapshot is where the marker lives now; these two are written
+    /// and read alongside it so a snapshot passes intact between this version
+    /// and the versions that only had them here.
+    #[serde(default = "default_true")]
+    pub seen: bool,
+    /// Whether the agent had finished a run since it last worked. Snapshots
+    /// written before the check mark existed do not carry it, so an unseen
+    /// agent in one of those is read as finished, which is what unseen meant.
     #[serde(default)]
-    pub sidebar_section_split: Option<f32>,
-    #[serde(default)]
-    pub collapsed_space_keys: std::collections::HashSet<String>,
-    /// Ids of the spaces whose agent rows are folded away in the agent
-    /// section. Space ids are themselves persisted, so they survive restore.
-    #[serde(default)]
-    pub collapsed_agent_space_ids: std::collections::HashSet<String>,
-    /// Whether the sidebar itself is folded to its narrow strip.
-    #[serde(default)]
-    pub sidebar_collapsed: bool,
-    /// Whether the spaces section is folded to its header row.
-    #[serde(default)]
-    pub spaces_collapsed: bool,
+    pub completed: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize)]
@@ -121,6 +142,18 @@ pub struct PaneSnapshot {
     pub agent_session: Option<PaneAgentSessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    /// Whether the finish had been acknowledged. An agent that finished wears
+    /// the done marker until its marker is clicked, and clicking it leaves the
+    /// check behind, so both halves of the marker have to survive a restart or
+    /// the restart quietly clears the answer to "which one finished".
+    /// Snapshots written before the marker was saved carry neither field: an
+    /// agent in one of those reads as acknowledged and not finished, which is
+    /// the same as no marker at all.
+    #[serde(default = "default_true")]
+    pub seen: bool,
+    /// Whether the agent had finished a run since it last worked.
+    #[serde(default)]
+    pub completed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,19 +223,11 @@ struct RawSessionSnapshot {
     #[serde(default)]
     selected: usize,
     #[serde(default)]
-    agent_panel_scope: crate::app::state::AgentPanelScope,
+    composer_agent: Option<String>,
     #[serde(default)]
-    sidebar_width: Option<u16>,
+    agent_order: Vec<crate::terminal::TerminalId>,
     #[serde(default)]
-    sidebar_section_split: Option<f32>,
-    #[serde(default)]
-    collapsed_space_keys: std::collections::HashSet<String>,
-    #[serde(default)]
-    collapsed_agent_space_ids: std::collections::HashSet<String>,
-    #[serde(default)]
-    sidebar_collapsed: bool,
-    #[serde(default)]
-    spaces_collapsed: bool,
+    detached_agents: Vec<DetachedAgentSnapshot>,
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -215,13 +240,9 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
             .collect::<Result<Vec<_>, _>>()?,
         active: raw.active,
         selected: raw.selected,
-        agent_panel_scope: raw.agent_panel_scope,
-        sidebar_width: raw.sidebar_width,
-        sidebar_section_split: raw.sidebar_section_split,
-        collapsed_space_keys: raw.collapsed_space_keys,
-        collapsed_agent_space_ids: raw.collapsed_agent_space_ids,
-        sidebar_collapsed: raw.sidebar_collapsed,
-        spaces_collapsed: raw.spaces_collapsed,
+        composer_agent: raw.composer_agent,
+        agent_order: raw.agent_order,
+        detached_agents: raw.detached_agents,
     })
 }
 
@@ -285,13 +306,36 @@ pub fn capture(
             .collect(),
         active: state.active,
         selected: state.selected,
-        agent_panel_scope: state.agent_panel_scope,
-        sidebar_width: Some(state.sidebar_width),
-        sidebar_section_split: Some(state.sidebar_section_split),
-        collapsed_space_keys: state.collapsed_space_keys.clone(),
-        collapsed_agent_space_ids: state.collapsed_agent_space_ids.clone(),
-        sidebar_collapsed: state.sidebar_collapsed,
-        spaces_collapsed: state.spaces_collapsed,
+        composer_agent: Some(state.composer.agent.clone()),
+        agent_order: state
+            .agent_order
+            .iter()
+            .filter(|terminal_id| state.terminals.contains_key(*terminal_id))
+            .cloned()
+            .collect(),
+        detached_agents: state
+            .detached_agents
+            .iter()
+            .map(|detached| {
+                let terminal_id = &detached.pane.attached_terminal_id;
+                let cwd = terminal_runtimes
+                    .get(terminal_id)
+                    .and_then(|runtime| runtime.cwd())
+                    .or_else(|| {
+                        state
+                            .terminals
+                            .get(terminal_id)
+                            .map(|terminal| terminal.cwd.clone())
+                    })
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+                DetachedAgentSnapshot {
+                    pane_id: detached.pane_id.raw(),
+                    pane: capture_pane(&detached.pane, cwd, &state.terminals),
+                    seen: detached.pane.seen,
+                    completed: detached.pane.completed,
+                }
+            })
+            .collect(),
     }
 }
 
@@ -338,6 +382,51 @@ fn capture_agent_order(ws: &Workspace) -> Vec<usize> {
         .unwrap_or_default()
 }
 
+/// Everything worth saving about one pane. Written once and read from both the
+/// tabs and the set-down agents, so a pane in a layout and an agent with none
+/// are saved alike.
+fn capture_pane(
+    pane: &crate::pane::PaneState,
+    cwd: PathBuf,
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+) -> PaneSnapshot {
+    let terminal = terminals.get(&pane.attached_terminal_id);
+    let agent_session = terminal.and_then(|terminal| {
+        if let Some(authority) = terminal.hook_authority.as_ref() {
+            if let Some(session_ref) = authority.session_ref.as_ref() {
+                return Some(PaneAgentSessionSnapshot {
+                    source: authority.source.clone(),
+                    agent: authority.agent_label.clone(),
+                    kind: session_ref.kind,
+                    value: session_ref.value.clone(),
+                });
+            }
+        }
+        terminal
+            .persisted_agent_session
+            .as_ref()
+            .map(|session| PaneAgentSessionSnapshot {
+                source: session.source.clone(),
+                agent: session.agent.clone(),
+                kind: session.session_ref.kind,
+                value: session.session_ref.value.clone(),
+            })
+    });
+    PaneSnapshot {
+        terminal_id: Some(pane.attached_terminal_id.clone()),
+        cwd,
+        label: terminal.and_then(|terminal| terminal.manual_label.clone()),
+        agent_name: terminal.and_then(|terminal| terminal.agent_name.clone()),
+        agent_session,
+        launch_argv: terminal.and_then(|terminal| terminal.launch_argv.clone()),
+        seen: pane.seen,
+        completed: pane.completed,
+    }
+}
+
 fn capture_tab(
     tab: &crate::workspace::Tab,
     terminals: &std::collections::HashMap<
@@ -347,63 +436,11 @@ fn capture_tab(
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> TabSnapshot {
     let mut panes = HashMap::new();
-    for id in tab.panes.keys() {
+    for (id, pane) in &tab.panes {
         let cwd = tab
             .cwd_for_pane(*id, terminals, terminal_runtimes)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
-        let label = tab
-            .panes
-            .get(id)
-            .and_then(|pane| terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.manual_label.clone());
-        let agent_name = tab
-            .panes
-            .get(id)
-            .and_then(|pane| terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.agent_name.clone());
-        let launch_argv = tab
-            .panes
-            .get(id)
-            .and_then(|pane| terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.launch_argv.clone());
-        let agent_session =
-            tab.panes
-                .get(id)
-                .and_then(|pane| terminals.get(&pane.attached_terminal_id))
-                .and_then(|terminal| {
-                    if let Some(authority) = terminal.hook_authority.as_ref() {
-                        if let Some(session_ref) = authority.session_ref.as_ref() {
-                            return Some(PaneAgentSessionSnapshot {
-                                source: authority.source.clone(),
-                                agent: authority.agent_label.clone(),
-                                kind: session_ref.kind,
-                                value: session_ref.value.clone(),
-                            });
-                        }
-                    }
-                    terminal.persisted_agent_session.as_ref().map(|session| {
-                        PaneAgentSessionSnapshot {
-                            source: session.source.clone(),
-                            agent: session.agent.clone(),
-                            kind: session.session_ref.kind,
-                            value: session.session_ref.value.clone(),
-                        }
-                    })
-                });
-        panes.insert(
-            id.raw(),
-            PaneSnapshot {
-                terminal_id: tab
-                    .panes
-                    .get(id)
-                    .map(|pane| pane.attached_terminal_id.clone()),
-                cwd,
-                label,
-                agent_name,
-                agent_session,
-                launch_argv,
-            },
-        );
+        panes.insert(id.raw(), capture_pane(pane, cwd, terminals));
     }
     TabSnapshot {
         custom_name: tab.custom_name.clone(),
@@ -518,7 +555,7 @@ mod tests {
     use ratatui::layout::{Direction, Rect};
 
     use super::*;
-    use crate::app::{state::AgentPanelScope, AppState, Mode};
+    use crate::app::{AppState, Mode};
     use crate::layout::NavDirection;
     use crate::workspace::Workspace;
 
@@ -582,20 +619,14 @@ mod tests {
             workspaces: vec![],
             active: None,
             selected: 0,
-            agent_panel_scope: AgentPanelScope::CurrentWorkspace,
-            sidebar_width: Some(26),
-            sidebar_section_split: Some(0.5),
-            collapsed_space_keys: std::collections::HashSet::new(),
-            collapsed_agent_space_ids: std::collections::HashSet::new(),
-            sidebar_collapsed: false,
-            spaces_collapsed: false,
+            composer_agent: None,
+            agent_order: Vec::new(),
+            detached_agents: Vec::new(),
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored = parse_snapshot(&json).unwrap();
         assert!(restored.workspaces.is_empty());
         assert_eq!(restored.active, None);
-        assert_eq!(restored.sidebar_width, Some(26));
-        assert_eq!(restored.sidebar_section_split, Some(0.5));
     }
 
     #[test]
@@ -632,6 +663,8 @@ mod tests {
                 agent_name: None,
                 agent_session: None,
                 launch_argv: None,
+                seen: true,
+                completed: false,
             },
         );
         panes.insert(
@@ -643,6 +676,8 @@ mod tests {
                 agent_name: None,
                 agent_session: None,
                 launch_argv: None,
+                seen: true,
+                completed: false,
             },
         );
 
@@ -670,13 +705,9 @@ mod tests {
             }],
             active: Some(0),
             selected: 0,
-            agent_panel_scope: AgentPanelScope::CurrentWorkspace,
-            sidebar_width: Some(26),
-            sidebar_section_split: Some(0.5),
-            collapsed_space_keys: std::collections::HashSet::new(),
-            collapsed_agent_space_ids: std::collections::HashSet::new(),
-            sidebar_collapsed: false,
-            spaces_collapsed: false,
+            composer_agent: None,
+            agent_order: Vec::new(),
+            detached_agents: Vec::new(),
             version: SNAPSHOT_VERSION,
         };
 
@@ -699,12 +730,6 @@ mod tests {
             restored.workspaces[0].tabs[0].panes[&1].label.as_deref(),
             Some("website")
         );
-        assert_eq!(
-            restored.agent_panel_scope,
-            AgentPanelScope::CurrentWorkspace
-        );
-        assert_eq!(restored.sidebar_width, Some(26));
-        assert_eq!(restored.sidebar_section_split, Some(0.5));
     }
 
     #[test]
@@ -715,9 +740,6 @@ mod tests {
         assert_eq!(snap.workspaces.len(), 2);
         assert_eq!(snap.active, Some(0));
         assert_eq!(snap.selected, 0);
-        assert_eq!(snap.agent_panel_scope, AgentPanelScope::AllWorkspaces);
-        assert_eq!(snap.sidebar_width, None);
-        assert_eq!(snap.sidebar_section_split, None);
         assert_eq!(snap.workspaces[0].tabs.len(), 2);
         assert_eq!(
             snap.workspaces[1].identity_cwd,
@@ -731,27 +753,8 @@ mod tests {
 
         assert_eq!(snap.version, 3);
         assert_eq!(snap.workspaces.len(), 2);
-        assert_eq!(snap.agent_panel_scope, AgentPanelScope::CurrentWorkspace);
-        assert_eq!(snap.sidebar_section_split, Some(0.4));
         assert_eq!(snap.workspaces[0].active_tab, 1);
         assert_eq!(snap.workspaces[1].tabs[0].panes.len(), 2);
-    }
-
-    #[test]
-    fn old_snapshot_defaults_agent_panel_scope() {
-        let json = serde_json::json!({
-            "version": SNAPSHOT_VERSION,
-            "workspaces": [],
-            "active": null,
-            "selected": 0
-        })
-        .to_string();
-
-        let restored = parse_snapshot(&json).unwrap();
-
-        assert_eq!(restored.agent_panel_scope, AgentPanelScope::AllWorkspaces);
-        assert_eq!(restored.sidebar_width, None);
-        assert_eq!(restored.sidebar_section_split, None);
     }
 
     #[test]
@@ -808,26 +811,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_contract_tracks_workspace_order_active_and_selected() {
-        let mut state = state_with_workspaces(&["a", "b", "c"]);
-        state.active = Some(1);
-        state.selected = 2;
-
-        state.move_workspace(1, 0);
-
-        let snapshot = capture_from_state(&state);
-        let ids: Vec<_> = state.workspaces.iter().map(|ws| ws.id.clone()).collect();
-        let captured_ids: Vec<_> = snapshot
-            .workspaces
-            .iter()
-            .map(|ws| ws.id.clone().unwrap())
-            .collect();
-        assert_eq!(captured_ids, ids);
-        assert_eq!(snapshot.active, state.active);
-        assert_eq!(snapshot.selected, state.selected);
-    }
-
-    #[test]
     fn capture_contract_tracks_workspace_and_tab_names_and_active_tab() {
         let mut state = state_with_workspaces(&["one"]);
         state.workspaces[0].set_custom_name("renamed-workspace".into());
@@ -856,68 +839,6 @@ mod tests {
         assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("one"));
         assert_eq!(snapshot.active, Some(0));
         assert_eq!(snapshot.selected, 0);
-    }
-
-    #[test]
-    fn capture_contract_tracks_sidebar_state() {
-        let mut state = state_with_workspaces(&["one"]);
-        state.sidebar_width = 31;
-        state.sidebar_section_split = 0.4;
-        state.agent_panel_scope = AgentPanelScope::AllWorkspaces;
-        state.collapsed_space_keys.insert("repo-key".into());
-
-        let snapshot = capture_from_state(&state);
-        assert_eq!(snapshot.sidebar_width, Some(31));
-        assert_eq!(snapshot.sidebar_section_split, Some(0.4));
-        assert_eq!(snapshot.agent_panel_scope, AgentPanelScope::AllWorkspaces);
-        assert!(snapshot.collapsed_space_keys.contains("repo-key"));
-    }
-
-    #[test]
-    fn capture_contract_tracks_sidebar_folds() {
-        let mut state = state_with_workspaces(&["one"]);
-        let space_id = state.workspaces[0].id.clone();
-        state.sidebar_collapsed = true;
-        state.spaces_collapsed = true;
-        state.collapsed_agent_space_ids.insert(space_id.clone());
-
-        let snapshot = capture_from_state(&state);
-
-        assert!(snapshot.sidebar_collapsed);
-        assert!(snapshot.spaces_collapsed);
-        assert!(snapshot.collapsed_agent_space_ids.contains(&space_id));
-    }
-
-    #[test]
-    fn sidebar_folds_survive_a_round_trip_through_json() {
-        let mut state = state_with_workspaces(&["one"]);
-        let space_id = state.workspaces[0].id.clone();
-        state.sidebar_collapsed = true;
-        state.spaces_collapsed = true;
-        state.collapsed_agent_space_ids.insert(space_id.clone());
-
-        let json = serde_json::to_string(&capture_from_state(&state)).unwrap();
-        let restored = parse_snapshot(&json).unwrap();
-
-        assert!(restored.sidebar_collapsed);
-        assert!(restored.spaces_collapsed);
-        assert!(restored.collapsed_agent_space_ids.contains(&space_id));
-    }
-
-    #[test]
-    fn session_file_without_sidebar_folds_reads_as_everything_expanded() {
-        let json = r#"{
-            "version": 3,
-            "workspaces": [],
-            "active": null,
-            "selected": 0
-        }"#;
-
-        let restored = parse_snapshot(json).unwrap();
-
-        assert!(!restored.sidebar_collapsed);
-        assert!(!restored.spaces_collapsed);
-        assert!(restored.collapsed_agent_space_ids.is_empty());
     }
 
     #[test]
@@ -986,21 +907,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_contract_tracks_tab_closure() {
-        let mut state = state_with_workspaces(&["one"]);
-        let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
-        state.switch_tab(second_tab);
-
-        state.close_tab();
-
-        let snapshot = capture_from_state(&state);
-        let workspace = &snapshot.workspaces[0];
-        assert_eq!(workspace.tabs.len(), 1);
-        assert_eq!(workspace.active_tab, 0);
-        assert!(workspace.tabs[0].custom_name.is_none());
-    }
-
-    #[test]
     fn capture_contract_tracks_pane_closure() {
         let mut state = state_with_workspaces(&["one"]);
         state.workspaces[0].test_split(Direction::Horizontal);
@@ -1012,6 +918,33 @@ mod tests {
         assert_eq!(tab.panes.len(), 1);
         assert!(matches!(tab.layout, LayoutSnapshot::Pane(_)));
         assert!(!tab.zoomed);
+    }
+
+    #[test]
+    fn capture_contract_keeps_an_agent_that_lost_its_pane() {
+        let mut state = state_with_workspaces(&["one"]);
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+
+        state.close_pane();
+
+        let snapshot = capture_from_state(&state);
+        assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 1);
+        assert_eq!(snapshot.detached_agents.len(), 1);
+        assert_eq!(snapshot.detached_agents[0].pane_id, pane_id.raw());
+        assert_eq!(
+            snapshot.detached_agents[0].pane.terminal_id,
+            Some(terminal_id)
+        );
     }
 
     #[test]
@@ -1216,6 +1149,8 @@ mod tests {
                 agent_name: None,
                 agent_session: None,
                 launch_argv: None,
+                seen: true,
+                completed: false,
             },
         );
         panes.insert(
@@ -1229,6 +1164,8 @@ mod tests {
                 agent_name: None,
                 agent_session: None,
                 launch_argv: None,
+                seen: true,
+                completed: false,
             },
         );
 
@@ -1257,13 +1194,9 @@ mod tests {
             }],
             active: Some(0),
             selected: 0,
-            agent_panel_scope: AgentPanelScope::CurrentWorkspace,
-            sidebar_width: Some(26),
-            sidebar_section_split: Some(0.5),
-            collapsed_space_keys: std::collections::HashSet::new(),
-            collapsed_agent_space_ids: std::collections::HashSet::new(),
-            sidebar_collapsed: false,
-            spaces_collapsed: false,
+            composer_agent: None,
+            agent_order: Vec::new(),
+            detached_agents: Vec::new(),
         };
 
         let json = serde_json::to_string(&snap).unwrap();

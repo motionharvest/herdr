@@ -19,6 +19,8 @@ pub struct PaneDetail {
     pub model_info: Option<crate::agent_model::AgentModelInfo>,
     pub state: AgentState,
     pub seen: bool,
+    /// Whether this agent has finished a run since it last worked.
+    pub completed: bool,
     pub custom_status: Option<String>,
     pub state_labels: HashMap<String, String>,
 }
@@ -29,23 +31,6 @@ impl Tab {
             terminals
                 .get(&pane.attached_terminal_id)
                 .is_some_and(|terminal| terminal.state == AgentState::Working)
-        })
-    }
-
-    pub fn has_unseen_idle_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
-        self.panes.values().any(|pane| {
-            !pane.seen
-                && terminals
-                    .get(&pane.attached_terminal_id)
-                    .is_some_and(|terminal| terminal.state == AgentState::Idle)
-        })
-    }
-
-    pub fn has_blocked_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
-        self.panes.values().any(|pane| {
-            terminals
-                .get(&pane.attached_terminal_id)
-                .is_some_and(|terminal| terminal.state == AgentState::Blocked)
         })
     }
 
@@ -76,6 +61,7 @@ impl Tab {
                     model_info: terminal.model_info.clone(),
                     state: terminal.state,
                     seen: pane.seen,
+                    completed: pane.completed,
                     custom_status: presentation.custom_status,
                     state_labels: presentation.state_labels,
                 })
@@ -113,16 +99,6 @@ impl Workspace {
 
     pub fn has_working_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
         self.tabs.iter().any(|tab| tab.has_working_pane(terminals))
-    }
-
-    pub fn has_unseen_idle_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
-        self.tabs
-            .iter()
-            .any(|tab| tab.has_unseen_idle_pane(terminals))
-    }
-
-    pub fn has_blocked_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
-        self.tabs.iter().any(|tab| tab.has_blocked_pane(terminals))
     }
 
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
@@ -288,42 +264,5 @@ mod tests {
                 ("review·claude".into(), "claude".into(), Some(Agent::Claude)),
             ]
         );
-    }
-
-    #[test]
-    fn pane_details_follows_the_custom_agent_order() {
-        let mut ws = Workspace::test_new("test");
-        let first = ws.tabs[0].root_pane;
-        let second_tab = ws.test_add_tab(Some("review"));
-        let second = ws.tabs[second_tab].root_pane;
-        let mut terminals = HashMap::new();
-        for pane in [first, second] {
-            let mut terminal = terminal_for_pane(&ws, pane);
-            terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-            terminals.insert(terminal.id.clone(), terminal);
-        }
-
-        ws.set_agent_order(vec![second, first]);
-
-        let ordered: Vec<_> = ws
-            .pane_details(&terminals)
-            .into_iter()
-            .map(|detail| detail.pane_id)
-            .collect();
-        assert_eq!(ordered, vec![second, first]);
-    }
-
-    #[test]
-    fn a_pane_opened_after_a_reorder_lands_at_the_end_of_the_list() {
-        let mut ws = Workspace::test_new("test");
-        let first = ws.tabs[0].root_pane;
-        let second_tab = ws.test_add_tab(Some("review"));
-        let second = ws.tabs[second_tab].root_pane;
-        ws.set_agent_order(vec![second, first]);
-
-        let third_tab = ws.test_add_tab(Some("ops"));
-        let third = ws.tabs[third_tab].root_pane;
-
-        assert_eq!(ws.ordered_pane_ids(), vec![second, first, third]);
     }
 }

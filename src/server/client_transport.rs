@@ -518,55 +518,6 @@ mod tests {
             (MIN_CLIENT_COLS, MIN_CLIENT_ROWS)
         );
     }
-
-    #[test]
-    fn parse_client_keybindings_accepts_local_profile() {
-        let keybindings = parse_client_keybindings(ClientKeybindings::Local {
-            keys_toml: r#"
-[keys]
-prefix = "ctrl+a"
-new_tab = "prefix+t"
-
-[[keys.command]]
-key = "prefix+g"
-command = "lazygit"
-"#
-            .to_owned(),
-        })
-        .expect("valid client keybindings")
-        .expect("local profile");
-
-        assert_eq!(keybindings.prefix.0, crossterm::event::KeyCode::Char('a'));
-        assert!(keybindings
-            .keybinds
-            .new_tab
-            .bindings
-            .iter()
-            .any(|binding| binding.label == "prefix+t"));
-        assert!(keybindings.keybinds.custom_commands.is_empty());
-    }
-
-    #[test]
-    fn parse_client_keybindings_tolerates_disabled_bindings() {
-        let keybindings = parse_client_keybindings(ClientKeybindings::Local {
-            keys_toml: r#"
-[keys]
-new_tab = "ctrl+notakey"
-"#
-            .to_owned(),
-        })
-        .expect("diagnostic-only client keybindings should be accepted")
-        .expect("local profile");
-
-        assert!(keybindings.keybinds.new_tab.bindings.is_empty());
-        assert!(keybindings
-            .keybinds
-            .next_tab
-            .bindings
-            .iter()
-            .any(|binding| binding.label == "prefix+n"));
-    }
-
     #[test]
     fn handshake_negotiates_terminal_ansi_encoding() {
         let (mut client_stream, server_stream) = UnixStream::pair().expect("socket pair");

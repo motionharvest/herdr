@@ -482,18 +482,12 @@ pub(crate) enum NavigateAction {
     RenameWorkspace,
     CloseWorkspace,
     SwitchWorkspace(usize),
-    SwitchTab(usize),
     FocusAgent(usize),
     WorkspacePicker,
     PreviousWorkspace,
     NextWorkspace,
     PreviousAgent,
     NextAgent,
-    NewTab,
-    RenameTab,
-    PreviousTab,
-    NextTab,
-    CloseTab,
     RenamePane,
     FocusPaneLeft,
     FocusPaneDown,
@@ -510,7 +504,6 @@ pub(crate) enum NavigateAction {
     CopyMode,
     Zoom,
     EnterResizeMode,
-    ToggleSidebar,
     CyclePaneNext,
     CyclePanePrevious,
     LastPane,
@@ -520,6 +513,7 @@ pub(crate) enum NavigateAction {
     OpenNotificationTarget,
     Detach,
     OpenNavigator,
+    OpenComposer,
 }
 
 fn indexed_navigation_action(
@@ -533,13 +527,6 @@ fn indexed_navigation_action(
         BindingDispatch::Prefix => binding.trigger.is_prefix(),
     };
 
-    for binding in &kb.switch_tab {
-        if trigger_matches(binding) {
-            if let Some(idx) = binding.matched_index(key) {
-                return Some(NavigateAction::SwitchTab(idx));
-            }
-        }
-    }
     for binding in &kb.switch_workspace {
         if trigger_matches(binding) {
             if let Some(idx) = binding.matched_index(key) {
@@ -593,11 +580,6 @@ fn action_for_key(
         (&kb.next_workspace, NavigateAction::NextWorkspace),
         (&kb.previous_agent, NavigateAction::PreviousAgent),
         (&kb.next_agent, NavigateAction::NextAgent),
-        (&kb.new_tab, NavigateAction::NewTab),
-        (&kb.rename_tab, NavigateAction::RenameTab),
-        (&kb.previous_tab, NavigateAction::PreviousTab),
-        (&kb.next_tab, NavigateAction::NextTab),
-        (&kb.close_tab, NavigateAction::CloseTab),
         (&kb.rename_pane, NavigateAction::RenamePane),
         (&kb.edit_scrollback, NavigateAction::EditScrollback),
         (&kb.copy_mode, NavigateAction::CopyMode),
@@ -617,7 +599,6 @@ fn action_for_key(
         (&kb.close_pane, NavigateAction::ClosePane),
         (&kb.zoom, NavigateAction::Zoom),
         (&kb.resize_mode, NavigateAction::EnterResizeMode),
-        (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
         (&kb.reload_config, NavigateAction::ReloadConfig),
         (
             &kb.open_notification_target,
@@ -625,6 +606,7 @@ fn action_for_key(
         ),
         (&kb.detach, NavigateAction::Detach),
         (&kb.goto, NavigateAction::OpenNavigator),
+        (&kb.composer, NavigateAction::OpenComposer),
     ] {
         if action_matches(bindings, key, dispatch) {
             return Some(action);
@@ -714,16 +696,6 @@ pub(super) fn execute_navigate_action_in_context(
                 leave_navigate_mode(state);
             }
         }
-        NavigateAction::SwitchTab(idx) => {
-            let tab_exists = state
-                .active
-                .and_then(|ws_idx| state.workspaces.get(ws_idx))
-                .is_some_and(|ws| idx < ws.tabs.len());
-            if tab_exists {
-                state.switch_tab(idx);
-                leave_navigate_mode(state);
-            }
-        }
         NavigateAction::FocusAgent(idx) => {
             if state.focus_agent_entry(idx) {
                 leave_navigate_mode(state);
@@ -748,30 +720,6 @@ pub(super) fn execute_navigate_action_in_context(
         NavigateAction::NextAgent => {
             state.next_agent();
             leave_navigate_mode(state);
-        }
-        NavigateAction::NewTab => {
-            if state.active.is_some() {
-                if state.prompt_new_tab_name {
-                    super::modal::open_new_tab_dialog(state);
-                } else {
-                    state.request_new_tab = true;
-                    leave_navigate_mode(state);
-                }
-            }
-        }
-        NavigateAction::RenameTab => super::modal::open_rename_active_tab(state, false),
-        NavigateAction::PreviousTab => {
-            state.previous_tab();
-            leave_navigate_mode(state);
-        }
-        NavigateAction::NextTab => {
-            state.next_tab();
-            leave_navigate_mode(state);
-        }
-        NavigateAction::CloseTab => {
-            if !state.close_tab() {
-                leave_navigate_mode(state);
-            }
         }
         NavigateAction::RenamePane => {
             if let Some(pane_id) = state
@@ -838,11 +786,6 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::EnterResizeMode => state.mode = Mode::Resize,
-        NavigateAction::ToggleSidebar => {
-            state.sidebar_collapsed = !state.sidebar_collapsed;
-            state.mark_session_dirty();
-            leave_navigate_mode(state);
-        }
         NavigateAction::CyclePaneNext => {
             state.cycle_pane(false);
             leave_navigate_mode(state);
@@ -872,6 +815,7 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::OpenNavigator => state.open_navigator_from(terminal_runtimes),
+        NavigateAction::OpenComposer => super::enter_composer_mode(state, terminal_runtimes),
     }
 
     finish_action_context(state, context, previous_mode);
@@ -1202,7 +1146,7 @@ mod tests {
     }
 
     #[test]
-    fn navigate_down_follows_grouped_sidebar_visual_order() {
+    fn navigate_down_follows_space_order() {
         let mut state = state_with_workspaces(&["main", "normal", "issue"]);
         mark_worktree_space_member(&mut state, 0, "repo-key");
         mark_worktree_space_member(&mut state, 2, "repo-key");
@@ -1215,11 +1159,11 @@ mod tests {
             KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
         );
 
-        assert_eq!(state.selected, 2);
+        assert_eq!(state.selected, 1);
     }
 
     #[test]
-    fn navigate_number_keys_follow_grouped_sidebar_visual_order() {
+    fn navigate_number_keys_follow_space_order() {
         let mut state = state_with_workspaces(&["main", "normal", "issue"]);
         mark_worktree_space_member(&mut state, 0, "repo-key");
         mark_worktree_space_member(&mut state, 2, "repo-key");
@@ -1232,12 +1176,12 @@ mod tests {
             KeyEvent::new(KeyCode::Char('2'), KeyModifiers::empty()),
         );
 
-        assert_eq!(state.active, Some(2));
-        assert_eq!(state.selected, 2);
+        assert_eq!(state.active, Some(1));
+        assert_eq!(state.selected, 1);
     }
 
     #[test]
-    fn indexed_switch_workspace_keybind_follows_grouped_sidebar_visual_order() {
+    fn indexed_switch_workspace_keybind_follows_space_order() {
         let mut state = state_with_workspaces(&["main", "normal", "issue"]);
         let mut terminal_runtimes = TerminalRuntimeRegistry::new();
         mark_worktree_space_member(&mut state, 0, "repo-key");
@@ -1253,25 +1197,9 @@ mod tests {
             ActionContext::Prefix,
         );
 
-        assert_eq!(state.active, Some(2));
-        assert_eq!(state.selected, 2);
+        assert_eq!(state.active, Some(1));
+        assert_eq!(state.selected, 1);
     }
-
-    #[test]
-    fn custom_sidebar_toggle_key_toggles_and_exits_navigate() {
-        let mut state = state_with_workspaces(&["test"]);
-        state.keybinds.toggle_sidebar = crate::config::ActionKeybinds::prefix("g");
-        assert!(!state.sidebar_collapsed);
-
-        handle_navigate_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
-        );
-
-        assert!(state.sidebar_collapsed);
-        assert_eq!(state.mode, Mode::Terminal);
-    }
-
     #[test]
     fn custom_resize_key_enters_resize_mode() {
         let mut state = state_with_workspaces(&["test"]);
@@ -1503,7 +1431,9 @@ navigate_pane_right = "ctrl+l"
         state.active = Some(0);
         state.selected = 0;
         state.mode = Mode::Navigate;
-        crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 44, 8));
+        // Four more rows than the switcher needs: the composer band takes the
+        // top four, leaving the same short viewport this test is about.
+        crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 44, 12));
         assert_eq!(state.mobile_switcher_scroll, 0);
 
         handle_navigate_key(
@@ -1586,21 +1516,6 @@ last_pane = "prefix+tab"
 
         assert_eq!(pane_action, Some(NavigateAction::LastPane));
     }
-
-    #[test]
-    fn terminal_direct_indexed_tab_shortcut_maps_to_navigation_action() {
-        let mut state = state_with_workspaces(&["test"]);
-        let config: Config = toml::from_str("[keys]\nswitch_tab = \"ctrl+3\"\n").unwrap();
-        state.keybinds.switch_tab = config.keybinds().switch_tab;
-
-        let action = terminal_direct_navigation_action(
-            &state,
-            TerminalKey::new(KeyCode::Char('3'), KeyModifiers::CONTROL),
-        );
-
-        assert_eq!(action, Some(NavigateAction::SwitchTab(2)));
-    }
-
     #[tokio::test]
     async fn navigate_mode_runs_prefix_action_rhs_without_pressing_prefix_again() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1834,39 +1749,6 @@ last_pane = "prefix+tab"
         );
         assert_eq!(state.mode, Mode::KeybindHelp);
     }
-
-    #[test]
-    fn modified_navigate_local_key_can_be_bound_as_prefix_rhs() {
-        let mut state = state_with_workspaces(&["test"]);
-        state.keybinds.toggle_sidebar = crate::config::ActionKeybinds::prefix("shift+h");
-
-        handle_navigate_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT),
-        );
-
-        assert!(state.sidebar_collapsed);
-    }
-
-    #[test]
-    fn empty_state_new_tab_is_no_op() {
-        let mut state = crate::app::state::AppState::test_new();
-        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
-        state.mode = Mode::Prefix;
-
-        execute_navigate_action_in_context(
-            &mut state,
-            &mut terminal_runtimes,
-            NavigateAction::NewTab,
-            ActionContext::Prefix,
-        );
-
-        assert_eq!(state.mode, Mode::Navigate);
-        assert!(!state.creating_new_tab);
-        assert!(!state.request_new_tab);
-        assert!(state.workspaces.is_empty());
-    }
-
     #[test]
     fn closing_linked_worktree_closes_workspace_without_removing_checkout() {
         let mut state = state_with_workspaces(&["main", "issue"]);
@@ -2138,34 +2020,6 @@ last_pane = "prefix+tab"
 
         assert_eq!(state.mode, Mode::KeybindHelp);
     }
-
-    #[test]
-    fn new_tab_action_opens_dialog_without_creating_tab() {
-        let mut state = state_with_workspaces(&["test"]);
-
-        execute_navigate_action(&mut state, NavigateAction::NewTab);
-
-        assert_eq!(state.mode, Mode::RenameTab);
-        assert!(state.creating_new_tab);
-        assert_eq!(state.name_input, "2");
-        assert!(state.name_input_replace_on_type);
-        assert!(!state.request_new_tab);
-        assert_eq!(state.workspaces[0].tabs.len(), 1);
-    }
-
-    #[test]
-    fn new_tab_action_can_skip_rename_dialog() {
-        let mut state = state_with_workspaces(&["test"]);
-        state.prompt_new_tab_name = false;
-
-        execute_navigate_action(&mut state, NavigateAction::NewTab);
-
-        assert_eq!(state.mode, Mode::Terminal);
-        assert!(!state.creating_new_tab);
-        assert!(state.request_new_tab);
-        assert!(state.requested_new_tab_name.is_none());
-    }
-
     #[test]
     fn navigate_configured_q_detaches_in_persistence_mode() {
         let mut state = crate::app::state::AppState::test_new();

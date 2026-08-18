@@ -120,6 +120,32 @@ impl App {
                 }
             }
         }
+
+        // A set-down agent has no pane to be measured, so it resumes at the
+        // size a pane would be. It gets resized the moment it is docked, and
+        // waiting for a room it may never be given would leave it never
+        // resumed at all.
+        let (rows, cols) = self.state.estimate_pane_size();
+        for detached in &self.state.detached_agents {
+            let terminal_id = &detached.pane.attached_terminal_id;
+            if self.terminal_runtimes.get(terminal_id).is_some() {
+                continue;
+            }
+            let Some(terminal) = self.state.terminals.get(terminal_id) else {
+                continue;
+            };
+            let Some(plan) = terminal.pending_agent_resume_plan.clone() else {
+                continue;
+            };
+            pending.push(PendingAgentResumeCandidate {
+                pane_id: detached.pane_id,
+                terminal_id: terminal_id.clone(),
+                cwd: terminal.cwd.clone(),
+                plan,
+                rows,
+                cols,
+            });
+        }
         pending
     }
 
@@ -179,6 +205,53 @@ impl App {
                     ))
                 })
             })
+        }) else {
+            return self.start_pending_detached_agent_resume(
+                terminal_id,
+                rows,
+                cols,
+                allow_empty_theme,
+            );
+        };
+
+        let changed = self.start_pending_agent_resume(
+            pane_id,
+            terminal_id.clone(),
+            cwd,
+            plan,
+            rows,
+            cols,
+            allow_empty_theme,
+        );
+        if changed {
+            self.schedule_session_save();
+        }
+        if !self.has_pending_agent_resumes() {
+            self.pending_agent_resume_deadline = None;
+        }
+        changed
+    }
+
+    /// The same resume for an agent that is running with no pane. It is found
+    /// among the set-down agents rather than among the panes, and everything
+    /// after that is identical.
+    fn start_pending_detached_agent_resume(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+        rows: u16,
+        cols: u16,
+        allow_empty_theme: bool,
+    ) -> bool {
+        let Some((pane_id, cwd, plan)) = self.state.detached_agents.iter().find_map(|detached| {
+            if &detached.pane.attached_terminal_id != terminal_id {
+                return None;
+            }
+            let terminal = self.state.terminals.get(terminal_id)?;
+            Some((
+                detached.pane_id,
+                terminal.cwd.clone(),
+                terminal.pending_agent_resume_plan.clone()?,
+            ))
         }) else {
             return false;
         };

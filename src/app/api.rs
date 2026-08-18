@@ -67,6 +67,10 @@ impl App {
                         terminal.model_info = result.entry.info.clone();
                         changed = true;
                     }
+                    if still_current && terminal.session_title != result.entry.title {
+                        terminal.session_title = result.entry.title.clone();
+                        changed = true;
+                    }
                 }
                 self.agent_model_cache
                     .insert(result.terminal_id, result.entry);

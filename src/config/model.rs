@@ -49,23 +49,6 @@ pub enum ToastDelivery {
     System,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentPanelScopeConfig {
-    Current,
-    #[default]
-    All,
-}
-
-impl AgentPanelScopeConfig {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Current => "current",
-            Self::All => "all",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RightClickPassthroughModifierConfig(Option<KeyModifiers>);
 
@@ -198,19 +181,6 @@ pub struct ConfigReloadReport {
     pub diagnostics: Vec<String>,
 }
 
-/// Validate `[ui]` sidebar bound configuration.
-///
-/// Returns `Some((min, max))` when `min <= max`, `None` otherwise. The two
-/// values are funneled through this helper before they reach any
-/// `u16::clamp(min, max)` call site (`u16::clamp` panics when `min > max`).
-pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<(u16, u16)> {
-    if min <= max {
-        Some((min, max))
-    } else {
-        None
-    }
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -259,6 +229,8 @@ pub struct KeysConfig {
     pub workspace_picker: BindingConfig,
     /// Open the session navigator. Default: "prefix+g"
     pub goto: BindingConfig,
+    /// Focus the composer above the tabs. Default: "prefix+/"
+    pub composer: BindingConfig,
     /// Move workspace selection up in navigate mode. Default: "up".
     pub navigate_workspace_up: BindingConfig,
     /// Move workspace selection down in navigate mode. Default: "down".
@@ -287,20 +259,8 @@ pub struct KeysConfig {
     pub next_agent: BindingConfig,
     /// Focus an agent by index 1-9. Unset by default.
     pub focus_agent: BindingConfig,
-    /// Create a new tab in the active workspace. Default: "prefix+c"
-    pub new_tab: BindingConfig,
-    /// Rename the active tab. Default: "prefix+shift+t".
-    pub rename_tab: BindingConfig,
-    /// Select the previous tab. Default: "prefix+p".
-    pub previous_tab: BindingConfig,
-    /// Select the next tab. Default: "prefix+n".
-    pub next_tab: BindingConfig,
-    /// Switch to tab 1-9. Default: "prefix+1..9".
-    pub switch_tab: BindingConfig,
     /// Switch to workspace 1-9 from prefix mode. Unset by default.
     pub switch_workspace: BindingConfig,
-    /// Close the active tab. Default: "prefix+shift+x".
-    pub close_tab: BindingConfig,
     /// Rename the focused pane. Default: "prefix+shift+p".
     pub rename_pane: BindingConfig,
     /// Open the focused pane scrollback in $EDITOR. Default: "prefix+e".
@@ -340,8 +300,6 @@ pub struct KeysConfig {
     pub zoom: BindingConfig,
     /// Enter resize mode. Default: "prefix+r"
     pub resize_mode: BindingConfig,
-    /// Toggle sidebar collapse. Default: "prefix+b"
-    pub toggle_sidebar: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
     pub indexed: IndexedKeysConfig,
     /// Prefix-mode custom command bindings.
@@ -352,8 +310,6 @@ pub struct KeysConfig {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct IndexedKeysConfig {
-    /// Modifier combo for tab shortcuts 1-9. Unset by default.
-    pub tabs: String,
     /// Modifier combo for workspace shortcuts 1-9. Unset by default.
     pub workspaces: String,
     /// Modifier combo for agent shortcuts 1-9. Unset by default.
@@ -370,11 +326,6 @@ pub struct WorktreesConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
-    pub sidebar_width: u16,
-    /// Minimum sidebar width (columns) when expanded. Default: 18.
-    pub sidebar_min_width: u16,
-    /// Maximum sidebar width (columns) when expanded. Default: 36.
-    pub sidebar_max_width: u16,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -389,20 +340,16 @@ pub struct UiConfig {
     pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
-    /// Ask for a tab name before creating a new tab. Default: true.
-    pub prompt_new_tab_name: bool,
     /// Use Nerd Font glyphs in optional UI chrome. Default: false.
     pub nerd_font: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
-    /// Agent sidebar scope. Saved values are "current" or "all". Default: "all".
-    pub agent_panel_scope: AgentPanelScopeConfig,
     /// Accent color for highlights, borders, and navigation UI.
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
     pub accent: String,
     /// Also notify for the agent you are currently looking at. When false
-    /// (the default), Herdr suppresses sounds, popups, and the sidebar
-    /// unseen marker for panes in the active tab of the focused terminal.
+    /// (the default), Herdr suppresses sounds, popups, and the table's unseen
+    /// marker for the agent you are already watching.
     pub notify_active_tab: bool,
     /// Optional visual toast notifications for background workspace events.
     pub toast: ToastConfig,
@@ -515,6 +462,7 @@ impl Default for KeysConfig {
             close_workspace: BindingConfig::one("prefix+shift+d"),
             workspace_picker: BindingConfig::one("prefix+w"),
             goto: BindingConfig::one("prefix+g"),
+            composer: BindingConfig::one("prefix+/"),
             navigate_workspace_up: BindingConfig::one("up"),
             navigate_workspace_down: BindingConfig::one("down"),
             navigate_pane_left: BindingConfig::one("h"),
@@ -529,13 +477,7 @@ impl Default for KeysConfig {
             previous_agent: BindingConfig::empty(),
             next_agent: BindingConfig::empty(),
             focus_agent: BindingConfig::empty(),
-            new_tab: BindingConfig::one("prefix+c"),
-            rename_tab: BindingConfig::one("prefix+shift+t"),
-            previous_tab: BindingConfig::one("prefix+p"),
-            next_tab: BindingConfig::one("prefix+n"),
-            switch_tab: BindingConfig::one("prefix+1..9"),
             switch_workspace: BindingConfig::empty(),
-            close_tab: BindingConfig::one("prefix+shift+x"),
             rename_pane: BindingConfig::one("prefix+shift+p"),
             edit_scrollback: BindingConfig::one("prefix+e"),
             copy_mode: BindingConfig::one("prefix+["),
@@ -555,7 +497,6 @@ impl Default for KeysConfig {
             close_pane: BindingConfig::Many(vec!["prefix+x".into(), "ctrl+w".into()]),
             zoom: BindingConfig::one("prefix+z"),
             resize_mode: BindingConfig::one("prefix+r"),
-            toggle_sidebar: BindingConfig::one("prefix+b"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
         }
@@ -573,9 +514,6 @@ impl Default for WorktreesConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            sidebar_width: 26,
-            sidebar_min_width: 18,
-            sidebar_max_width: 36,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
@@ -583,10 +521,8 @@ impl Default for UiConfig {
             hide_cursor_when_unfocused: true,
             mouse_scroll_lines: None,
             confirm_close: true,
-            prompt_new_tab_name: true,
             nerd_font: false,
             show_agent_labels_on_pane_borders: true,
-            agent_panel_scope: AgentPanelScopeConfig::All,
             accent: "cyan".into(),
             notify_active_tab: false,
             toast: ToastConfig::default(),
@@ -721,17 +657,6 @@ resume_agents_on_restore = false
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.session.resume_agents_on_restore);
     }
-
-    #[test]
-    fn agent_panel_scope_config_parses() {
-        let toml = r#"
-[ui]
-agent_panel_scope = "all"
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.ui.agent_panel_scope, AgentPanelScopeConfig::All);
-    }
-
     #[test]
     fn pane_border_agent_labels_default_on_and_parse() {
         let default_config = Config::default();
@@ -757,20 +682,6 @@ directory = "~/Projects/herdr-worktrees"
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.worktrees.directory, "~/Projects/herdr-worktrees");
     }
-
-    #[test]
-    fn prompt_new_tab_name_defaults_on_and_parses() {
-        let default_config = Config::default();
-        assert!(default_config.ui.prompt_new_tab_name);
-
-        let toml = r#"
-[ui]
-prompt_new_tab_name = false
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert!(!config.ui.prompt_new_tab_name);
-    }
-
     #[test]
     fn nerd_font_default_off_and_parses() {
         let default_config = Config::default();
@@ -892,38 +803,6 @@ cjk_ime_agents = ["claude", "codex"]
             vec!["claude".to_string(), "codex".to_string()]
         );
     }
-
-    #[test]
-    fn sidebar_bounds_default_and_parse() {
-        let default_config = Config::default();
-        assert_eq!(default_config.ui.sidebar_min_width, 18);
-        assert_eq!(default_config.ui.sidebar_max_width, 36);
-        assert_eq!(
-            default_config.ui.mobile_width_threshold,
-            DEFAULT_MOBILE_WIDTH_THRESHOLD
-        );
-
-        let toml = r#"
-[ui]
-sidebar_min_width = 12
-sidebar_max_width = 80
-mobile_width_threshold = 96
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.ui.sidebar_min_width, 12);
-        assert_eq!(config.ui.sidebar_max_width, 80);
-        assert_eq!(config.ui.mobile_width_threshold, 96);
-    }
-
-    #[test]
-    fn validated_sidebar_bounds_rejects_inverted() {
-        assert_eq!(validated_sidebar_bounds(18, 36), Some((18, 36)));
-        assert_eq!(validated_sidebar_bounds(20, 20), Some((20, 20)));
-        assert_eq!(validated_sidebar_bounds(0, u16::MAX), Some((0, u16::MAX)));
-        assert_eq!(validated_sidebar_bounds(50, 30), None);
-        assert_eq!(validated_sidebar_bounds(u16::MAX, 0), None);
-    }
-
     #[test]
     fn mouse_capture_default_on_and_parse() {
         let default_config = Config::default();

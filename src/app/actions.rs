@@ -771,7 +771,8 @@ impl AppState {
                     .get_mut(&terminal_id)?
                     .expire_agent_metadata_at(scheduled_deadline, now)?;
                 let change = mutation.effective_state_change?;
-                let seen = self.apply_pane_state_change(ws_idx, pane_id, &change)?;
+                let starting_up = self.consume_restore_startup(&terminal_id, change.state);
+                let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, !starting_up)?;
                 let update = PaneStateUpdate {
                     pane_id,
                     ws_idx,
@@ -817,15 +818,12 @@ impl AppState {
             if let Some(ws) = self.workspaces.get_mut(idx) {
                 let active_tab = ws.active_tab;
                 ws.switch_tab(active_tab);
-                let tab_id = format!("{}:{}", workspace_id, active_tab + 1);
-                crate::logging::tab_focused(&workspace_id, &tab_id);
             }
-            self.tab_scroll_follow_active = true;
-            self.refresh_tab_bar_view();
             self.record_pane_focus_after_navigation(previous_focus);
         }
     }
 
+    /// Focus a space, and the pane the table row points at within it.
     pub(crate) fn switch_workspace_tab(&mut self, ws_idx: usize, tab_idx: usize) -> bool {
         if ws_idx >= self.workspaces.len() {
             return false;
@@ -852,15 +850,14 @@ impl AppState {
         self.ensure_workspace_visible(ws_idx);
         if let Some(ws) = self.workspaces.get_mut(ws_idx) {
             ws.switch_tab(tab_idx);
-            let tab_id = format!("{}:{}", workspace_id, tab_idx + 1);
-            crate::logging::tab_focused(&workspace_id, &tab_id);
         }
-        self.tab_scroll_follow_active = true;
-        self.refresh_tab_bar_view();
         self.record_pane_focus_after_navigation(previous_focus);
         true
     }
 
+    /// Keep the space's agents on screen in the agent table. On mobile the
+    /// switcher scrolls instead; on the desktop the table follows the focused
+    /// agent on its own, in `split_agent_table`.
     pub(crate) fn ensure_workspace_visible(&mut self, idx: usize) {
         if idx >= self.workspaces.len() {
             return;
@@ -868,56 +865,6 @@ impl AppState {
 
         if self.view.layout == ViewLayout::Mobile && self.mode == Mode::Navigate {
             self.ensure_mobile_workspace_visible(idx);
-            return;
-        }
-
-        if self.sidebar_collapsed {
-            return;
-        }
-
-        let entries = crate::ui::workspace_list_entries(self);
-        let Some(target_entry_idx) = entries.iter().position(|entry| {
-            matches!(
-                entry,
-                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } if *ws_idx == idx
-            )
-        }) else {
-            return;
-        };
-
-        self.workspace_scroll = crate::ui::normalized_workspace_scroll(
-            self,
-            self.view.sidebar_rect,
-            self.workspace_scroll,
-        );
-        let mut cards = crate::ui::compute_workspace_card_areas(self, self.view.sidebar_rect);
-        if cards.iter().any(|card| card.ws_idx == idx) {
-            return;
-        }
-
-        if target_entry_idx < self.workspace_scroll {
-            self.workspace_scroll = target_entry_idx;
-            return;
-        }
-
-        while !cards.iter().any(|card| card.ws_idx == idx) {
-            let previous_scroll = self.workspace_scroll;
-            self.workspace_scroll = self.workspace_scroll.saturating_add(1);
-            if self.workspace_scroll == previous_scroll {
-                break;
-            }
-            self.workspace_scroll = crate::ui::normalized_workspace_scroll(
-                self,
-                self.view.sidebar_rect,
-                self.workspace_scroll,
-            );
-            if self.workspace_scroll == previous_scroll {
-                break;
-            }
-            cards = crate::ui::compute_workspace_card_areas(self, self.view.sidebar_rect);
-            if cards.is_empty() {
-                break;
-            }
         }
     }
 
@@ -940,25 +887,6 @@ impl AppState {
             .min(crate::ui::mobile_switcher_max_scroll(self));
     }
 
-    pub fn switch_tab(&mut self, idx: usize) {
-        if let Some(ws_idx) = self.active {
-            let previous_focus = self.current_pane_focus_target();
-            self.selection = None;
-            self.selection_autoscroll = None;
-            let Some(ws) = self.workspaces.get_mut(ws_idx) else {
-                return;
-            };
-            ws.switch_tab(idx);
-            let workspace_id = ws.id.clone();
-            let tab_id = format!("{}:{}", workspace_id, idx + 1);
-            crate::logging::tab_focused(&workspace_id, &tab_id);
-            self.mark_session_dirty();
-            self.tab_scroll_follow_active = true;
-            self.refresh_tab_bar_view();
-            self.record_pane_focus_after_navigation(previous_focus);
-        }
-    }
-
     /// True when the host terminal window is known to have lost focus.
     ///
     /// `None` means the outer terminal never reported focus (mode 1004
@@ -968,41 +896,40 @@ impl AppState {
         self.outer_terminal_focus == Some(false)
     }
 
-    pub(crate) fn mark_active_tab_seen(&mut self) -> bool {
-        let Some(ws_idx) = self.active else {
-            return false;
-        };
-        let Some(tab) = self
+    /// Take the done marker off one agent, which is the only thing that does.
+    ///
+    /// The marker answers "which agent finished while I was elsewhere", and an
+    /// answer that a stray click on a pane can erase is not an answer. So it
+    /// survives focus, tab switches and space switches, and comes off only when
+    /// the marker itself is clicked. The row keeps a check afterwards, so the
+    /// agent still reads as finished rather than as one that never ran.
+    pub(crate) fn acknowledge_agent_completion(&mut self, pane_id: PaneId) -> bool {
+        let pane = self
             .workspaces
-            .get_mut(ws_idx)
-            .and_then(crate::workspace::Workspace::active_tab_mut)
-        else {
+            .iter_mut()
+            .flat_map(|ws| ws.tabs.iter_mut())
+            .find_map(|tab| tab.panes.get_mut(&pane_id))
+            .or_else(|| {
+                self.detached_agents
+                    .iter_mut()
+                    .find(|detached| detached.pane_id == pane_id)
+                    .map(|detached| &mut detached.pane)
+            });
+        let Some(pane) = pane else {
             return false;
         };
-
-        let mut changed = false;
-        for pane in tab.panes.values_mut() {
-            if !pane.seen {
-                pane.seen = true;
-                changed = true;
-            }
+        if pane.seen {
+            return false;
         }
-        changed
+        pane.seen = true;
+        self.mark_session_dirty();
+        true
     }
 
+    /// The spaces in the order they are held. Nothing lists them on screen any
+    /// more, so this order is the only one there is.
     pub(crate) fn visible_workspace_order(&self) -> Vec<usize> {
-        let order = crate::ui::workspace_list_entries(self)
-            .into_iter()
-            .filter_map(|entry| match entry {
-                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
-                crate::ui::WorkspaceListEntry::Agent { .. } => None,
-            })
-            .collect::<Vec<_>>();
-        if order.is_empty() {
-            (0..self.workspaces.len()).collect()
-        } else {
-            order
-        }
+        (0..self.workspaces.len()).collect()
     }
 
     pub(crate) fn workspace_at_visible_position(&self, position: usize) -> Option<usize> {
@@ -1052,178 +979,47 @@ impl AppState {
         };
         self.switch_workspace(prev);
     }
+    /// Move the table viewport without changing its stable row order.
+    pub fn scroll_agent_table(&mut self, delta: isize) {
+        let total = crate::ui::agent_panel_entries(self).len();
+        let visible = self.view.agent_table.visible().max(1);
+        let max_scroll = total.saturating_sub(visible);
+        self.agent_table_scroll = self
+            .agent_table_scroll
+            .saturating_add_signed(delta)
+            .min(max_scroll);
+    }
 
-    pub fn move_workspace(&mut self, source_idx: usize, insert_idx: usize) {
-        if source_idx >= self.workspaces.len() || insert_idx > self.workspaces.len() {
-            return;
+    /// Move one agent row to an insert-before position in the global table.
+    /// Pane geometry is deliberately not involved: this is display order only.
+    pub fn move_agent_to_index(&mut self, source_pane_id: PaneId, insert_idx: usize) -> bool {
+        let entries = crate::ui::agent_panel_entries(self);
+        let Some(from) = entries
+            .iter()
+            .position(|entry| entry.pane_id == source_pane_id)
+        else {
+            return false;
+        };
+        if insert_idx > entries.len() {
+            return false;
         }
-
-        self.mark_session_dirty();
-
-        let active_id = self.active.map(|idx| self.workspaces[idx].id.clone());
-        let selected_id = self
-            .workspaces
-            .get(self.selected)
-            .map(|workspace| workspace.id.clone());
-
-        let workspace = self.workspaces.remove(source_idx);
-        let target_idx = if source_idx < insert_idx {
+        let to = if from < insert_idx {
             insert_idx.saturating_sub(1)
         } else {
             insert_idx
-        }
-        .min(self.workspaces.len());
-        self.workspaces.insert(target_idx, workspace);
-
-        self.active = active_id.and_then(|id| self.workspaces.iter().position(|ws| ws.id == id));
-        self.selected = selected_id
-            .and_then(|id| self.workspaces.iter().position(|ws| ws.id == id))
-            .unwrap_or(0);
-        self.ensure_workspace_visible(self.selected);
-    }
-
-    /// Move a dragged agent to `insert_idx` among the agents it shares a folder
-    /// with. Every other folder, and every other agent in this one, stays where
-    /// it is. Display order only.
-    pub fn move_agent_in_folder(
-        &mut self,
-        ws_idx: usize,
-        source_pane_id: crate::layout::PaneId,
-        insert_idx: usize,
-    ) -> bool {
-        let mut groups = crate::ui::workspace_agent_groups(self, ws_idx);
-        let Some(group) = groups
-            .iter_mut()
-            .find(|group| group.agents.iter().any(|m| m.pane_id == source_pane_id))
-        else {
-            return false;
-        };
-        let Some(from) = group
-            .agents
-            .iter()
-            .position(|member| member.pane_id == source_pane_id)
-        else {
-            return false;
-        };
-        if insert_idx > group.agents.len() {
-            return false;
-        }
-        let to = if from < insert_idx {
-            insert_idx - 1
-        } else {
-            insert_idx
         };
         if to == from {
             return false;
         }
-        let member = group.agents.remove(from);
-        group.agents.insert(to, member);
-        self.apply_agent_group_order(ws_idx, &groups)
-    }
-
-    /// Move a whole folder, and every agent under it, to `insert_idx` among its
-    /// space's folders. Display order only.
-    pub fn move_agent_folder(&mut self, ws_idx: usize, key: &str, insert_idx: usize) -> bool {
-        let mut groups = crate::ui::workspace_agent_groups(self, ws_idx);
-        let Some(from) = groups.iter().position(|group| group.key == key) else {
-            return false;
-        };
-        if insert_idx > groups.len() {
-            return false;
-        }
-        let to = if from < insert_idx {
-            insert_idx - 1
-        } else {
-            insert_idx
-        };
-        if to == from {
-            return false;
-        }
-        let group = groups.remove(from);
-        groups.insert(to, group);
-        self.apply_agent_group_order(ws_idx, &groups)
-    }
-
-    /// Write a rearranged set of folders back as the space's agent order. The
-    /// agents fill the slots they already occupied, so panes with no agent —
-    /// which the sidebar never lists — keep their place in the order.
-    fn apply_agent_group_order(
-        &mut self,
-        ws_idx: usize,
-        groups: &[crate::ui::AgentFolderGroup],
-    ) -> bool {
-        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
-            return false;
-        };
-        let mut listed = groups
+        let mut order: Vec<_> = entries
             .iter()
-            .flat_map(|group| group.agents.iter().map(|member| member.pane_id));
-        let previous = ws.ordered_pane_ids();
-        let is_listed = |pane_id: &crate::layout::PaneId| {
-            groups
-                .iter()
-                .any(|group| group.agents.iter().any(|m| m.pane_id == *pane_id))
-        };
-        let order = previous
-            .iter()
-            .map(|pane_id| {
-                if is_listed(pane_id) {
-                    listed.next().unwrap_or(*pane_id)
-                } else {
-                    *pane_id
-                }
-            })
-            .collect::<Vec<_>>();
-        if order == previous {
-            return false;
-        }
-        ws.set_agent_order(order);
+            .map(|entry| entry.terminal_id.clone())
+            .collect();
+        let moved = order.remove(from);
+        order.insert(to, moved);
+        self.agent_order = order;
         self.mark_session_dirty();
         true
-    }
-
-    pub fn scroll_tabs_left(&mut self) {
-        self.tab_scroll_follow_active = false;
-        self.tab_scroll = self.tab_scroll.saturating_sub(1);
-        self.refresh_tab_bar_view();
-    }
-
-    pub fn scroll_tabs_right(&mut self) {
-        self.tab_scroll_follow_active = false;
-        self.tab_scroll = self.tab_scroll.saturating_add(1);
-        self.refresh_tab_bar_view();
-    }
-
-    pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) {
-        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
-            if ws.move_tab(source_idx, insert_idx) {
-                self.mark_session_dirty();
-                self.tab_scroll_follow_active = true;
-                self.refresh_tab_bar_view();
-            }
-        }
-    }
-
-    pub fn next_tab(&mut self) {
-        if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
-            if !ws.tabs.is_empty() {
-                let next = (ws.active_tab + 1) % ws.tabs.len();
-                self.switch_tab(next);
-            }
-        }
-    }
-
-    pub fn previous_tab(&mut self) {
-        if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
-            if !ws.tabs.is_empty() {
-                let prev = if ws.active_tab == 0 {
-                    ws.tabs.len() - 1
-                } else {
-                    ws.active_tab - 1
-                };
-                self.switch_tab(prev);
-            }
-        }
     }
 
     pub fn next_agent(&mut self) {
@@ -1239,6 +1035,9 @@ impl AppState {
         let Some(target) = entries.get(idx) else {
             return false;
         };
+        if !target.docked {
+            return false;
+        }
         let ws_idx = target.ws_idx;
         let pane_id = target.pane_id;
 
@@ -1261,94 +1060,42 @@ impl AppState {
             return;
         }
 
+        // Set-down agents have no pane to land on, so cycling steps over them.
+        let docked: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.docked)
+            .map(|(idx, _)| idx)
+            .collect();
+        if docked.is_empty() {
+            return;
+        }
         let focused = self
             .active
             .and_then(|idx| self.workspaces.get(idx))
             .and_then(crate::workspace::Workspace::focused_pane_id);
-        let current_idx =
-            focused.and_then(|pane_id| entries.iter().position(|entry| entry.pane_id == pane_id));
-        let target_idx = match (current_idx, forward) {
-            (Some(idx), true) => (idx + 1) % entries.len(),
-            (Some(0), false) => entries.len() - 1,
-            (Some(idx), false) => idx - 1,
+        let current_pos = focused.and_then(|pane_id| {
+            docked
+                .iter()
+                .position(|idx| entries[*idx].docked && entries[*idx].pane_id == pane_id)
+        });
+        let target_pos = match (current_pos, forward) {
+            (Some(pos), true) => (pos + 1) % docked.len(),
+            (Some(0), false) => docked.len() - 1,
+            (Some(pos), false) => pos - 1,
             (None, true) => 0,
-            (None, false) => entries.len() - 1,
+            (None, false) => docked.len() - 1,
         };
 
-        self.focus_agent_entry(target_idx);
+        self.focus_agent_entry(docked[target_pos]);
     }
 
+    /// Bring an agent's row on screen. The table follows the focused agent
+    /// when it lays itself out, so this only has to move the scroll when the
+    /// row sits above the rows currently drawn.
     fn ensure_agent_panel_entry_visible(&mut self, idx: usize) {
-        if self.sidebar_collapsed {
-            return;
-        }
-
-        let entries = crate::ui::agent_panel_entries(self);
-        let Some(target) = entries.get(idx) else {
-            return;
-        };
-        let (ws_idx, tab_idx, pane_id) = (target.ws_idx, target.tab_idx, target.pane_id);
-
-        let list_entries = crate::ui::workspace_list_entries(self);
-        let Some(target_entry_idx) = list_entries.iter().position(|entry| {
-            matches!(
-                entry,
-                crate::ui::WorkspaceListEntry::Agent {
-                    ws_idx: entry_ws_idx,
-                    tab_idx: entry_tab_idx,
-                    pane_id: entry_pane_id,
-                } if *entry_ws_idx == ws_idx
-                    && *entry_tab_idx == tab_idx
-                    && *entry_pane_id == pane_id
-            )
-        }) else {
-            return;
-        };
-
-        self.workspace_scroll = crate::ui::normalized_workspace_scroll(
-            self,
-            self.view.sidebar_rect,
-            self.workspace_scroll,
-        );
-        let row_visible = |app: &Self| {
-            crate::ui::compute_workspace_list_areas(app, app.view.sidebar_rect)
-                .1
-                .iter()
-                .any(|row| row.ws_idx == ws_idx && row.tab_idx == tab_idx && row.pane_id == pane_id)
-        };
-        if row_visible(self) {
-            return;
-        }
-
-        if target_entry_idx < self.workspace_scroll {
-            self.workspace_scroll = target_entry_idx;
-            return;
-        }
-
-        loop {
-            // A zero-height list can never show the row; without this guard
-            // the scroll would grow unbounded because normalization is a
-            // no-op for empty bodies.
-            let (cards, rows, _) =
-                crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect);
-            if cards.is_empty() && rows.is_empty() {
-                break;
-            }
-            if rows
-                .iter()
-                .any(|row| row.ws_idx == ws_idx && row.tab_idx == tab_idx && row.pane_id == pane_id)
-            {
-                break;
-            }
-            let previous_scroll = self.workspace_scroll;
-            self.workspace_scroll = crate::ui::normalized_workspace_scroll(
-                self,
-                self.view.sidebar_rect,
-                self.workspace_scroll.saturating_add(1),
-            );
-            if self.workspace_scroll == previous_scroll {
-                break;
-            }
+        if idx < self.agent_table_scroll {
+            self.agent_table_scroll = idx;
         }
     }
 
@@ -1395,6 +1142,9 @@ impl AppState {
         terminal_ids: impl IntoIterator<Item = crate::terminal::TerminalId>,
     ) {
         for terminal_id in terminal_ids {
+            if self.terminal_is_detached_agent(&terminal_id) {
+                continue;
+            }
             let still_attached = self.workspaces.iter().any(|ws| {
                 ws.tabs.iter().any(|tab| {
                     tab.panes
@@ -1409,6 +1159,181 @@ impl AppState {
                 self.terminal_runtime_shutdowns.push(terminal_id);
             }
         }
+    }
+
+    /// Set an agent's pane down before its space closes it: the pane leaves the
+    /// layout but keeps its id, its seen flag, and its wiring to the running
+    /// terminal, and the agent keeps its table row. Panes holding shells are
+    /// left alone — with no agent inside there is nothing to keep.
+    pub(crate) fn set_down_agent_pane(&mut self, pane_id: PaneId, pane: &crate::pane::PaneState) {
+        if !self
+            .terminals
+            .get(&pane.attached_terminal_id)
+            .is_some_and(crate::terminal::TerminalState::is_agent_terminal)
+        {
+            return;
+        }
+        if self
+            .detached_agents
+            .iter()
+            .any(|detached| detached.pane_id == pane_id)
+        {
+            return;
+        }
+        self.detached_agents.push(crate::app::state::DetachedAgent {
+            pane_id,
+            pane: pane.clone(),
+        });
+    }
+
+    /// Set down the agent in one pane, found by id, before whatever holds that
+    /// pane closes it.
+    pub(crate) fn set_down_agent_pane_by_id(&mut self, ws_idx: usize, pane_id: PaneId) {
+        let Some(pane) = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane_id))
+            .cloned()
+        else {
+            return;
+        };
+        self.set_down_agent_pane(pane_id, &pane);
+    }
+
+    /// Set down every agent pane in one tab, before that tab closes its panes.
+    pub(crate) fn set_down_agent_panes_in_tab(&mut self, ws_idx: usize, tab_idx: usize) {
+        let panes: Vec<(PaneId, crate::pane::PaneState)> = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.get(tab_idx))
+            .into_iter()
+            .flat_map(|tab| tab.panes.iter().map(|(id, pane)| (*id, pane.clone())))
+            .collect();
+        for (pane_id, pane) in panes {
+            self.set_down_agent_pane(pane_id, &pane);
+        }
+    }
+
+    /// Set down every agent pane in the given spaces, before those spaces
+    /// close their panes.
+    pub(crate) fn set_down_agent_panes_in_workspaces(&mut self, ws_indices: &[usize]) {
+        let panes: Vec<(PaneId, crate::pane::PaneState)> = ws_indices
+            .iter()
+            .filter_map(|idx| self.workspaces.get(*idx))
+            .flat_map(|ws| &ws.tabs)
+            .flat_map(|tab| &tab.panes)
+            .map(|(pane_id, pane)| (*pane_id, pane.clone()))
+            .collect();
+        for (pane_id, pane) in panes {
+            self.set_down_agent_pane(pane_id, &pane);
+        }
+    }
+
+    /// Whether a terminal belongs to a set-down agent, which is what keeps
+    /// `remove_unattached_terminal_ids` from ending it.
+    fn terminal_is_detached_agent(&self, terminal_id: &crate::terminal::TerminalId) -> bool {
+        self.detached_agents
+            .iter()
+            .any(|detached| detached.pane.attached_terminal_id == *terminal_id)
+    }
+
+    /// End a set-down agent. This is the one thing that ends an agent with no
+    /// pane: it leaves the table and its process is shut down.
+    pub fn close_detached_agent(&mut self, pane_id: PaneId) {
+        let Some(position) = self
+            .detached_agents
+            .iter()
+            .position(|detached| detached.pane_id == pane_id)
+        else {
+            return;
+        };
+        let detached = self.detached_agents.remove(position);
+        let terminal_id = detached.pane.attached_terminal_id;
+        if self.terminals.remove(&terminal_id).is_some()
+            && !self.terminal_runtime_shutdowns.contains(&terminal_id)
+        {
+            self.terminal_runtime_shutdowns.push(terminal_id);
+        }
+        self.mark_session_dirty();
+    }
+
+    /// Dock a set-down agent onto `target`: against an edge it cuts the pane in
+    /// two and takes the new half; over the middle it takes the pane whole, and
+    /// what it displaces is set down in its turn if it is an agent, or ended if
+    /// it is a shell.
+    pub fn dock_detached_agent(
+        &mut self,
+        pane_id: PaneId,
+        target: PaneId,
+        zone: crate::layout::DropZone,
+    ) -> bool {
+        let Some(position) = self
+            .detached_agents
+            .iter()
+            .position(|detached| detached.pane_id == pane_id)
+        else {
+            return false;
+        };
+        let Some(ws_idx) = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.find_tab_index_for_pane(target).is_some())
+        else {
+            return false;
+        };
+        let detached = self.detached_agents.remove(position);
+        let entry = (detached.pane_id, detached.pane);
+        match zone {
+            crate::layout::DropZone::Edge(side) => {
+                let (pane_id, pane) = entry;
+                if !self.workspaces[ws_idx].dock_detached_at_edge(
+                    target,
+                    side,
+                    (pane_id, pane.clone()),
+                ) {
+                    self.detached_agents
+                        .insert(position, crate::app::state::DetachedAgent { pane_id, pane });
+                    return false;
+                }
+                self.focus_pane_in_workspace(ws_idx, pane_id);
+            }
+            crate::layout::DropZone::Over => {
+                let docked_id = entry.0;
+                let Some((displaced_id, displaced)) = self.workspaces[ws_idx]
+                    .replace_pane_with_detached(target, (entry.0, entry.1.clone()))
+                else {
+                    self.detached_agents.insert(
+                        position,
+                        crate::app::state::DetachedAgent {
+                            pane_id: entry.0,
+                            pane: entry.1,
+                        },
+                    );
+                    return false;
+                };
+                let displaced_terminal = displaced.attached_terminal_id.clone();
+                self.set_down_agent_pane(displaced_id, &displaced);
+                self.remove_unattached_terminal_ids([displaced_terminal]);
+                self.focus_pane_in_workspace(ws_idx, docked_id);
+            }
+        }
+        self.mode = Mode::Terminal;
+        self.mark_session_dirty();
+        true
+    }
+
+    /// Put a clicked set-down agent into the pane that currently has the
+    /// keyboard. A click means "show this agent"; dragging remains the way to
+    /// choose an edge or a different pane explicitly.
+    pub(crate) fn open_detached_agent(&mut self, pane_id: PaneId) -> bool {
+        let Some(target) = self
+            .active
+            .and_then(|ws_idx| self.workspaces.get(ws_idx))
+            .and_then(crate::workspace::Workspace::focused_pane_id)
+        else {
+            return false;
+        };
+        self.dock_detached_agent(pane_id, target, crate::layout::DropZone::Over)
     }
 
     pub fn close_selected_workspace(&mut self) {
@@ -1437,6 +1362,10 @@ impl AppState {
             .filter(|indices| indices.len() >= 2)
             .unwrap_or_else(|| vec![self.selected]);
 
+        // A space close closes panes, and closing a pane sets its agent down
+        // rather than ending it. The space's shells end with it; its agents
+        // stay in the table as detached.
+        self.set_down_agent_panes_in_workspaces(&close_indices);
         let mut terminal_ids = Vec::new();
         for idx in &close_indices {
             terminal_ids.extend(self.terminal_ids_for_workspace(*idx));
@@ -1451,46 +1380,14 @@ impl AppState {
         if self.workspaces.is_empty() {
             self.active = None;
             self.selected = 0;
-            self.workspace_scroll = 0;
-            self.tab_scroll = 0;
-            self.tab_scroll_follow_active = true;
+            self.agent_table_scroll = 0;
         } else {
             if self.selected >= self.workspaces.len() {
                 self.selected = self.workspaces.len() - 1;
             }
             self.active = Some(self.selected);
-            self.workspace_scroll = self
-                .workspace_scroll
-                .min(self.workspaces.len().saturating_sub(1));
             self.ensure_workspace_visible(self.selected);
-            self.tab_scroll_follow_active = true;
-            self.refresh_tab_bar_view();
         }
-    }
-
-    fn refresh_tab_bar_view(&mut self) {
-        let area = self.view.tab_bar_rect;
-        let Some(ws) = self.active.and_then(|idx| self.workspaces.get(idx)) else {
-            self.tab_scroll = 0;
-            self.view.tab_hit_areas.clear();
-            self.view.tab_scroll_left_hit_area = ratatui::layout::Rect::default();
-            self.view.tab_scroll_right_hit_area = ratatui::layout::Rect::default();
-            self.view.new_tab_hit_area = ratatui::layout::Rect::default();
-            return;
-        };
-
-        let layout = crate::ui::compute_tab_bar_view(
-            ws,
-            area,
-            self.tab_scroll,
-            self.tab_scroll_follow_active,
-            self.mouse_capture,
-        );
-        self.tab_scroll = layout.scroll;
-        self.view.tab_hit_areas = layout.tab_hit_areas;
-        self.view.tab_scroll_left_hit_area = layout.scroll_left_hit_area;
-        self.view.tab_scroll_right_hit_area = layout.scroll_right_hit_area;
-        self.view.new_tab_hit_area = layout.new_tab_hit_area;
     }
 }
 
@@ -1555,6 +1452,35 @@ impl AppState {
             return false;
         }
         if !tab.layout.swap_leaf_ids(source, target) {
+            return false;
+        }
+        self.focus_pane_in_workspace(ws_idx, source);
+        self.mark_session_dirty();
+        true
+    }
+
+    /// Pin a pane against one edge of another, cutting that pane in two. The
+    /// pinned pane keeps its id and its terminal, so this rearranges the tab
+    /// rather than making anything new.
+    pub fn pin_pane_to_edge(
+        &mut self,
+        source: crate::layout::PaneId,
+        target: crate::layout::PaneId,
+        side: crate::layout::SplitSide,
+    ) -> bool {
+        let Some(ws_idx) = self.active else {
+            return false;
+        };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return false;
+        };
+        let Some(tab) = ws.active_tab_mut() else {
+            return false;
+        };
+        if tab.zoomed || tab.layout.pane_count() <= 1 {
+            return false;
+        }
+        if !tab.layout.move_pane_to_edge(source, target, side) {
             return false;
         }
         self.focus_pane_in_workspace(ws_idx, source);
@@ -1869,6 +1795,14 @@ impl AppState {
             .and_then(|(i, pane_id)| self.terminal_id_for_pane(i, pane_id))
             .into_iter()
             .collect::<Vec<_>>();
+        // Closing a pane sets its agent down rather than ending it: the agent
+        // keeps running and keeps its table row, with no pane showing it.
+        if let Some((pane_id, pane)) = active.and_then(|i| self.workspaces.get(i)).and_then(|ws| {
+            let pane_id = ws.focused_pane_id()?;
+            Some((pane_id, ws.pane_state(pane_id)?.clone()))
+        }) {
+            self.set_down_agent_pane(pane_id, &pane);
+        }
         let should_close_workspace = active
             .and_then(|i| self.workspaces.get_mut(i))
             .is_some_and(|ws| ws.close_focused());
@@ -1879,55 +1813,6 @@ impl AppState {
             self.close_selected_workspace();
         } else {
             self.remove_unattached_terminal_ids(terminal_ids);
-        }
-        false
-    }
-
-    /// Close the active tab. Returns true when the close was deferred to confirmation.
-    pub fn close_tab(&mut self) -> bool {
-        if self.active.is_some_and(|ws_idx| {
-            self.workspaces
-                .get(ws_idx)
-                .is_some_and(|ws| ws.tabs.len() <= 1)
-                && self.workspace_close_would_close_worktree_group(ws_idx)
-        }) {
-            if let Some(ws_idx) = self.active {
-                if self.confirm_implicit_worktree_group_close(ws_idx) {
-                    return true;
-                }
-            }
-        }
-
-        self.selection = None;
-        self.selection_autoscroll = None;
-        self.mark_session_dirty();
-        let should_close_workspace = self
-            .active
-            .and_then(|i| self.workspaces.get(i))
-            .is_some_and(|ws| ws.tabs.len() <= 1);
-        if should_close_workspace {
-            if let Some(active) = self.active {
-                self.selected = active;
-            }
-            self.close_selected_workspace();
-            return false;
-        }
-        if let Some(ws_idx) = self.active {
-            let terminal_ids = self
-                .workspaces
-                .get(ws_idx)
-                .map(|ws| self.terminal_ids_for_tab(ws_idx, ws.active_tab))
-                .unwrap_or_default();
-            let Some(ws) = self.workspaces.get_mut(ws_idx) else {
-                return false;
-            };
-            let workspace_id = ws.id.clone();
-            let closing_tab_id = format!("{}:{}", workspace_id, ws.active_tab + 1);
-            ws.close_active_tab();
-            self.remove_unattached_terminal_ids(terminal_ids);
-            crate::logging::tab_closed(&workspace_id, &closing_tab_id);
-            self.tab_scroll_follow_active = true;
-            self.refresh_tab_bar_view();
         }
         false
     }
@@ -2359,11 +2244,11 @@ impl AppState {
     ) -> bool {
         let mut changed = false;
         for result in results {
-            let Some(ws_idx) = self
-                .workspaces
-                .iter()
-                .position(|ws| ws.id == result.workspace_id)
-            else {
+            let Some(workspace_id) = result.workspace_id.as_ref() else {
+                changed |= self.apply_detached_git_status(terminal_runtimes, result);
+                continue;
+            };
+            let Some(ws_idx) = self.workspaces.iter().position(|ws| &ws.id == workspace_id) else {
                 continue;
             };
 
@@ -2415,7 +2300,53 @@ impl AppState {
                 changed = true;
             }
         }
+        let set_down: std::collections::HashSet<_> = self
+            .detached_agents
+            .iter()
+            .map(|detached| detached.pane_id)
+            .collect();
+        self.detached_git_statuses
+            .retain(|pane_id, _| set_down.contains(pane_id));
         changed
+    }
+
+    /// Record what a set-down agent's directory is on, discarding an answer that
+    /// arrived after the agent moved or was docked.
+    fn apply_detached_git_status(
+        &mut self,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+        result: WorkspaceGitStatus,
+    ) -> bool {
+        let Some(pane_id) = result.pane_id else {
+            return false;
+        };
+        let Some(detached) = self
+            .detached_agents
+            .iter()
+            .find(|detached| detached.pane_id == pane_id)
+        else {
+            return false;
+        };
+        let current_cwd = crate::app::state::detached_agent_cwd(
+            &detached.pane,
+            &self.terminals,
+            terminal_runtimes,
+        );
+        if current_cwd.as_ref() != Some(&result.resolved_identity_cwd) {
+            return false;
+        }
+
+        let snapshot = crate::workspace::WorkspaceGitStatusSnapshot {
+            branch: result.branch,
+            ahead_behind: result.ahead_behind,
+            space: result.space,
+            worktree_state: result.worktree_state,
+        };
+        if self.detached_git_statuses.get(&pane_id) == Some(&snapshot) {
+            return false;
+        }
+        self.detached_git_statuses.insert(pane_id, snapshot);
+        true
     }
 
     pub fn handle_app_event(&mut self, event: AppEvent) -> Vec<PaneStateUpdate> {
@@ -2591,14 +2522,70 @@ impl AppState {
         }
     }
 
+    /// Whether this state change belongs to an agent still coming back up
+    /// after a restore, ending that startup when the agent settles.
+    ///
+    /// A restored agent's row was saved wearing what the agent last did, and
+    /// the harness booting again is not the next thing it did. Holding the
+    /// marker across the boot is what keeps an acknowledged agent acknowledged
+    /// until it is actually given something to do.
+    fn consume_restore_startup(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+        state: AgentState,
+    ) -> bool {
+        self.terminals
+            .get_mut(terminal_id)
+            .is_some_and(|terminal| terminal.consume_restore_startup(state))
+    }
+
     fn update_terminal_state<F>(&mut self, pane_id: PaneId, update: F) -> Option<PaneStateUpdate>
     where
         F: FnOnce(&mut crate::terminal::TerminalState) -> Option<TerminalStateMutation>,
     {
-        let ws_idx = self
+        let Some(ws_idx) = self
             .workspaces
             .iter()
-            .position(|ws| ws.pane_state(pane_id).is_some())?;
+            .position(|ws| ws.pane_state(pane_id).is_some())
+        else {
+            // A set-down agent still reports. Its terminal takes the update so
+            // the table row stays truthful, and a completion clears its seen
+            // flag so the row wears the done marker until it is looked at —
+            // which, with no pane, means docking it. No sounds and no toasts:
+            // those route through a workspace, and it has none.
+            let detached_idx = self
+                .detached_agents
+                .iter()
+                .position(|detached| detached.pane_id == pane_id)?;
+            let terminal_id = self.detached_agents[detached_idx]
+                .pane
+                .attached_terminal_id
+                .clone();
+            let mutation = {
+                let terminal = self.terminals.get_mut(&terminal_id)?;
+                update(terminal)?
+            };
+            if mutation.session_ref_changed {
+                self.mark_session_dirty();
+            }
+            let change = mutation.effective_state_change?;
+            if self.consume_restore_startup(&terminal_id, change.state) {
+                return None;
+            }
+            let detached = &mut self.detached_agents[detached_idx];
+            let marker_before = (detached.pane.seen, detached.pane.completed);
+            if change.state != AgentState::Idle {
+                detached.pane.seen = true;
+                detached.pane.completed = false;
+            } else if is_background_completion_transition(change.previous_state, change.state) {
+                detached.pane.seen = false;
+                detached.pane.completed = true;
+            }
+            if (detached.pane.seen, detached.pane.completed) != marker_before {
+                self.mark_session_dirty();
+            }
+            return None;
+        };
         let terminal_id = self.workspaces[ws_idx]
             .pane_state(pane_id)?
             .attached_terminal_id
@@ -2612,7 +2599,8 @@ impl AppState {
             self.mark_session_dirty();
         }
         let change = mutation.effective_state_change?;
-        let seen = self.apply_pane_state_change(ws_idx, pane_id, &change)?;
+        let starting_up = self.consume_restore_startup(&terminal_id, change.state);
+        let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, !starting_up)?;
         let update = PaneStateUpdate {
             pane_id,
             ws_idx,
@@ -2635,6 +2623,7 @@ impl AppState {
         ws_idx: usize,
         pane_id: PaneId,
         change: &EffectiveStateChange,
+        update_marker: bool,
     ) -> Option<bool> {
         let is_active_tab = self.pane_is_in_active_tab(ws_idx, pane_id);
         let suppress_active_tab_notifications = active_tab_suppresses_notifications(
@@ -2648,12 +2637,21 @@ impl AppState {
             .iter_mut()
             .find_map(|tab| tab.panes.get_mut(&pane_id))?;
 
-        if change.state != AgentState::Idle {
+        let marker_before = (pane.seen, pane.completed);
+        if !update_marker {
+            // Held: the agent is still coming up after a restore.
+        } else if change.state != AgentState::Idle {
             pane.seen = true;
+            pane.completed = false;
         } else if is_background_completion_transition(change.previous_state, change.state) {
             pane.seen = suppress_active_tab_notifications;
+            pane.completed = true;
         }
         let seen = pane.seen;
+        let marker_changed = (pane.seen, pane.completed) != marker_before;
+        if marker_changed {
+            self.mark_session_dirty();
+        }
 
         if self.local_sound_playback && self.sound.allows(change.known_agent) {
             if let Some(sound) = notification_sound_for_state_change(
@@ -2711,6 +2709,16 @@ impl AppState {
             .position(|ws| ws.find_tab_index_for_pane(pane_id).is_some());
 
         let Some(ws_idx) = ws_idx else {
+            // A set-down agent's process ending is the agent ending: its pane
+            // is in no workspace, so the exit arrives here.
+            if self
+                .detached_agents
+                .iter()
+                .any(|detached| detached.pane_id == pane_id)
+            {
+                self.close_detached_agent(pane_id);
+                return;
+            }
             warn!(pane = pane_id.raw(), "PaneDied for unknown pane");
             return;
         };
@@ -3295,7 +3303,7 @@ mod tests {
         let changed = state.apply_workspace_git_statuses(
             &terminal_runtimes,
             vec![WorkspaceGitStatus {
-                workspace_id: first_id,
+                workspace_id: Some(first_id),
                 pane_id: None,
                 resolved_identity_cwd: first_cwd,
                 branch: Some("main".into()),
@@ -3331,7 +3339,7 @@ mod tests {
         let changed = state.apply_workspace_git_statuses(
             &terminal_runtimes,
             vec![WorkspaceGitStatus {
-                workspace_id,
+                workspace_id: Some(workspace_id),
                 pane_id: Some(pane_id),
                 resolved_identity_cwd: cwd,
                 branch: Some("pane-branch".into()),
@@ -3362,7 +3370,7 @@ mod tests {
         let changed = state.apply_workspace_git_statuses(
             &terminal_runtimes,
             vec![WorkspaceGitStatus {
-                workspace_id,
+                workspace_id: Some(workspace_id),
                 pane_id: None,
                 resolved_identity_cwd: std::path::PathBuf::from("/definitely/not/current"),
                 branch: Some("main".into()),
@@ -3389,7 +3397,7 @@ mod tests {
         let changed = state.apply_workspace_git_statuses(
             &terminal_runtimes,
             vec![WorkspaceGitStatus {
-                workspace_id,
+                workspace_id: Some(workspace_id),
                 pane_id: None,
                 resolved_identity_cwd: cwd,
                 branch: None,
@@ -3416,7 +3424,7 @@ mod tests {
         let changed = state.apply_workspace_git_statuses(
             &terminal_runtimes,
             vec![WorkspaceGitStatus {
-                workspace_id,
+                workspace_id: Some(workspace_id),
                 pane_id: None,
                 resolved_identity_cwd: cwd,
                 branch: Some("scratch".into()),
@@ -3434,6 +3442,76 @@ mod tests {
 
         assert!(changed);
         assert_eq!(state.workspaces[0].worktree_space().cloned(), membership);
+    }
+
+    #[test]
+    fn apply_workspace_git_statuses_updates_a_set_down_agent() {
+        let mut state = app_with_workspaces(&["one"]);
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, pane_id);
+        state.workspaces[0].tabs[0].layout.focus_pane(pane_id);
+        let cwd = state.workspaces[0]
+            .active_tab()
+            .unwrap()
+            .cwd_for_pane(
+                pane_id,
+                &state.terminals,
+                &crate::terminal::TerminalRuntimeRegistry::new(),
+            )
+            .unwrap();
+        state.close_pane();
+        assert_eq!(state.detached_agents.len(), 1);
+
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_workspace_git_statuses(
+            &terminal_runtimes,
+            vec![WorkspaceGitStatus {
+                workspace_id: None,
+                pane_id: Some(pane_id),
+                resolved_identity_cwd: cwd,
+                branch: Some("set-down-branch".into()),
+                ahead_behind: None,
+                space: None,
+                worktree_state: crate::workspace::GitWorktreeState::Staged,
+            }],
+        );
+
+        assert!(changed);
+        let status = state
+            .detached_git_statuses
+            .get(&pane_id)
+            .expect("the set-down agent's git status");
+        assert_eq!(status.branch.as_deref(), Some("set-down-branch"));
+        assert_eq!(
+            status.worktree_state,
+            crate::workspace::GitWorktreeState::Staged
+        );
+    }
+
+    #[test]
+    fn apply_workspace_git_statuses_ignores_a_set_down_agent_that_moved() {
+        let mut state = app_with_workspaces(&["one"]);
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, pane_id);
+        state.workspaces[0].tabs[0].layout.focus_pane(pane_id);
+        state.close_pane();
+
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_workspace_git_statuses(
+            &terminal_runtimes,
+            vec![WorkspaceGitStatus {
+                workspace_id: None,
+                pane_id: Some(pane_id),
+                resolved_identity_cwd: std::path::PathBuf::from("/definitely/not/current"),
+                branch: Some("stale".into()),
+                ahead_behind: None,
+                space: None,
+                worktree_state: crate::workspace::GitWorktreeState::Clean,
+            }],
+        );
+
+        assert!(!changed);
+        assert!(state.detached_git_statuses.is_empty());
     }
 
     #[test]
@@ -3469,40 +3547,6 @@ mod tests {
             terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
         }
     }
-
-    #[test]
-    fn next_agent_cycles_agent_panel_entries_in_all_scope() {
-        let mut first = Workspace::test_new("one");
-        let first_root = first.tabs[0].root_pane;
-        let first_second = first.test_split(Direction::Horizontal);
-        first.tabs[0].layout.focus_pane(first_root);
-        let second = Workspace::test_new("two");
-        let second_root = second.tabs[0].root_pane;
-
-        let mut state = AppState::test_new();
-        state.workspaces = vec![first, second];
-        state.ensure_test_terminals();
-        state.active = Some(0);
-        state.selected = 0;
-        state.mode = Mode::Terminal;
-        state.agent_panel_scope = crate::app::state::AgentPanelScope::AllWorkspaces;
-        mark_agent(&mut state, 0, 0, first_root);
-        mark_agent(&mut state, 0, 0, first_second);
-        mark_agent(&mut state, 1, 0, second_root);
-
-        state.next_agent();
-        assert_eq!(state.active, Some(0));
-        assert_eq!(state.workspaces[0].focused_pane_id(), Some(first_second));
-
-        state.next_agent();
-        assert_eq!(state.active, Some(1));
-        assert_eq!(state.workspaces[1].focused_pane_id(), Some(second_root));
-
-        state.previous_agent();
-        assert_eq!(state.active, Some(0));
-        assert_eq!(state.workspaces[0].focused_pane_id(), Some(first_second));
-    }
-
     #[test]
     fn focus_agent_entry_uses_agent_panel_order() {
         let mut first = Workspace::test_new("one");
@@ -3517,7 +3561,6 @@ mod tests {
         state.active = Some(0);
         state.selected = 0;
         state.mode = Mode::Terminal;
-        state.agent_panel_scope = crate::app::state::AgentPanelScope::AllWorkspaces;
         mark_agent(&mut state, 0, 0, first_root);
         mark_agent(&mut state, 0, 0, first_second);
         mark_agent(&mut state, 1, 0, second_root);
@@ -3529,19 +3572,37 @@ mod tests {
     }
 
     #[test]
-    fn focus_agent_entry_succeeds_for_already_focused_agent() {
+    fn agent_order_is_global_and_new_agents_append() {
         let mut state = app_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        state.agent_panel_scope = crate::app::state::AgentPanelScope::AllWorkspaces;
-        mark_agent(&mut state, 0, 0, root);
+        let first = state.workspaces[0].tabs[0].root_pane;
+        let second = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, first);
+        mark_agent(&mut state, 0, 0, second);
 
-        assert!(state.focus_agent_entry(0));
-        assert_eq!(state.active, Some(0));
-        assert_eq!(state.workspaces[0].focused_pane_id(), Some(root));
+        assert!(state.move_agent_to_index(second, 0));
+        assert_eq!(
+            crate::ui::agent_panel_entries(&state)
+                .iter()
+                .map(|entry| entry.pane_id)
+                .collect::<Vec<_>>(),
+            vec![second, first]
+        );
+        let snapshot =
+            crate::persist::capture(&state, &crate::terminal::TerminalRuntimeRegistry::new());
+        assert_eq!(snapshot.agent_order, state.agent_order);
+
+        let third = state.workspaces[0].test_split(Direction::Vertical);
+        mark_agent(&mut state, 0, 0, third);
+        assert_eq!(
+            crate::ui::agent_panel_entries(&state)
+                .iter()
+                .map(|entry| entry.pane_id)
+                .collect::<Vec<_>>(),
+            vec![second, first, third]
+        );
     }
-
     #[test]
-    fn next_agent_cycles_only_current_scope_entries() {
+    fn next_agent_crosses_into_the_next_space() {
         let mut first = Workspace::test_new("one");
         let first_root = first.tabs[0].root_pane;
         let first_second = first.test_split(Direction::Horizontal);
@@ -3555,47 +3616,15 @@ mod tests {
         state.active = Some(0);
         state.selected = 0;
         state.mode = Mode::Terminal;
-        state.agent_panel_scope = crate::app::state::AgentPanelScope::CurrentWorkspace;
         mark_agent(&mut state, 0, 0, first_root);
         mark_agent(&mut state, 0, 0, first_second);
         mark_agent(&mut state, 1, 0, second_root);
 
         state.next_agent();
 
-        assert_eq!(state.active, Some(0));
-        assert_eq!(state.workspaces[0].focused_pane_id(), Some(first_root));
+        assert_eq!(state.active, Some(1));
+        assert_eq!(state.workspaces[1].focused_pane_id(), Some(second_root));
     }
-
-    #[test]
-    fn previous_agent_wraps_without_visible_agent_panel() {
-        let mut workspace = Workspace::test_new("one");
-        let root = workspace.tabs[0].root_pane;
-        for idx in 1..8 {
-            workspace.test_add_tab(Some(&format!("tab-{idx}")));
-        }
-
-        let mut state = AppState::test_new();
-        state.workspaces = vec![workspace];
-        state.ensure_test_terminals();
-        state.active = Some(0);
-        state.selected = 0;
-        state.mode = Mode::Terminal;
-        state.sidebar_collapsed = true;
-        state.agent_panel_scope = crate::app::state::AgentPanelScope::CurrentWorkspace;
-        for tab_idx in 0..state.workspaces[0].tabs.len() {
-            let pane_id = state.workspaces[0].tabs[tab_idx].root_pane;
-            mark_agent(&mut state, 0, tab_idx, pane_id);
-        }
-        state.workspaces[0].tabs[0].layout.focus_pane(root);
-        crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 80, 14));
-
-        state.previous_agent();
-
-        let last_idx = state.workspaces[0].tabs.len() - 1;
-        assert_eq!(state.workspaces[0].active_tab, last_idx);
-        assert_eq!(state.workspace_scroll, 0);
-    }
-
     #[test]
     fn promote_pane_to_new_workspace_keeps_terminal_and_pane_id() {
         let mut state = app_with_workspaces(&["source"]);
@@ -3695,47 +3724,6 @@ mod tests {
         assert_eq!(state.workspaces[1].active_tab, second_tab);
         assert_eq!(state.workspaces[1].focused_pane_id(), Some(second_tab_root));
     }
-
-    #[test]
-    fn last_pane_tracks_tab_and_workspace_switches() {
-        let mut state = app_with_workspaces(&["one", "two"]);
-        let first_root = state.workspaces[0].tabs[0].root_pane;
-        let first_second_tab = state.workspaces[0].test_add_tab(Some("logs"));
-        let first_second_root = state.workspaces[0].tabs[first_second_tab].root_pane;
-        let second_root = state.workspaces[1].tabs[0].root_pane;
-
-        state.switch_tab(first_second_tab);
-        state.last_pane();
-
-        assert_eq!(state.active, Some(0));
-        assert_eq!(state.workspaces[0].active_tab, 0);
-        assert_eq!(state.workspaces[0].focused_pane_id(), Some(first_root));
-
-        state.last_pane();
-
-        assert_eq!(state.active, Some(0));
-        assert_eq!(state.workspaces[0].active_tab, first_second_tab);
-        assert_eq!(
-            state.workspaces[0].focused_pane_id(),
-            Some(first_second_root)
-        );
-
-        state.switch_workspace(1);
-        state.last_pane();
-
-        assert_eq!(state.active, Some(0));
-        assert_eq!(state.workspaces[0].active_tab, first_second_tab);
-        assert_eq!(
-            state.workspaces[0].focused_pane_id(),
-            Some(first_second_root)
-        );
-
-        state.last_pane();
-
-        assert_eq!(state.active, Some(1));
-        assert_eq!(state.workspaces[1].focused_pane_id(), Some(second_root));
-    }
-
     #[test]
     fn last_pane_tracks_cross_workspace_tab_selection() {
         let mut state = app_with_workspaces(&["one", "two"]);
@@ -3757,29 +3745,28 @@ mod tests {
         assert_eq!(state.workspaces[1].focused_pane_id(), Some(second_tab_root));
         assert_ne!(second_first_root, second_tab_root);
     }
-
     #[test]
-    fn switch_workspace_updates_selection_with_visible_sidebar() {
-        let mut state = app_with_workspaces(&["a", "b", "c", "d", "e", "f", "g", "h"]);
-        crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 80, 14));
-
-        state.switch_workspace(7);
-        crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 80, 14));
-
-        assert_eq!(state.active, Some(7));
-        assert_eq!(state.selected, 7);
-        assert!(!state.view.workspace_card_areas.is_empty());
-    }
-
-    #[test]
-    fn switch_workspace_marks_panes_seen() {
+    fn switch_workspace_leaves_the_done_marker_standing() {
         let mut state = app_with_workspaces(&["a", "b"]);
-        // Mark a pane in workspace 1 as unseen
         let id = *state.workspaces[1].panes.keys().next().unwrap();
         state.workspaces[1].panes.get_mut(&id).unwrap().seen = false;
 
         state.switch_workspace(1);
+        assert!(!state.workspaces[1].panes.get(&id).unwrap().seen);
+    }
+
+    #[test]
+    fn clicking_the_marker_acknowledges_one_agent() {
+        let mut state = app_with_workspaces(&["a", "b"]);
+        let id = *state.workspaces[1].panes.keys().next().unwrap();
+        let other = *state.workspaces[0].panes.keys().next().unwrap();
+        state.workspaces[1].panes.get_mut(&id).unwrap().seen = false;
+        state.workspaces[0].panes.get_mut(&other).unwrap().seen = false;
+
+        assert!(state.acknowledge_agent_completion(id));
         assert!(state.workspaces[1].panes.get(&id).unwrap().seen);
+        assert!(!state.workspaces[0].panes.get(&other).unwrap().seen);
+        assert!(!state.acknowledge_agent_completion(id));
     }
 
     #[test]
@@ -3788,43 +3775,6 @@ mod tests {
         state.switch_workspace(5);
         assert_eq!(state.active, Some(0));
     }
-
-    #[test]
-    fn move_workspace_reorders_without_changing_logical_selection() {
-        let mut state = app_with_workspaces(&["a", "b", "c"]);
-        let active_id = state.workspaces[1].id.clone();
-        let selected_id = state.workspaces[2].id.clone();
-        state.active = Some(1);
-        state.selected = 2;
-
-        state.move_workspace(1, 0);
-
-        let names: Vec<_> = state
-            .workspaces
-            .iter()
-            .map(|ws| ws.display_name())
-            .collect();
-        assert_eq!(names, vec!["b", "a", "c"]);
-        assert_eq!(state.active, Some(0));
-        assert_eq!(state.selected, 2);
-        assert_eq!(state.workspaces[state.active.unwrap()].id, active_id);
-        assert_eq!(state.workspaces[state.selected].id, selected_id);
-    }
-
-    #[test]
-    fn move_workspace_accepts_insert_at_end() {
-        let mut state = app_with_workspaces(&["a", "b", "c"]);
-
-        state.move_workspace(0, state.workspaces.len());
-
-        let names: Vec<_> = state
-            .workspaces
-            .iter()
-            .map(|ws| ws.display_name())
-            .collect();
-        assert_eq!(names, vec!["b", "c", "a"]);
-    }
-
     #[test]
     fn close_workspace_adjusts_indices() {
         let mut state = app_with_workspaces(&["a", "b", "c"]);
@@ -4005,6 +3955,85 @@ mod tests {
         let terminal = state.terminals.get(&terminal_id).unwrap();
         assert_eq!(terminal.state, AgentState::Working);
         assert_eq!(terminal.detected_agent, Some(Agent::Pi));
+    }
+
+    /// An agent wearing the acknowledged check — finished, looked at — in the
+    /// background space, with a second space holding the keyboard.
+    fn acknowledged_agent(restarted: bool) -> (AppState, PaneId, crate::terminal::TerminalId) {
+        let mut state = app_with_workspaces(&["front", "back"]);
+        state.active = Some(0);
+        let pane_id = *state.workspaces[1].panes.keys().next().unwrap();
+        let terminal_id = state.workspaces[1]
+            .panes
+            .get(&pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        {
+            let pane = state.workspaces[1].panes.get_mut(&pane_id).unwrap();
+            pane.seen = true;
+            pane.completed = true;
+        }
+        let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.state = AgentState::Idle;
+        if restarted {
+            terminal.begin_restore_startup();
+        }
+        (state, pane_id, terminal_id)
+    }
+
+    fn report_state(state: &mut AppState, pane_id: PaneId, reported: AgentState) {
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: reported,
+            visible_blocker: false,
+            visible_idle: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+    }
+
+    fn marker(state: &AppState, pane_id: PaneId) -> (bool, bool) {
+        let pane = state.workspaces[1].panes.get(&pane_id).unwrap();
+        (pane.seen, pane.completed)
+    }
+
+    #[test]
+    fn a_restored_agent_keeps_its_check_while_its_harness_boots() {
+        let (mut state, pane_id, _) = acknowledged_agent(true);
+
+        report_state(&mut state, pane_id, AgentState::Working);
+        assert_eq!(marker(&state, pane_id), (true, true));
+
+        report_state(&mut state, pane_id, AgentState::Idle);
+        assert_eq!(marker(&state, pane_id), (true, true));
+    }
+
+    #[test]
+    fn a_restored_agent_answers_for_itself_once_it_has_settled() {
+        let (mut state, pane_id, terminal_id) = acknowledged_agent(true);
+
+        report_state(&mut state, pane_id, AgentState::Working);
+        report_state(&mut state, pane_id, AgentState::Idle);
+        assert!(!state.terminals[&terminal_id].is_starting_up());
+
+        // The next run is the agent's own, so the check gives way to it, and
+        // the finish that follows asks to be looked at again.
+        report_state(&mut state, pane_id, AgentState::Working);
+        assert_eq!(marker(&state, pane_id), (true, false));
+
+        report_state(&mut state, pane_id, AgentState::Idle);
+        assert_eq!(marker(&state, pane_id), (false, true));
+    }
+
+    #[test]
+    fn an_agent_that_never_restarted_answers_for_itself_at_once() {
+        let (mut state, pane_id, _) = acknowledged_agent(false);
+
+        report_state(&mut state, pane_id, AgentState::Working);
+        assert_eq!(marker(&state, pane_id), (true, false));
     }
 
     #[test]
@@ -4648,6 +4677,120 @@ mod tests {
     }
 
     #[test]
+    fn closing_an_agent_pane_sets_the_agent_down_instead_of_ending_it() {
+        let mut state = app_with_workspaces(&["test"]);
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, pane_id);
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+
+        state.close_pane();
+
+        assert!(state.workspaces[0].pane_state(pane_id).is_none());
+        assert!(state.terminals.contains_key(&terminal_id));
+        assert!(!state.terminal_runtime_shutdowns.contains(&terminal_id));
+        assert_eq!(state.detached_agents.len(), 1);
+        assert_eq!(state.detached_agents[0].pane_id, pane_id);
+    }
+
+    #[test]
+    fn a_set_down_agent_keeps_its_table_row() {
+        let mut state = app_with_workspaces(&["test"]);
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, pane_id);
+
+        state.close_pane();
+
+        let entries = crate::ui::agent_panel_entries(&state);
+        let detached = entries
+            .iter()
+            .find(|entry| entry.pane_id == pane_id)
+            .expect("set-down agent row");
+        assert!(!detached.docked);
+    }
+
+    #[test]
+    fn docking_a_set_down_agent_at_an_edge_gives_its_pane_back() {
+        let mut state = app_with_workspaces(&["test"]);
+        let target = state.workspaces[0].tabs[0].root_pane;
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, pane_id);
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+        state.close_pane();
+        assert!(state.workspaces[0].pane_state(pane_id).is_none());
+
+        assert!(state.dock_detached_agent(
+            pane_id,
+            target,
+            crate::layout::DropZone::Edge(crate::layout::SplitSide::Right),
+        ));
+
+        assert!(state.detached_agents.is_empty());
+        assert_eq!(
+            state.workspaces[0]
+                .pane_state(pane_id)
+                .map(|pane| pane.attached_terminal_id.clone()),
+            Some(terminal_id)
+        );
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(pane_id));
+    }
+
+    #[test]
+    fn docking_a_set_down_agent_over_a_pane_sets_the_displaced_agent_down() {
+        let mut state = app_with_workspaces(&["test"]);
+        let target = state.workspaces[0].tabs[0].root_pane;
+        mark_agent(&mut state, 0, 0, target);
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, pane_id);
+        let docked_terminal = state.terminal_id_for_pane(0, pane_id).unwrap();
+        let displaced_terminal = state.terminal_id_for_pane(0, target).unwrap();
+        state.close_pane();
+
+        assert!(state.dock_detached_agent(pane_id, target, crate::layout::DropZone::Over));
+
+        assert!(state.workspaces[0].pane_state(target).is_none());
+        assert_eq!(
+            state.workspaces[0]
+                .pane_state(pane_id)
+                .map(|pane| pane.attached_terminal_id.clone()),
+            Some(docked_terminal)
+        );
+        assert_eq!(state.detached_agents.len(), 1);
+        assert_eq!(state.detached_agents[0].pane_id, target);
+        assert!(state.terminals.contains_key(&displaced_terminal));
+    }
+
+    #[test]
+    fn closing_a_set_down_agent_ends_it() {
+        let mut state = app_with_workspaces(&["test"]);
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, pane_id);
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+        state.close_pane();
+
+        state.close_detached_agent(pane_id);
+
+        assert!(state.detached_agents.is_empty());
+        assert!(!state.terminals.contains_key(&terminal_id));
+        assert!(state.terminal_runtime_shutdowns.contains(&terminal_id));
+    }
+
+    #[test]
+    fn closing_a_space_sets_its_agents_down() {
+        let mut state = app_with_workspaces(&["one", "two"]);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        mark_agent(&mut state, 0, 0, pane_id);
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+        state.selected = 0;
+
+        state.close_selected_workspace();
+
+        assert_eq!(state.workspaces.len(), 1);
+        assert!(state.terminals.contains_key(&terminal_id));
+        assert_eq!(state.detached_agents.len(), 1);
+        assert_eq!(state.detached_agents[0].pane_id, pane_id);
+    }
+
+    #[test]
     fn close_pane_removes_unattached_terminal_state() {
         let mut state = app_with_workspaces(&["test"]);
         let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
@@ -4658,21 +4801,6 @@ mod tests {
 
         assert!(!state.terminals.contains_key(&terminal_id));
     }
-
-    #[test]
-    fn close_tab_removes_unattached_terminal_states() {
-        let mut state = app_with_workspaces(&["test"]);
-        let tab_idx = state.workspaces[0].test_add_tab(Some("logs"));
-        state.ensure_test_terminals();
-        state.workspaces[0].switch_tab(tab_idx);
-        let pane_id = state.workspaces[0].tabs[tab_idx].root_pane;
-        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
-
-        state.close_tab();
-
-        assert!(!state.terminals.contains_key(&terminal_id));
-    }
-
     #[test]
     fn close_workspace_removes_unattached_terminal_states() {
         let mut state = app_with_workspaces(&["one", "two"]);
@@ -4684,23 +4812,6 @@ mod tests {
 
         assert!(!state.terminals.contains_key(&terminal_id));
     }
-
-    #[test]
-    fn close_tab_closes_active_workspace_not_selected_workspace() {
-        let mut state = app_with_workspaces(&["selected", "active"]);
-        let active_terminal_id = state
-            .terminal_id_for_pane(1, state.workspaces[1].tabs[0].root_pane)
-            .unwrap();
-        state.active = Some(1);
-        state.selected = 0;
-
-        state.close_tab();
-
-        assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].display_name(), "selected");
-        assert!(!state.terminals.contains_key(&active_terminal_id));
-    }
-
     #[test]
     fn close_pane_last_pane_closes_active_workspace_not_selected_workspace() {
         let mut state = app_with_workspaces(&["selected", "active"]);
@@ -4732,37 +4843,6 @@ mod tests {
         assert_eq!(state.selected, 0);
         assert_eq!(state.workspaces.len(), 2);
     }
-
-    #[test]
-    fn close_tab_in_linked_worktree_closes_workspace_only() {
-        let mut state = app_with_workspaces(&["selected", "active"]);
-        mark_linked_worktree(&mut state, 1);
-        state.active = Some(1);
-        state.selected = 0;
-
-        state.close_tab();
-
-        assert_eq!(state.request_remove_linked_worktree, None);
-        assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].display_name(), "selected");
-    }
-
-    #[test]
-    fn close_tab_last_tab_in_parent_worktree_group_prompts() {
-        let mut state = app_with_workspaces(&["parent", "child"]);
-        mark_parent_worktree(&mut state, 0);
-        mark_linked_worktree(&mut state, 1);
-        state.active = Some(0);
-        state.selected = 1;
-
-        let deferred = state.close_tab();
-
-        assert!(deferred);
-        assert_eq!(state.mode, Mode::ConfirmClose);
-        assert_eq!(state.selected, 0);
-        assert_eq!(state.workspaces.len(), 2);
-    }
-
     #[test]
     fn close_pane_last_pane_in_linked_worktree_closes_workspace_only() {
         let mut state = app_with_workspaces(&["selected", "active"]);

@@ -619,42 +619,6 @@ impl Palette {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WorkspaceCardArea {
-    pub ws_idx: usize,
-    pub rect: Rect,
-    pub indented: bool,
-}
-
-/// Clickable region for an agent row nested under its space card. The rect
-/// covers only the entry's content rows, not the leading gap row and not the
-/// folder header row above it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AgentRowArea {
-    pub ws_idx: usize,
-    pub tab_idx: usize,
-    pub pane_id: PaneId,
-    pub rect: Rect,
-    /// Whether the row directly above this one is the folder header this agent
-    /// heads. Agents listed under it in the same folder share that one header,
-    /// so only the first of them carries it.
-    pub location_header: bool,
-}
-
-/// The folder row a space's agents are listed under. It is a label rather than
-/// a card — clicking it selects nothing — but dragging it moves the whole
-/// folder among its space's folders.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentFolderArea {
-    pub ws_idx: usize,
-    /// The folder itself, which is the identity a drag carries.
-    pub key: String,
-    /// The first agent listed under it, whose location supplies the row's text.
-    pub tab_idx: usize,
-    pub pane_id: PaneId,
-    pub rect: Rect,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -827,20 +791,17 @@ pub struct PaneChromeControl {
 
 pub struct ViewState {
     pub layout: ViewLayout,
-    pub sidebar_rect: Rect,
-    pub workspace_card_areas: Vec<WorkspaceCardArea>,
-    pub agent_row_areas: Vec<AgentRowArea>,
-    pub agent_folder_areas: Vec<AgentFolderArea>,
-    /// Where each listed pane is working, as of the last frame. The sidebar
-    /// list is laid out from `AppState` alone, which cannot see the live
-    /// runtimes a pane's current folder comes from, so it reads that folder
-    /// from here — and so does the paint that writes the folder header.
+    /// The rows the composer occupies above every other surface, and where its
+    /// controls sit on them.
+    pub composer: crate::ui::ComposerLayout,
+    /// The agent table between the composer and the panes: where its rows and
+    /// columns sit, and which agent each row is.
+    pub agent_table: crate::ui::AgentTableLayout,
+    /// Where each listed pane is working, as of the last frame. The table is
+    /// laid out from `AppState` alone, which cannot see the live runtimes a
+    /// pane's current folder comes from, so it reads that folder from here —
+    /// and so does the paint that writes the row.
     pub agent_locations: std::collections::HashMap<PaneId, crate::ui::AgentLocation>,
-    pub tab_bar_rect: Rect,
-    pub tab_hit_areas: Vec<Rect>,
-    pub tab_scroll_left_hit_area: Rect,
-    pub tab_scroll_right_hit_area: Rect,
-    pub new_tab_hit_area: Rect,
     pub terminal_area: Rect,
     pub mobile_header_rect: Rect,
     pub mobile_menu_hit_area: Rect,
@@ -860,14 +821,15 @@ pub enum Mode {
     Prefix,
     Copy,
     Terminal,
+    Composer,
     RenameWorkspace,
-    RenameTab,
     RenamePane,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
     Resize,
     ConfirmClose,
+    ConfirmCloseAgent,
     ContextMenu,
     Settings,
     GlobalMenu,
@@ -937,13 +899,6 @@ pub(crate) struct CopyModeState {
 pub(crate) enum CopyModeSelection {
     Character,
     Linewise { anchor_row: u32 },
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum AgentPanelScope {
-    CurrentWorkspace,
-    #[default]
-    AllWorkspaces,
 }
 
 // ---------------------------------------------------------------------------
@@ -1126,42 +1081,32 @@ pub struct SettingsState {
 }
 
 pub(crate) enum DragTarget {
-    WorkspaceReorder {
-        source_ws_idx: usize,
-        insert_idx: Option<usize>,
-    },
-    TabReorder {
-        ws_idx: usize,
-        source_tab_idx: usize,
-        insert_idx: Option<usize>,
-    },
-    /// Reordering an agent row among the agents it shares a folder with.
-    /// Display order only — the pane layout is untouched, and an agent cannot
-    /// leave the folder it is actually working in.
+    /// Reordering the session-wide agent table. This changes presentation
+    /// order only; pane placement and workspace membership stay untouched.
     AgentReorder {
-        ws_idx: usize,
         source_pane_id: PaneId,
         insert_idx: Option<usize>,
     },
-    /// Reordering a whole folder, and every agent under it, among its space's
-    /// folders. Display order only.
-    AgentFolderReorder {
-        ws_idx: usize,
-        key: String,
-        insert_idx: Option<usize>,
-    },
-    WorkspaceListScrollbar {
-        grab_row_offset: u16,
+    /// Carrying a set-down agent out of the table. Dropped against a pane's
+    /// edge it cuts that pane in two and docks there; dropped over the middle
+    /// it takes the pane whole.
+    AgentDock {
+        pane_id: PaneId,
+        hovered_pane_id: Option<PaneId>,
+        drop_zone: crate::layout::DropZone,
     },
     PaneSplit {
         path: Vec<bool>,
         direction: Direction,
         area: Rect,
     },
+    /// Carrying a pane across the panes. Dropped over the middle of another it
+    /// trades places with it; dropped against one of that pane's edges it cuts
+    /// the pane in two and takes the half against that edge.
     PaneSwap {
         source_pane_id: PaneId,
         hovered_pane_id: Option<PaneId>,
-        create_space: bool,
+        drop_zone: crate::layout::DropZone,
         moved: bool,
     },
     PaneScrollbar {
@@ -1177,25 +1122,43 @@ pub(crate) enum DragTarget {
     KeybindHelpScrollbar {
         grab_row_offset: u16,
     },
-    SidebarDivider,
 }
 
-/// Active mouse drag on a split border or sidebar divider.
+/// Active mouse drag on a split border, a pane, or a scrollbar.
 pub(crate) struct DragState {
     pub target: DragTarget,
 }
 
-pub(crate) struct WorkspacePressState {
-    pub ws_idx: usize,
-    pub start_col: u16,
-    pub start_row: u16,
+/// A pane set down off every layout, with its running agent still inside.
+///
+/// It keeps its pane id because the id is the wiring: the agent's terminal has
+/// sent its events under this id since it was spawned, and docking the agent
+/// puts the same id back into a layout, so nothing has to be re-routed.
+pub struct DetachedAgent {
+    pub pane_id: PaneId,
+    pub pane: crate::pane::PaneState,
 }
 
-pub(crate) struct TabPressState {
-    pub ws_idx: usize,
-    pub tab_idx: usize,
-    pub start_col: u16,
-    pub start_row: u16,
+/// Where a set-down agent is working: the live cwd of its terminal, falling back
+/// to the directory it was launched in. This is what [`crate::workspace::Tab`]
+/// answers for a docked pane, for an agent no tab holds.
+pub(crate) fn detached_agent_cwd(
+    pane: &crate::pane::PaneState,
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+    terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+) -> Option<std::path::PathBuf> {
+    let terminal_id = &pane.attached_terminal_id;
+    terminal_runtimes
+        .get(terminal_id)
+        .and_then(|runtime| runtime.cwd())
+        .or_else(|| {
+            terminals
+                .get(terminal_id)
+                .map(|terminal| terminal.cwd.clone())
+        })
 }
 
 pub(crate) struct PanePressState {
@@ -1204,44 +1167,52 @@ pub(crate) struct PanePressState {
     pub start_row: u16,
 }
 
-/// Left button held on a sidebar agent row, waiting to become a reorder drag.
-pub(crate) struct AgentPressState {
-    pub ws_idx: usize,
+/// The agent a click on the table just picked out, held until the next key.
+/// The click focuses the agent's pane as it always has, so typing goes to the
+/// agent; the hold only decides whether the delete key means this row or the
+/// pane below it. Any key that is not delete releases it and goes on as usual.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentTableFocus {
+    pub docked: bool,
     pub pane_id: PaneId,
-    pub start_col: u16,
-    pub start_row: u16,
 }
 
-pub(crate) struct AgentFolderPressState {
-    pub ws_idx: usize,
-    pub key: String,
+/// An agent the table has offered to remove, waiting on the second key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingAgentClose {
+    pub docked: bool,
+    pub pane_id: PaneId,
+    /// What the row calls the agent, so the question names what it will end.
+    pub name: String,
+}
+
+/// Left button held on a table row, waiting to become a drag. A docked row's
+/// drag carries its pane; a set-down row's drag carries the agent itself.
+pub(crate) struct AgentPressState {
+    pub docked: bool,
+    pub pane_id: PaneId,
     pub start_col: u16,
     pub start_row: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextMenuKind {
-    Workspace {
-        ws_idx: usize,
-    },
-    GitWorkspace {
-        ws_idx: usize,
-        is_linked_worktree: bool,
-        has_worktree_children: bool,
-        collapsed: bool,
-    },
-    Tab {
-        ws_idx: usize,
-        tab_idx: usize,
-    },
-    /// A sidebar agent row. The row is a shortcut to a pane that already lives
-    /// in some tab's layout, so this menu only carries the actions that make
-    /// sense from the list itself.
+    /// A set-down agent's table row. It has no pane and no space, so the only
+    /// things to offer are what can be done to the agent itself.
+    DetachedAgent { pane_id: PaneId },
+    /// A row of the agent table. The row is the only handle on the space the
+    /// agent works in as well as on the agent itself, so this menu carries
+    /// what can be done to the agent, then the worktree actions its space
+    /// allows.
     Agent {
+        ws_idx: usize,
         pane_id: PaneId,
-        /// Whether herdr knows the running agent's reset command, which adds
-        /// the option to start a new session in place.
-        can_reset: bool,
+        /// Whether the agent's pane can be carried out into a space of its own,
+        /// which it cannot be when it is the only pane its space has.
+        can_promote: bool,
+        /// What the space offers, which depends on whether it is a Git
+        /// checkout and whether that checkout is a linked worktree.
+        space: SpaceMenuKind,
     },
     Pane {
         pane_id: PaneId,
@@ -1256,6 +1227,17 @@ pub enum ContextMenuKind {
     },
 }
 
+/// What a space offers a menu, which is what its Git state allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaceMenuKind {
+    /// Not a Git checkout, so it adds nothing to the menu.
+    Plain,
+    /// A Git checkout worktrees can be made from.
+    Repo,
+    /// A linked worktree, which can be given up rather than added to.
+    LinkedWorktree,
+}
+
 /// Right-click context menu state.
 pub struct ContextMenuState {
     pub kind: ContextMenuKind,
@@ -1267,35 +1249,23 @@ pub struct ContextMenuState {
 impl ContextMenuState {
     pub fn items(&self) -> Vec<&'static str> {
         match self.kind {
-            ContextMenuKind::Workspace { .. } => vec!["Rename", "Close"],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: false,
-                has_worktree_children: false,
-                ..
-            } => vec!["Rename", "Close", "New worktree", "Open worktree..."],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: true,
-                ..
-            } => vec!["Rename", "Close", "Delete worktree checkout..."],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: false,
-                has_worktree_children: true,
-                collapsed,
-                ..
-            } => vec![
-                "Rename",
-                "Close group",
-                "New worktree",
-                "Open worktree...",
-                if collapsed { "Expand" } else { "Collapse" },
-            ],
-            ContextMenuKind::Tab { .. } => vec!["New tab", "Rename", "Close"],
-            ContextMenuKind::Agent { can_reset, .. } => {
-                let mut items = vec!["Rename pane"];
-                if can_reset {
-                    items.push("Reset agent");
+            ContextMenuKind::DetachedAgent { .. } => vec!["Close agent"],
+            ContextMenuKind::Agent {
+                can_promote, space, ..
+            } => {
+                let mut items = vec!["Rename agent", "Close agent"];
+                if can_promote {
+                    items.push("Move to new space");
                 }
-                items.push("Close agent");
+                match space {
+                    SpaceMenuKind::Plain => {}
+                    SpaceMenuKind::Repo => {
+                        items.extend(["New worktree", "Open worktree..."]);
+                    }
+                    SpaceMenuKind::LinkedWorktree => {
+                        items.push("Delete worktree checkout...");
+                    }
+                }
                 items
             }
             ContextMenuKind::Pane {
@@ -1370,13 +1340,6 @@ pub struct KeybindHelpState {
     pub scroll: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SidebarWidthSource {
-    ConfigDefault,
-    Persisted,
-    Manual,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneFocusTarget {
     pub workspace_id: String,
@@ -1391,6 +1354,16 @@ pub(crate) const DETACH_CONFIRM_WINDOW: Duration = Duration::from_millis(500);
 pub struct AppState {
     pub terminals:
         std::collections::HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
+    /// Agents running with no pane showing them. Closing a pane sets its agent
+    /// down here instead of killing it; the agent keeps its table row, and a
+    /// drag from that row docks it into a pane again. Only "Close agent" takes
+    /// an agent out of this list by ending it.
+    pub detached_agents: Vec<DetachedAgent>,
+    /// The branch and worktree state of each set-down agent's directory. A
+    /// docked pane inherits this from the space holding it; an agent no space
+    /// holds keeps its own answer here.
+    pub(crate) detached_git_statuses:
+        std::collections::HashMap<PaneId, crate::workspace::WorkspaceGitStatusSnapshot>,
     /// Terminal ids whose size is currently owned by a direct attach client.
     pub direct_attach_resize_locks: std::collections::HashSet<crate::terminal::TerminalId>,
     pub(crate) pane_id_aliases: std::collections::HashMap<u32, PaneId>,
@@ -1431,30 +1404,33 @@ pub struct AppState {
     pub worktree_open: Option<WorktreeOpenState>,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
-    pub collapsed_space_keys: std::collections::HashSet<String>,
-    /// Ids of spaces whose agent entries are folded away in the sidebar.
-    /// Spaces default to expanded, so only collapsed ones are tracked.
-    pub collapsed_agent_space_ids: std::collections::HashSet<String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
+    /// The always-visible band that starts agents: where to work, who works,
+    /// what to do.
+    pub composer: crate::composer::ComposerState,
     pub release_notes: Option<ReleaseNotesState>,
     pub product_announcement: Option<ProductAnnouncementState>,
     pub keybind_help: KeybindHelpState,
     pub navigator: NavigatorState,
     pub copy_mode: Option<CopyModeState>,
-    pub workspace_scroll: usize,
-    pub tab_scroll: usize,
-    pub tab_scroll_follow_active: bool,
+    /// Stable, session-wide order for agent rows. Terminal ids survive pane
+    /// moves and session restore, unlike layout positions and pane ids.
+    pub agent_order: Vec<crate::terminal::TerminalId>,
+    /// How far down the agent list the table's first drawn row sits. It follows
+    /// the focused agent, and a wheel notch over the table moves it directly.
+    pub agent_table_scroll: usize,
     pub mobile_switcher_scroll: usize,
     // View geometry (computed before render, consumed by render + mouse)
     pub view: ViewState,
     pub(crate) drag: Option<DragState>,
-    pub(crate) workspace_press: Option<WorkspacePressState>,
-    pub(crate) tab_press: Option<TabPressState>,
     pub(crate) pane_press: Option<PanePressState>,
     pub(crate) agent_press: Option<AgentPressState>,
-    pub(crate) agent_folder_press: Option<AgentFolderPressState>,
+    /// The row a click picked out, until the next key releases it.
+    pub(crate) agent_table_focus: Option<AgentTableFocus>,
+    /// The agent the delete key has asked about, until enter or escape answers.
+    pub(crate) confirm_close_agent: Option<PendingAgentClose>,
     pub selection: Option<Selection>,
     pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub context_menu: Option<ContextMenuState>,
@@ -1472,21 +1448,7 @@ pub struct AppState {
     // Config
     pub prefix_code: KeyCode,
     pub prefix_mods: KeyModifiers,
-    pub default_sidebar_width: u16,
-    pub sidebar_width: u16,
-    pub sidebar_min_width: u16,
-    pub sidebar_max_width: u16,
     pub mobile_width_threshold: u16,
-    pub sidebar_width_source: SidebarWidthSource,
-    pub sidebar_width_auto: bool,
-    pub sidebar_collapsed: bool,
-    /// Fold the spaces list down to its header row plus the active space
-    /// card and that space's agent rows.
-    pub spaces_collapsed: bool,
-    /// Legacy ratio of sidebar height once allocated to the workspaces
-    /// section. Kept only so persisted sessions round-trip.
-    pub sidebar_section_split: f32,
-    pub agent_panel_scope: AgentPanelScope,
     /// Capture mouse input for Herdr's own mouse UI. When false, Herdr only
     /// captures mouse while the focused pane app requests mouse reporting.
     pub mouse_capture: bool,
@@ -1498,7 +1460,6 @@ pub struct AppState {
     pub hide_cursor_when_unfocused: bool,
     pub mouse_scroll_lines: usize,
     pub confirm_close: bool,
-    pub prompt_new_tab_name: bool,
     pub nerd_font: bool,
     pub show_agent_labels_on_pane_borders: bool,
     pub pane_history_persistence: bool,
@@ -1785,6 +1746,8 @@ impl AppState {
     pub fn test_new() -> Self {
         Self {
             terminals: std::collections::HashMap::new(),
+            detached_agents: Vec::new(),
+            detached_git_statuses: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
             pane_id_aliases: std::collections::HashMap::new(),
             workspaces: Vec::new(),
@@ -1815,32 +1778,23 @@ impl AppState {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
-            collapsed_space_keys: std::collections::HashSet::new(),
-            collapsed_agent_space_ids: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
+            composer: crate::composer::ComposerState::default(),
             release_notes: None,
             product_announcement: None,
             keybind_help: KeybindHelpState { scroll: 0 },
             navigator: NavigatorState::default(),
             copy_mode: None,
-            workspace_scroll: 0,
-            tab_scroll: 0,
-            tab_scroll_follow_active: true,
+            agent_order: Vec::new(),
+            agent_table_scroll: 0,
             mobile_switcher_scroll: 0,
             view: ViewState {
                 layout: ViewLayout::Desktop,
-                sidebar_rect: Rect::default(),
-                workspace_card_areas: Vec::new(),
-                agent_row_areas: Vec::new(),
-                agent_folder_areas: Vec::new(),
+                composer: crate::ui::ComposerLayout::default(),
+                agent_table: crate::ui::AgentTableLayout::default(),
                 agent_locations: std::collections::HashMap::new(),
-                tab_bar_rect: Rect::default(),
-                tab_hit_areas: Vec::new(),
-                tab_scroll_left_hit_area: Rect::default(),
-                tab_scroll_right_hit_area: Rect::default(),
-                new_tab_hit_area: Rect::default(),
                 terminal_area: Rect::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),
@@ -1851,11 +1805,10 @@ impl AppState {
                 split_borders: Vec::new(),
             },
             drag: None,
-            workspace_press: None,
-            tab_press: None,
             pane_press: None,
             agent_press: None,
-            agent_folder_press: None,
+            agent_table_focus: None,
+            confirm_close_agent: None,
             selection: None,
             selection_autoscroll: None,
             context_menu: None,
@@ -1869,17 +1822,7 @@ impl AppState {
             outer_terminal_focus: None,
             prefix_code: KeyCode::Char('b'),
             prefix_mods: KeyModifiers::CONTROL,
-            default_sidebar_width: 26,
-            sidebar_width: 26,
-            sidebar_min_width: 18,
-            sidebar_max_width: 36,
             mobile_width_threshold: crate::config::DEFAULT_MOBILE_WIDTH_THRESHOLD,
-            sidebar_width_source: SidebarWidthSource::ConfigDefault,
-            sidebar_width_auto: false,
-            sidebar_collapsed: false,
-            spaces_collapsed: false,
-            sidebar_section_split: 0.5,
-            agent_panel_scope: AgentPanelScope::AllWorkspaces,
             mouse_capture: true,
             right_click_passthrough_modifiers: None,
             right_click_passthrough: None,
@@ -1887,7 +1830,6 @@ impl AppState {
             hide_cursor_when_unfocused: true,
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             confirm_close: true,
-            prompt_new_tab_name: true,
             nerd_font: false,
             show_agent_labels_on_pane_borders: true,
             pane_history_persistence: false,
@@ -2014,47 +1956,6 @@ mod tests {
             KeyModifiers::SHIFT,
         ));
     }
-
-    #[test]
-    fn linked_worktree_context_menu_keeps_safe_close_and_explicit_remove() {
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 0,
-                is_linked_worktree: true,
-                has_worktree_children: false,
-                collapsed: false,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
-
-        assert_eq!(
-            menu.items(),
-            &["Rename", "Close", "Delete worktree checkout..."]
-        );
-    }
-
-    #[test]
-    fn git_workspace_context_menu_keeps_remove_for_managed_worktrees_only() {
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 0,
-                is_linked_worktree: false,
-                has_worktree_children: false,
-                collapsed: false,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
-
-        assert_eq!(
-            menu.items(),
-            &["Rename", "Close", "New worktree", "Open worktree..."]
-        );
-    }
-
     #[test]
     fn pane_context_menu_offers_close_agent_only_for_agent_panes() {
         let menu_for = |has_agent| ContextMenuState {
@@ -2083,31 +1984,5 @@ mod tests {
             ]
         );
         assert!(!menu_for(false).items().contains(&"Close agent"));
-    }
-
-    #[test]
-    fn parent_worktree_context_menu_uses_repo_actions() {
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 0,
-                is_linked_worktree: false,
-                has_worktree_children: true,
-                collapsed: false,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
-
-        assert_eq!(
-            menu.items(),
-            &[
-                "Rename",
-                "Close group",
-                "New worktree",
-                "Open worktree...",
-                "Collapse"
-            ]
-        );
     }
 }

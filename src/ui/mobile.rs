@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::sidebar::{agent_panel_entries, agent_panel_entries_from, AgentPanelEntry};
+use super::agent_table::{agent_panel_entries, agent_panel_entries_from, AgentPanelEntry};
 use super::status::{agent_icon, state_dot};
 use crate::app::state::{Palette, ToastKind, ToastNotification};
 use crate::app::AppState;
@@ -31,11 +31,14 @@ pub(crate) struct MobileSwitcherAreas {
 pub(crate) enum MobileSwitcherTarget {
     NewWorkspace,
     Workspace(usize),
-    NewTab,
-    Tab(usize),
     Agent {
         ws_idx: usize,
         tab_idx: usize,
+        pane_id: PaneId,
+    },
+    /// The done marker of an agent row, which takes the marker off rather than
+    /// switching to the agent, exactly as it does in the desktop table.
+    AcknowledgeAgent {
         pane_id: PaneId,
     },
     Menu(usize),
@@ -125,25 +128,21 @@ pub(crate) fn mobile_switcher_target_at(
     }
     cursor = spaces_end;
 
-    if let Some(ws) = app.active.and_then(|idx| app.workspaces.get(idx)) {
-        cursor += 1; // tabs title
-        if doc_row == cursor {
-            return Some(MobileSwitcherTarget::NewTab);
-        }
-        cursor += 1;
-        let tabs_end = cursor + ws.tabs.len();
-        if doc_row >= cursor && doc_row < tabs_end {
-            return Some(MobileSwitcherTarget::Tab(doc_row - cursor));
-        }
-        cursor = tabs_end;
-    }
-
     cursor += 1; // agents title
     let agents = agent_panel_entries(app);
     let agents_end = cursor + agents.len() * 2;
     if doc_row >= cursor && doc_row < agents_end {
         let idx = (doc_row - cursor) / 2;
-        return agents.get(idx).map(|entry| MobileSwitcherTarget::Agent {
+        let entry = agents.get(idx)?;
+        // The icon a row leads with is the same button the desktop table's
+        // margin is: it acknowledges the finish instead of switching to it.
+        let on_title_line = (doc_row - cursor).is_multiple_of(2);
+        if on_title_line && !entry.seen && col <= content.x.saturating_add(2) {
+            return Some(MobileSwitcherTarget::AcknowledgeAgent {
+                pane_id: entry.pane_id,
+            });
+        }
+        return entry.docked.then_some(MobileSwitcherTarget::Agent {
             ws_idx: entry.ws_idx,
             tab_idx: entry.tab_idx,
             pane_id: entry.pane_id,
@@ -393,14 +392,9 @@ fn render_close_button(app: &AppState, frame: &mut Frame, area: Rect) {
 
 fn mobile_switcher_content_height(app: &AppState) -> usize {
     let spaces_h = 2 + app.workspaces.len() * 2;
-    let tabs_h = app
-        .active
-        .and_then(|idx| app.workspaces.get(idx))
-        .map(|ws| 2 + ws.tabs.len())
-        .unwrap_or(0);
     let agents_h = 1 + agent_panel_entries(app).len() * 2;
     let menu_h = 1 + app.global_menu_labels().len();
-    spaces_h + tabs_h + agents_h + menu_h
+    spaces_h + agents_h + menu_h
 }
 
 fn render_mobile_switcher_content(
@@ -470,12 +464,7 @@ fn render_mobile_switcher_content(
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
-        let detail = format!(
-            "  {} · tab {}/{}",
-            ws.branch().unwrap_or_else(|| "shell".into()),
-            ws.active_tab + 1,
-            ws.tabs.len()
-        );
+        let detail = format!("  {}", ws.branch().unwrap_or_else(|| "shell".into()));
         render_two_line_item(
             frame,
             viewport,
@@ -488,58 +477,6 @@ fn render_mobile_switcher_content(
             p.overlay0,
         );
         doc_y += 2;
-    }
-
-    if let Some(ws) = app.active.and_then(|idx| app.workspaces.get(idx)) {
-        render_section_title_at(
-            frame,
-            viewport,
-            content,
-            doc_y,
-            app.mobile_switcher_scroll,
-            "tabs",
-            p,
-        );
-        doc_y += 1;
-        render_action_row_at(
-            frame,
-            viewport,
-            content,
-            doc_y,
-            app.mobile_switcher_scroll,
-            "+ new tab",
-            p,
-        );
-        doc_y += 1;
-        for (idx, tab) in ws.tabs.iter().enumerate() {
-            let active = idx == ws.active_tab;
-            let bg = mobile_item_bg(false, active, p);
-            let label = if tab.is_auto_named() {
-                format!("tab {}", idx + 1)
-            } else {
-                format!("{} · {}", idx + 1, tab.display_name())
-            };
-            let title = Line::from(vec![
-                Span::styled("  ", Style::default().bg(bg)),
-                Span::styled(
-                    truncate(&label, content.width.saturating_sub(3) as usize),
-                    Style::default()
-                        .fg(p.text)
-                        .bg(bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]);
-            render_one_line_item(
-                frame,
-                viewport,
-                content,
-                doc_y,
-                app.mobile_switcher_scroll,
-                bg,
-                title,
-            );
-            doc_y += 1;
-        }
     }
 
     let focused_agent = app.active.and_then(|ws_idx| {
@@ -559,9 +496,10 @@ fn render_mobile_switcher_content(
     );
     doc_y += 1;
     for entry in &entries {
-        let active = focused_agent.is_some_and(|(ws_idx, tab_idx, pane_id)| {
-            entry.ws_idx == ws_idx && entry.tab_idx == tab_idx && entry.pane_id == pane_id
-        });
+        let active = entry.docked
+            && focused_agent.is_some_and(|(ws_idx, tab_idx, pane_id)| {
+                entry.ws_idx == ws_idx && entry.tab_idx == tab_idx && entry.pane_id == pane_id
+            });
         let bg = mobile_item_bg(false, active, p);
         let (icon, icon_style) = agent_icon(entry.state, entry.seen, app.spinner_tick, p);
         let title = Line::from(vec![
@@ -620,7 +558,7 @@ fn mobile_agent_detail(entry: &AgentPanelEntry) -> String {
     }
     let status = entry
         .state_labels
-        .get(super::sidebar::agent_panel_status_key(
+        .get(super::agent_table::agent_panel_status_key(
             entry.state,
             entry.seen,
         ))
@@ -674,33 +612,6 @@ fn render_action_row_at(
     };
     render_action_row(frame, Rect::new(content.x, y, content.width, 1), label, p);
 }
-
-fn render_one_line_item(
-    frame: &mut Frame,
-    viewport: Rect,
-    content: Rect,
-    doc_y: usize,
-    scroll: usize,
-    bg: ratatui::style::Color,
-    title: Line<'_>,
-) {
-    fill_visible_doc_rect(
-        frame,
-        viewport,
-        content,
-        doc_y,
-        1,
-        Style::default().bg(bg),
-        scroll,
-    );
-    if let Some(y) = visible_y(viewport, scroll, doc_y) {
-        frame.render_widget(
-            Paragraph::new(title),
-            Rect::new(content.x, y, content.width, 1),
-        );
-    }
-}
-
 fn render_two_line_item(
     frame: &mut Frame,
     viewport: Rect,
@@ -935,19 +846,22 @@ fn truncate(text: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::sidebar::AgentLocation;
+    use crate::ui::agent_table::AgentLocation;
 
     fn agent_entry(location: Option<AgentLocation>, agent_label: Option<&str>) -> AgentPanelEntry {
         AgentPanelEntry {
+            docked: true,
             ws_idx: 0,
             tab_idx: 0,
             pane_id: PaneId::from_raw(1),
+            terminal_id: crate::terminal::TerminalId::alloc(),
             name: "Olivia".into(),
             agent_label: agent_label.map(str::to_string),
             model_info: None,
             location,
             state: AgentState::Idle,
             seen: true,
+            completed: false,
             custom_status: None,
             state_labels: std::collections::HashMap::new(),
         }

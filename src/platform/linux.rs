@@ -479,16 +479,26 @@ mod tests {
         std::fs::set_permissions(&fake_xclip, std::fs::Permissions::from_mode(0o755))
             .expect("chmod fake xclip");
 
+        // PATH is process-wide: every test in this binary spawns through it,
+        // so it has to go back exactly as it was or everything scheduled after
+        // this test loses `git` and the rest of the machine.
+        let original_path = std::env::var_os("PATH");
         unsafe {
             std::env::set_var("PATH", &temp);
             std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
             std::env::set_var("DISPLAY", ":0");
         }
 
-        assert_eq!(
-            clipboard_image_read_support_hint(),
-            Some("install wl-clipboard for clipboard image paste")
-        );
+        let hint = clipboard_image_read_support_hint();
+
+        unsafe {
+            match original_path {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        assert_eq!(hint, Some("install wl-clipboard for clipboard image paste"));
 
         let _ = std::fs::remove_dir_all(&temp);
     }

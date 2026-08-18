@@ -26,11 +26,13 @@ mod build_info;
 mod checksum;
 mod cli;
 mod client;
+mod composer;
 mod config;
 mod detect;
 mod events;
 mod ghostty;
 mod handoff_runtime;
+mod harness;
 mod input;
 mod integration;
 mod ipc;
@@ -124,6 +126,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # open_notification_target = "prefix+o"
 # workspace_picker = "prefix+w"
 # goto = "prefix+g"
+# composer = "prefix+/"
 # new_workspace = "prefix+shift+n"
 # new_worktree = "prefix+shift+g"
 # open_worktree = ""    # optional, unset by default

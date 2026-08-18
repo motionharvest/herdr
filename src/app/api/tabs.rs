@@ -187,16 +187,23 @@ impl App {
             return tab_not_found(id, &target.tab_id);
         };
         let terminal_ids = self.state.terminal_ids_for_tab(ws_idx, tab_idx);
-        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+        let Some(tab_count) = self.state.workspaces.get(ws_idx).map(|ws| ws.tabs.len()) else {
             return tab_not_found(id, &target.tab_id);
         };
-        if ws.tabs.len() <= 1 {
+        if tab_count <= 1 {
             return encode_error(
                 id,
                 "tab_close_failed",
                 "cannot close the last tab in a workspace",
             );
         }
+        // A tab close closes panes, and closing a pane sets its agent down
+        // rather than ending it. The tab's shells end with it; its agents stay
+        // in the table with no pane showing them.
+        self.state.set_down_agent_panes_in_tab(ws_idx, tab_idx);
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            return tab_not_found(id, &target.tab_id);
+        };
         if !ws.close_tab(tab_idx) {
             return encode_error(
                 id,
@@ -229,4 +236,75 @@ fn workspace_not_found(id: String, workspace_id: &str) -> String {
 
 fn tab_not_found(id: String, tab_id: &str) -> String {
     encode_error(id, "tab_not_found", format!("tab {tab_id} not found"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::Config, workspace::Workspace};
+
+    #[test]
+    fn api_tab_close_sets_its_agents_down() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        let tab_idx = app.state.workspaces[0].test_add_tab(Some("second"));
+        let pane_id = app.state.workspaces[0].tabs[tab_idx].root_pane;
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.terminal_id_for_pane(0, pane_id).unwrap();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+        let tab_id = app.public_tab_id(0, tab_idx).unwrap();
+
+        app.handle_tab_close("req".into(), TabTarget { tab_id });
+
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert!(app.state.terminals.contains_key(&terminal_id));
+        assert_eq!(app.state.detached_agents.len(), 1);
+        assert_eq!(app.state.detached_agents[0].pane_id, pane_id);
+    }
+
+    #[test]
+    fn api_tab_close_refusing_the_last_tab_leaves_its_agent_docked() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.terminal_id_for_pane(0, pane_id).unwrap();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+
+        app.handle_tab_close("req".into(), TabTarget { tab_id });
+
+        assert!(app.state.workspaces[0].pane_state(pane_id).is_some());
+        assert!(app.state.detached_agents.is_empty());
+    }
 }
