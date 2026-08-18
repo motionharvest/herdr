@@ -83,23 +83,91 @@ pub(crate) fn expand_tilde_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-pub(crate) fn expand_tilde_absolute_path(path: &str) -> PathBuf {
-    let path = expand_tilde_path(path);
-    if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
-    }
-}
-
 pub(crate) fn canonical_or_original(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-pub(crate) fn default_checkout_path(root: &Path, repo_name: &str, branch: &str) -> PathBuf {
-    root.join(repo_name).join(branch_to_path_slug(branch))
+fn is_absolute_or_home_directory(directory: &str) -> bool {
+    directory == "~" || directory.starts_with("~/") || Path::new(directory).is_absolute()
+}
+
+pub(crate) fn default_checkout_path(
+    directory: &str,
+    repo_root: &Path,
+    repo_name: &str,
+    branch: &str,
+) -> PathBuf {
+    let slug = branch_to_path_slug(branch);
+    if is_absolute_or_home_directory(directory) {
+        expand_tilde_path(directory).join(repo_name).join(slug)
+    } else {
+        repo_root.join(directory).join(slug)
+    }
+}
+
+pub(crate) fn ensure_in_repo_worktree_ignored(
+    repo_root: &Path,
+    directory: &str,
+) -> Result<(), String> {
+    if is_absolute_or_home_directory(directory) {
+        return Ok(());
+    }
+
+    let pattern = directory.trim_start_matches("./").trim_end_matches('/');
+    if pattern.is_empty() {
+        return Ok(());
+    }
+
+    if git_path_is_ignored(repo_root, pattern)? {
+        return Ok(());
+    }
+
+    let exclude_path = git_exclude_path(repo_root)?;
+    if let Some(parent) = exclude_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+
+    let mut contents = std::fs::read_to_string(&exclude_path).unwrap_or_default();
+    if contents.lines().any(|line| line == pattern) {
+        return Ok(());
+    }
+    if !contents.is_empty() && !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    contents.push_str(pattern);
+    contents.push('\n');
+    std::fs::write(&exclude_path, contents).map_err(|err| err.to_string())
+}
+
+fn git_path_is_ignored(repo_root: &Path, path: &str) -> Result<bool, String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["check-ignore", "-q", path])
+        .output()
+        .map_err(|err| err.to_string())?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(if stderr.is_empty() {
+                format!("git check-ignore failed with status {}", output.status)
+            } else {
+                stderr
+            })
+        }
+    }
+}
+
+fn git_exclude_path(repo_root: &Path) -> Result<PathBuf, String> {
+    let relative = run_git_output(repo_root, &["rev-parse", "--git-path", "info/exclude"])?;
+    let path = PathBuf::from(relative);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(repo_root.join(path))
+    }
 }
 
 pub(crate) fn build_worktree_remove_command(
@@ -601,15 +669,92 @@ prunable stale
     }
 
     #[test]
-    fn default_checkout_path_appends_repo_and_branch_slug() {
+    fn default_checkout_path_joins_relative_directory_to_repo_root() {
         assert_eq!(
             default_checkout_path(
-                Path::new("/home/me/.herdr/worktrees"),
+                ".herdr/worktrees",
+                Path::new("/repo/herdr"),
+                "herdr",
+                "worktree/brave-river",
+            ),
+            PathBuf::from("/repo/herdr/.herdr/worktrees/worktree-brave-river")
+        );
+    }
+
+    #[test]
+    fn default_checkout_path_keeps_repo_segment_for_absolute_directory() {
+        assert_eq!(
+            default_checkout_path(
+                "/home/me/.herdr/worktrees",
+                Path::new("/repo/herdr"),
                 "herdr",
                 "worktree/brave-river",
             ),
             PathBuf::from("/home/me/.herdr/worktrees/herdr/worktree-brave-river")
         );
+    }
+
+    #[test]
+    fn default_checkout_path_expands_tilde_directory() {
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/home/me");
+        assert_eq!(
+            default_checkout_path(
+                "~/.herdr/worktrees",
+                Path::new("/repo/herdr"),
+                "herdr",
+                "worktree/brave-river",
+            ),
+            PathBuf::from("/home/me/.herdr/worktrees/herdr/worktree-brave-river")
+        );
+        if let Some(home) = old_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn ensure_in_repo_worktree_ignored_writes_exclude_for_relative_directory() {
+        let repo = create_committed_repo("exclude-write");
+        ensure_in_repo_worktree_ignored(&repo, ".herdr/worktrees").unwrap();
+        let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert!(
+            exclude.lines().any(|line| line == ".herdr/worktrees"),
+            "exclude was {exclude:?}"
+        );
+        std::fs::create_dir_all(repo.join(".herdr/worktrees")).unwrap();
+        std::fs::write(repo.join(".herdr/worktrees/probe"), "x\n").unwrap();
+        let ignored = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["check-ignore", "-q", ".herdr/worktrees/probe"])
+            .status()
+            .unwrap()
+            .success();
+        let _ = std::fs::remove_dir_all(&repo);
+        assert!(ignored);
+    }
+
+    #[test]
+    fn ensure_in_repo_worktree_ignored_is_idempotent() {
+        let repo = create_committed_repo("exclude-idempotent");
+        ensure_in_repo_worktree_ignored(&repo, ".herdr/worktrees").unwrap();
+        let first = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        ensure_in_repo_worktree_ignored(&repo, ".herdr/worktrees").unwrap();
+        let second = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        let _ = std::fs::remove_dir_all(&repo);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn ensure_in_repo_worktree_ignored_skips_absolute_directory() {
+        let repo = create_committed_repo("exclude-skip-absolute");
+        let before = std::fs::read_to_string(repo.join(".git/info/exclude")).ok();
+        ensure_in_repo_worktree_ignored(&repo, "/tmp/herdr-worktrees").unwrap();
+        let after = std::fs::read_to_string(repo.join(".git/info/exclude")).ok();
+        let _ = std::fs::remove_dir_all(&repo);
+        assert_eq!(before, after);
     }
 
     #[test]

@@ -97,6 +97,7 @@ impl App {
         let branch = crate::worktree::generated_branch_slug(seed);
         let checkout_path = crate::worktree::default_checkout_path(
             &self.state.worktree_directory,
+            &space.repo_root,
             &repo_name,
             &branch,
         );
@@ -464,6 +465,7 @@ impl App {
         create.branch = self.state.name_input.clone();
         create.checkout_path = crate::worktree::default_checkout_path(
             &self.state.worktree_directory,
+            &create.source_repo_root,
             &create.repo_name,
             &create.branch,
         );
@@ -472,6 +474,7 @@ impl App {
 
     pub(crate) fn start_worktree_add(&mut self) {
         self.sync_worktree_branch_from_input();
+        let directory = self.state.worktree_directory.clone();
         let Some(create) = &mut self.state.worktree_create else {
             return;
         };
@@ -487,10 +490,17 @@ impl App {
         create.branch = branch.clone();
         self.state.name_input = branch.clone();
         create.checkout_path = crate::worktree::default_checkout_path(
-            &self.state.worktree_directory,
+            &directory,
+            &create.source_repo_root,
             &create.repo_name,
             &branch,
         );
+        if let Err(err) =
+            crate::worktree::ensure_in_repo_worktree_ignored(&create.source_repo_root, &directory)
+        {
+            create.error = Some(err);
+            return;
+        }
         create.creating = true;
         create.error = None;
 
@@ -1042,7 +1052,7 @@ mod tests {
     #[test]
     fn sync_worktree_branch_updates_derived_path() {
         let mut app = app_for_worktree_tests();
-        app.state.worktree_directory = std::path::PathBuf::from("/w");
+        app.state.worktree_directory = "/w".into();
         app.state.name_input = "issue/137".into();
         app.state.worktree_create = Some(WorktreeCreateState {
             source_workspace_id: "source".into(),
@@ -1073,9 +1083,14 @@ mod tests {
         let repo = create_committed_repo("app-worktree-add-repo");
         let worktree_root = unique_temp_path("app-worktree-add-root");
         let branch = "worktree/app-worker";
-        let checkout = crate::worktree::default_checkout_path(&worktree_root, "herdr", branch);
+        let checkout = crate::worktree::default_checkout_path(
+            &worktree_root.to_string_lossy(),
+            &repo,
+            "herdr",
+            branch,
+        );
         let mut app = app_for_worktree_tests();
-        app.state.worktree_directory = worktree_root.clone();
+        app.state.worktree_directory = worktree_root.to_string_lossy().into_owned();
         app.state.name_input = branch.into();
         app.state.worktree_create = Some(WorktreeCreateState {
             source_workspace_id: "source".into(),
@@ -1114,6 +1129,61 @@ mod tests {
     }
 
     #[test]
+    fn start_worktree_add_ignores_in_repo_directory() {
+        let repo = create_committed_repo("app-worktree-add-ignore");
+        let branch = "worktree/app-ignore";
+        let mut app = app_for_worktree_tests();
+        app.state.worktree_directory = ".herdr/worktrees".into();
+        let checkout = crate::worktree::default_checkout_path(
+            &app.state.worktree_directory,
+            &repo,
+            "herdr",
+            branch,
+        );
+        app.state.name_input = branch.into();
+        app.state.worktree_create = Some(WorktreeCreateState {
+            source_workspace_id: "source".into(),
+            source_checkout_path: repo.clone(),
+            source_existing_membership: None,
+            source_repo_root: repo.clone(),
+            repo_key: "repo-key".into(),
+            repo_name: "herdr".into(),
+            branch: branch.into(),
+            checkout_path: checkout.clone(),
+            error: None,
+            creating: false,
+        });
+
+        app.start_worktree_add();
+        let event = wait_for_worktree_event(&mut app);
+        match event {
+            AppEvent::WorktreeAddFinished(result) => {
+                assert_eq!(result.result, Ok(()));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        let ignored = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["check-ignore", "-q", ".herdr/worktrees/probe"])
+            .status()
+            .unwrap()
+            .success();
+
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false);
+        crate::worktree::run_worktree_command(&remove).unwrap();
+        let _ = std::fs::remove_dir_all(&repo);
+
+        assert!(
+            exclude.lines().any(|line| line == ".herdr/worktrees"),
+            "exclude was {exclude:?}"
+        );
+        assert!(ignored);
+    }
+
+    #[test]
     fn start_worktree_add_uses_source_checkout_head_as_base() {
         let repo = create_committed_repo("app-worktree-add-source-repo");
         let source_checkout = unique_temp_path("app-worktree-add-source-checkout");
@@ -1135,9 +1205,14 @@ mod tests {
 
         let worktree_root = unique_temp_path("app-worktree-add-from-source-root");
         let branch = "worktree/from-source";
-        let checkout = crate::worktree::default_checkout_path(&worktree_root, "herdr", branch);
+        let checkout = crate::worktree::default_checkout_path(
+            &worktree_root.to_string_lossy(),
+            &repo,
+            "herdr",
+            branch,
+        );
         let mut app = app_for_worktree_tests();
-        app.state.worktree_directory = worktree_root.clone();
+        app.state.worktree_directory = worktree_root.to_string_lossy().into_owned();
         app.state.name_input = branch.into();
         app.state.worktree_create = Some(WorktreeCreateState {
             source_workspace_id: "source".into(),

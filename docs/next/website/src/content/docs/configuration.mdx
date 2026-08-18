@@ -109,12 +109,12 @@ Set the root directory Herdr uses for managed Git worktree checkouts:
 
 ```toml
 [worktrees]
-directory = "~/.herdr/worktrees"
+directory = ".herdr/worktrees"
 verify = ["just", "check"]
 auto_land = false
 ```
 
-Herdr creates checkouts under `<directory>/<repo>/<branch-slug>`. For sibling-style checkouts, set this to a directory such as `~/Projects/herdr-worktrees`. Relative values are resolved to an absolute path when the app applies the config.
+The default is relative to the source repository: Herdr creates checkouts under `<repo>/.herdr/worktrees/<branch-slug>` and adds that relative directory to the repo's `.git/info/exclude` so the parent checkout stays clean. An absolute or `~/` value keeps the previous global layout, `<directory>/<repo>/<branch-slug>`. For sibling-style checkouts outside the repo, set this to a directory such as `~/Projects/herdr-worktrees`.
 
 `verify` is an optional program-and-arguments array. The land action runs it in the agent worktree after rebasing and before the parent checkout advances. An empty array skips verification. `auto_land` queues the same landing whenever an agent in a linked worktree becomes idle; it defaults to `false`, so landing stays explicit until you have seen the verification command work for that repository.
 

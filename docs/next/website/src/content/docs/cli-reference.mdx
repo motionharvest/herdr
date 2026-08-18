@@ -81,7 +81,7 @@ herdr worktree remove --workspace ID [--force] [--json]
 herdr worktree land [target | --all] [--json]
 ```
 
-Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree create` creates a Git worktree checkout, opens it as a workspace, and groups it with the parent repo workspace. Without `--path`, Herdr creates the checkout under `<worktrees.directory>/<repo>/<branch-slug>`.
+Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree create` creates a Git worktree checkout, opens it as a workspace, and groups it with the parent repo workspace. Without `--path`, a relative `[worktrees].directory` creates the checkout under `<repo>/<directory>/<branch-slug>`. An absolute or `~/` directory still creates `<directory>/<repo>/<branch-slug>`.
 
 `worktree land` accepts a workspace ID, pane name, or unique agent name. It rebases the linked worktree onto the parent checkout's current branch, runs `[worktrees].verify`, and fast-forwards the parent. `--all` serializes every open linked worktree through the same operation.
 

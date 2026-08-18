@@ -1365,6 +1365,24 @@ mod tests {
     }
 
     #[test]
+    fn a_herdr_worktree_inside_its_repository_reads_as_the_repository() {
+        let status = checkout(
+            "/repo/herdr/.git",
+            "/repo/herdr/.herdr/worktrees/silver-river",
+            true,
+        );
+
+        assert_eq!(
+            display_location_path(
+                std::path::Path::new("/repo/herdr/.herdr/worktrees/silver-river"),
+                &status
+            ),
+            "/repo/herdr"
+        );
+        assert_eq!(git_branch_label(&status).as_deref(), Some("worktree eich"));
+    }
+
+    #[test]
     fn a_folder_below_a_nested_worktree_keeps_what_is_below_it() {
         let status = checkout(
             "/repo/herdr/.git",

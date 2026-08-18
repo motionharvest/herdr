@@ -190,7 +190,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # agents = ""     # e.g. "alt" makes alt+1..9 focus agent rows directly
 
 # [worktrees]
-# directory = "~/.herdr/worktrees"
+# directory = ".herdr/worktrees"
 # verify = ["just", "check"]
 # auto_land = false
 

@@ -182,11 +182,20 @@ impl App {
                 Ok(path) => path,
                 Err(err) => return encode_error(id, err.code, err.message),
             },
-            None => crate::worktree::default_checkout_path(
-                &self.state.worktree_directory,
-                &source.repo_name,
-                &branch,
-            ),
+            None => {
+                if let Err(err) = crate::worktree::ensure_in_repo_worktree_ignored(
+                    &source.source_repo_root,
+                    &self.state.worktree_directory,
+                ) {
+                    return encode_error(id, "worktree_create_failed", err);
+                }
+                crate::worktree::default_checkout_path(
+                    &self.state.worktree_directory,
+                    &source.source_repo_root,
+                    &source.repo_name,
+                    &branch,
+                )
+            }
         };
 
         if let Some(parent_dir) = checkout_path.parent() {
@@ -996,7 +1005,7 @@ mod tests {
         let repo = create_committed_repo("api-worktree-create-repo");
         let worktree_root = unique_temp_path("api-worktree-create-root");
         let mut app = app_with_parent(&repo);
-        app.state.worktree_directory = worktree_root.clone();
+        app.state.worktree_directory = worktree_root.to_string_lossy().into_owned();
 
         let response = app.handle_api_request(Request {
             id: "req".into(),
@@ -1049,7 +1058,7 @@ mod tests {
         let worktree_root = unique_temp_path("api-worktree-create-cwd-root");
         let event_hub = crate::api::EventHub::default();
         let mut app = test_app_with_event_hub(event_hub.clone());
-        app.state.worktree_directory = worktree_root.clone();
+        app.state.worktree_directory = worktree_root.to_string_lossy().into_owned();
 
         let response = app.handle_api_request(Request {
             id: "req".into(),

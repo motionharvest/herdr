@@ -319,7 +319,9 @@ pub struct IndexedKeysConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct WorktreesConfig {
-    /// Root directory under which Herdr creates <repo>/<branch-slug> checkouts.
+    /// Directory for managed worktree checkouts. Relative values are resolved
+    /// against the source repo and create <repo>/<directory>/<branch-slug>.
+    /// Absolute or ~/ values keep <directory>/<repo>/<branch-slug>.
     pub directory: String,
     /// Program and arguments run in a worktree after rebase and before landing.
     pub verify: Vec<String>,
@@ -510,7 +512,7 @@ impl Default for KeysConfig {
 impl Default for WorktreesConfig {
     fn default() -> Self {
         Self {
-            directory: "~/.herdr/worktrees".into(),
+            directory: ".herdr/worktrees".into(),
             verify: Vec::new(),
             auto_land: false,
         }
@@ -679,7 +681,7 @@ show_agent_labels_on_pane_borders = false
     #[test]
     fn worktrees_directory_defaults_and_parses() {
         let default_config = Config::default();
-        assert_eq!(default_config.worktrees.directory, "~/.herdr/worktrees");
+        assert_eq!(default_config.worktrees.directory, ".herdr/worktrees");
 
         let toml = r#"
 [worktrees]

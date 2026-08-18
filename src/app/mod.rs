@@ -323,8 +323,7 @@ impl App {
             (Vec::new(), None, 0)
         };
 
-        let worktree_directory =
-            crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
+        let worktree_directory = config.worktrees.directory.clone();
 
         info!(
             pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes,
@@ -1173,8 +1172,7 @@ impl App {
         }
 
         if !invalid_section("worktrees") {
-            self.state.worktree_directory =
-                crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
+            self.state.worktree_directory = config.worktrees.directory.clone();
             self.state.worktree_verify_command = config.worktrees.verify.clone();
             self.state.worktree_auto_land = config.worktrees.auto_land;
         }

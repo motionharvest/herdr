@@ -27,8 +27,14 @@ impl App {
         } else {
             requested_branch.trim().to_string()
         };
+        crate::worktree::ensure_in_repo_worktree_ignored(
+            &space.repo_root,
+            &self.state.worktree_directory,
+        )
+        .map_err(AgentStartError::WorktreeCreateFailed)?;
         let checkout = crate::worktree::default_checkout_path(
             &self.state.worktree_directory,
+            &space.repo_root,
             &space.label,
             &branch,
         );

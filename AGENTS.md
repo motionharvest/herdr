@@ -32,8 +32,6 @@ When the change is ready, fast-forward the shared checkout at `../herdr` to the 
 
 If the current session is already inside an isolated task worktree, keep using it. Do not create nested worktrees.
 
-Before committing, propose the commit message and get alignment.
-
 After the change is integrated, remove the task worktree and delete the task branch locally and remotely.
 
 ## Testing
@@ -60,7 +58,7 @@ herdr worktree land <name>
 
 If the current directory is already a linked worktree, start there. `--worktree` reuses that checkout instead of creating another one. Use `--cwd` of the parent only when you want a new isolated checkout.
 
-Omitting `branch` generates one under `worktree/`. Landing rebases onto the parent checkout's current branch, runs the optional `[worktrees].verify` argv, and fast-forwards the parent. Use `herdr worktree land --all` to land every open linked worktree serially. Linked-agent context menus expose the same landing and deletion actions. Non-forced deletion protects uncommitted and unlanded work, then removes both the checkout and local branch. See `docs/next/website/src/content/docs/agents.mdx` and `cli-reference.mdx` for user-facing behavior.
+Omitting `branch` generates one under `worktree/`. The checkout lands at `<repo>/.herdr/worktrees/<branch-slug>` unless `[worktrees].directory` is an absolute or `~/` path. Landing rebases onto the parent checkout's current branch, runs the optional `[worktrees].verify` argv, and fast-forwards the parent. Use `herdr worktree land --all` to land every open linked worktree serially. Linked-agent context menus expose the same landing and deletion actions. Non-forced deletion protects uncommitted and unlanded work, then removes both the checkout and local branch. See `docs/next/website/src/content/docs/agents.mdx` and `cli-reference.mdx` for user-facing behavior.
 
 ## Vendored libghostty-vt
 
@@ -88,7 +86,7 @@ Put local PRDs, planning notes, and exploratory specs under `.local/prd/`; `.loc
 
 Use lowercase conventional commits, no emojis, and no AI co-author lines. Commit subjects feed preview release notes, so keep them descriptive.
 
-Before committing, propose the commit message and get alignment.
+When the requested work is done, commit it. Do not wait for a yes on the message. A session that finishes implementation without committing has not finished.
 
 When a normal feature or fix commit relates to a GitHub issue, add a commit body line `refs #<issue-number>` after the subject:
 
@@ -112,7 +110,7 @@ Do not use GitHub closing keywords like `fixes #<issue-number>`, `closes #<issue
 
 "Deploy", "deploy this", and "ship it" mean one thing: cut and publish the next stable release from `main`, start to finish. Run the whole sequence without stopping to confirm the steps. The word is itself the approval to push, tag, and publish binaries to stable-channel users.
 
-**1. Land the work.** Commit anything outstanding. The standing "propose the commit message and get alignment" rule is satisfied by stating the message in the deploy report — deploy does not wait on it. Then confirm `main` is not behind: `git fetch origin main --tags`.
+**1. Land the work.** Commit anything outstanding. Then confirm `main` is not behind: `git fetch origin main --tags`.
 
 **2. Pick the version.** Default to a patch bump of the version in `Cargo.toml`. Use a minor bump only when one of these is true of the commits since the latest tag:
 
