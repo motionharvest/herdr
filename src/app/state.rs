@@ -1250,7 +1250,10 @@ pub enum SpaceMenuKind {
     /// A linked worktree, which can be given up rather than added to.
     /// `parent_branch` is the branch currently checked out in the parent
     /// checkout, which is where land will go.
-    LinkedWorktree { parent_branch: Option<String> },
+    LinkedWorktree {
+        parent_branch: Option<String>,
+        already_landed: bool,
+    },
 }
 
 pub fn land_menu_label(parent_branch: Option<&str>) -> String {
@@ -1275,11 +1278,11 @@ pub struct ContextMenuState {
 impl ContextMenuState {
     pub fn items(&self) -> Vec<String> {
         match &self.kind {
-            ContextMenuKind::DetachedAgent { .. } => vec!["Close agent".into()],
+            ContextMenuKind::DetachedAgent { .. } => vec!["Delete agent".into()],
             ContextMenuKind::Agent {
                 can_promote, space, ..
             } => {
-                let mut items = vec!["Rename agent".into(), "Close agent".into()];
+                let mut items = vec!["Rename agent".into(), "Delete agent".into()];
                 if *can_promote {
                     items.push("Move to new space".into());
                 }
@@ -1288,7 +1291,7 @@ impl ContextMenuState {
                     SpaceMenuKind::Repo => {
                         items.extend(["New worktree".into(), "Open worktree...".into()]);
                     }
-                    SpaceMenuKind::LinkedWorktree { parent_branch } => {
+                    SpaceMenuKind::LinkedWorktree { parent_branch, .. } => {
                         items.push(land_menu_label(parent_branch.as_deref()));
                         items.push("Delete agent / worktree...".into());
                     }
@@ -1325,6 +1328,23 @@ impl ContextMenuState {
                 }
                 items
             }
+        }
+    }
+
+    pub fn item_enabled(&self, idx: usize) -> bool {
+        match &self.kind {
+            ContextMenuKind::Agent {
+                space:
+                    SpaceMenuKind::LinkedWorktree {
+                        already_landed: true,
+                        ..
+                    },
+                ..
+            } => self
+                .items()
+                .get(idx)
+                .is_none_or(|item| !is_land_menu_item(item)),
+            _ => true,
         }
     }
 }
@@ -1391,7 +1411,7 @@ pub struct AppState {
         std::collections::HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
     /// Agents running with no pane showing them. Closing a pane sets its agent
     /// down here instead of killing it; the agent keeps its table row, and a
-    /// drag from that row docks it into a pane again. Only "Close agent" takes
+    /// drag from that row docks it into a pane again. Only "Delete agent" takes
     /// an agent out of this list by ending it.
     pub detached_agents: Vec<DetachedAgent>,
     /// The branch and worktree state of each set-down agent's directory. A
@@ -2004,27 +2024,31 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn linked_agent_menu_offers_land_and_destructive_delete() {
-        let menu = ContextMenuState {
+    fn agent_menu(space: SpaceMenuKind) -> ContextMenuState {
+        ContextMenuState {
             kind: ContextMenuKind::Agent {
                 ws_idx: 0,
                 pane_id: crate::layout::PaneId::alloc(),
                 can_promote: false,
-                space: SpaceMenuKind::LinkedWorktree {
-                    parent_branch: Some("main".into()),
-                },
+                space,
             },
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-        };
+        }
+    }
 
+    #[test]
+    fn linked_agent_menu_offers_land_and_destructive_delete() {
         assert_eq!(
-            menu.items(),
+            agent_menu(SpaceMenuKind::LinkedWorktree {
+                parent_branch: Some("main".into()),
+                already_landed: false,
+            })
+            .items(),
             vec![
                 "Rename agent",
-                "Close agent",
+                "Delete agent",
                 "Land on main",
                 "Delete agent / worktree...",
             ]
@@ -2032,6 +2056,71 @@ mod tests {
             .map(str::to_string)
             .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn repo_agent_menu_says_delete_agent_and_omits_land_and_worktree_delete() {
+        let items = agent_menu(SpaceMenuKind::Repo).items();
+        assert_eq!(
+            items,
+            vec![
+                "Rename agent",
+                "Delete agent",
+                "New worktree",
+                "Open worktree...",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+        assert!(!items.iter().any(|item| item.starts_with("Land on")));
+        assert!(!items
+            .iter()
+            .any(|item| item == "Delete agent / worktree..."));
+    }
+
+    #[test]
+    fn plain_agent_menu_says_delete_agent() {
+        assert_eq!(
+            agent_menu(SpaceMenuKind::Plain).items(),
+            vec!["Rename agent", "Delete agent"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn detached_agent_menu_says_delete_agent() {
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::DetachedAgent {
+                pane_id: crate::layout::PaneId::alloc(),
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        assert_eq!(menu.items(), vec!["Delete agent".to_string()]);
+    }
+
+    #[test]
+    fn landed_worktree_menu_keeps_land_visible_but_disabled() {
+        let menu = agent_menu(SpaceMenuKind::LinkedWorktree {
+            parent_branch: Some("main".into()),
+            already_landed: true,
+        });
+        let items = menu.items();
+        let land_idx = items
+            .iter()
+            .position(|item| is_land_menu_item(item))
+            .expect("land item");
+        assert_eq!(items[land_idx], "Land on main");
+        assert!(!menu.item_enabled(land_idx));
+        let delete_idx = items
+            .iter()
+            .position(|item| item == "Delete agent / worktree...")
+            .expect("delete worktree item");
+        assert!(menu.item_enabled(delete_idx));
     }
 
     #[test]

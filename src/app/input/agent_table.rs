@@ -269,11 +269,29 @@ impl AppState {
                     |space| space.is_linked_worktree,
                 );
                 if linked {
-                    let parent_branch = ws
-                        .worktree_space()
-                        .filter(|space| space.is_linked_worktree)
-                        .and_then(|space| crate::workspace::git_branch(&space.repo_root));
-                    SpaceMenuKind::LinkedWorktree { parent_branch }
+                    let membership = ws.worktree_space().filter(|space| space.is_linked_worktree);
+                    let checkout_path = membership
+                        .map(|space| space.checkout_path.clone())
+                        .or_else(|| git_space.as_ref().map(|space| space.repo_root.clone()));
+                    let parent_path =
+                        membership.map(|space| space.repo_root.clone()).or_else(|| {
+                            checkout_path
+                                .as_deref()
+                                .and_then(crate::workspace::composer_folder_path)
+                        });
+                    let parent_branch = parent_path
+                        .as_ref()
+                        .and_then(|path| crate::workspace::git_branch(path));
+                    let already_landed = checkout_path
+                        .as_ref()
+                        .zip(parent_path.as_ref())
+                        .is_some_and(|(checkout, parent)| {
+                            crate::worktree::worktree_already_landed(checkout, parent)
+                        });
+                    SpaceMenuKind::LinkedWorktree {
+                        parent_branch,
+                        already_landed,
+                    }
                 } else if ws.worktree_space().is_some() || git_space.is_some() {
                     SpaceMenuKind::Repo
                 } else {
@@ -488,12 +506,86 @@ mod tests {
         let kind = state.agent_menu_kind(&app.terminal_runtimes, 0, pane_id);
         match kind {
             ContextMenuKind::Agent {
-                space: SpaceMenuKind::LinkedWorktree { parent_branch },
+                space:
+                    SpaceMenuKind::LinkedWorktree {
+                        parent_branch,
+                        already_landed,
+                    },
                 ..
-            } => assert_eq!(parent_branch.as_deref(), Some("release")),
+            } => {
+                assert_eq!(parent_branch.as_deref(), Some("release"));
+                assert!(!already_landed);
+            }
             other => panic!("unexpected menu kind: {other:?}"),
         }
 
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn agent_menu_disables_land_when_worktree_shares_parent_commit() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-landed-menu-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |cwd: &std::path::Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        run(&repo, &["init", "--quiet", "-b", "main"]);
+        run(&repo, &["config", "user.email", "herdr@example.invalid"]);
+        run(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("README.md"), "test\n").unwrap();
+        run(&repo, &["add", "README.md"]);
+        run(&repo, &["commit", "--quiet", "-m", "initial"]);
+        let checkout = repo.join("worktree");
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/landed-menu",
+                checkout.to_str().unwrap(),
+            ],
+        );
+
+        let (app, pane_id) = app_with_one_agent();
+        let mut state = app.state;
+        state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: repo.clone(),
+            checkout_path: checkout.clone(),
+            is_linked_worktree: true,
+        });
+
+        let kind = state.agent_menu_kind(&app.terminal_runtimes, 0, pane_id);
+        match kind {
+            ContextMenuKind::Agent {
+                space: SpaceMenuKind::LinkedWorktree { already_landed, .. },
+                ..
+            } => assert!(already_landed),
+            other => panic!("unexpected menu kind: {other:?}"),
+        }
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force", checkout.to_str().unwrap()])
+            .status();
         let _ = std::fs::remove_dir_all(repo);
     }
 }

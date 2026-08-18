@@ -265,16 +265,27 @@ pub(super) fn render_context_menu(app: &AppState, frame: &mut Frame) {
     let menu_items = menu.items();
     let items: Vec<ListItem> = menu_items
         .iter()
-        .map(|item| ListItem::new(Line::from(item.as_str())))
+        .enumerate()
+        .map(|(idx, item)| {
+            let style = if menu.item_enabled(idx) {
+                Style::default()
+            } else {
+                Style::default().fg(p.overlay0)
+            };
+            ListItem::new(Line::from(item.as_str())).style(style)
+        })
         .collect();
+    let highlight_style = if menu.item_enabled(menu.list.highlighted) {
+        Style::default()
+            .bg(p.accent)
+            .fg(panel_contrast_fg(p))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().bg(p.surface0).fg(p.overlay0)
+    };
     let list = List::new(items)
         .style(Style::default().fg(p.text))
-        .highlight_style(
-            Style::default()
-                .bg(p.accent)
-                .fg(panel_contrast_fg(p))
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(highlight_style)
         .highlight_symbol(" ");
     let mut state = ListState::default().with_selected(Some(menu.list.highlighted));
     frame.render_stateful_widget(list, inner, &mut state);

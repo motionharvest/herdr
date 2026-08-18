@@ -595,10 +595,14 @@ pub(super) fn apply_context_menu_action(
     menu: ContextMenuState,
     idx: usize,
 ) {
+    if !menu.item_enabled(idx) {
+        state.context_menu = Some(menu);
+        return;
+    }
     let items = menu.items();
     let item = items.get(idx).map(String::as_str);
     match (menu.kind, item) {
-        (ContextMenuKind::DetachedAgent { pane_id }, Some("Close agent")) => {
+        (ContextMenuKind::DetachedAgent { pane_id }, Some("Delete agent" | "Close agent")) => {
             state.close_detached_agent(pane_id);
             leave_modal(state);
         }
@@ -662,7 +666,7 @@ pub(super) fn apply_context_menu_action(
         }
         (
             ContextMenuKind::Agent { pane_id, .. } | ContextMenuKind::Pane { pane_id, .. },
-            Some("Close agent"),
+            Some("Delete agent" | "Close agent"),
         ) => {
             state.close_agent_in_pane(terminal_runtimes, pane_id);
             leave_modal(state);
@@ -731,6 +735,7 @@ mod tests {
 
     use super::super::state_with_workspaces;
     use super::*;
+    use crate::app::state::SpaceMenuKind;
 
     fn config_env_lock() -> &'static std::sync::Mutex<()> {
         crate::config::test_config_env_lock()
@@ -1002,5 +1007,37 @@ mod tests {
         assert_eq!(state.selected, 0);
         assert_eq!(state.mode, Mode::ConfirmClose);
         assert_eq!(state.workspaces.len(), 2);
+    }
+
+    #[test]
+    fn landed_worktree_menu_does_not_start_land() {
+        let mut state = state_with_workspaces(&["main"]);
+        state.mode = Mode::ContextMenu;
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::Agent {
+                ws_idx: 0,
+                pane_id: state.workspaces[0].tabs[0].root_pane,
+                can_promote: false,
+                space: SpaceMenuKind::LinkedWorktree {
+                    parent_branch: Some("main".into()),
+                    already_landed: true,
+                },
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        let land_idx = menu
+            .items()
+            .iter()
+            .position(|item| is_land_menu_item(item))
+            .expect("land item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, land_idx);
+
+        assert_eq!(state.request_land_worktree, None);
+        assert!(state.context_menu.is_some());
+        assert_eq!(state.mode, Mode::ContextMenu);
     }
 }

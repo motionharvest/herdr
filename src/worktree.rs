@@ -329,6 +329,38 @@ fn commits_ahead(cwd: &Path, base: &str, branch: &str) -> Result<usize, String> 
         .map_err(|err| format!("invalid git rev-list count: {err}"))
 }
 
+fn worktree_is_clean(checkout: &Path) -> bool {
+    run_git_output(checkout, &["status", "--porcelain"])
+        .ok()
+        .is_some_and(|status| status.is_empty())
+}
+
+fn heads_match(checkout: &Path, parent: &Path) -> bool {
+    match (
+        run_git_output(checkout, &["rev-parse", "HEAD"]),
+        run_git_output(parent, &["rev-parse", "HEAD"]),
+    ) {
+        (Ok(checkout_head), Ok(parent_head)) => checkout_head == parent_head,
+        _ => false,
+    }
+}
+
+pub(crate) fn worktree_already_landed(checkout: &Path, parent: &Path) -> bool {
+    if !worktree_is_clean(checkout) {
+        return false;
+    }
+    let Ok(base_branch) = current_branch(parent) else {
+        return heads_match(checkout, parent);
+    };
+    let Ok(branch) = current_branch(checkout) else {
+        return heads_match(checkout, parent);
+    };
+    if branch == base_branch {
+        return true;
+    }
+    commits_ahead(checkout, &base_branch, &branch).ok() == Some(0)
+}
+
 fn run_verify_command(cwd: &Path, argv: &[String]) -> Result<(), String> {
     let Some(program) = argv.first() else {
         return Ok(());
@@ -888,7 +920,32 @@ prunable stale
             run_git_output(&repo, &["rev-parse", "HEAD"]).unwrap(),
             run_git_output(&checkout, &["rev-parse", "HEAD"]).unwrap()
         );
+        assert!(worktree_already_landed(&checkout, &repo));
         remove_worktree_and_branch(&repo, &checkout, false).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn worktree_already_landed_when_it_shares_the_parent_commit() {
+        let repo = create_committed_repo("worktree-already-landed-repo");
+        let checkout = unique_temp_path("worktree-already-landed-checkout");
+        let branch = "worktree/already-landed";
+        run_worktree_command(&build_worktree_add_new_branch_command(
+            &repo, &checkout, branch, "HEAD",
+        ))
+        .unwrap();
+
+        assert!(worktree_already_landed(&checkout, &repo));
+
+        std::fs::write(checkout.join("agent.txt"), "not landed\n").unwrap();
+        run_git(&checkout, &["add", "agent.txt"]);
+        run_git(&checkout, &["commit", "--quiet", "-m", "agent work"]);
+        assert!(!worktree_already_landed(&checkout, &repo));
+
+        run_git(&checkout, &["reset", "--soft", "HEAD~1"]);
+        assert!(!worktree_already_landed(&checkout, &repo));
+
+        remove_worktree_and_branch(&repo, &checkout, true).unwrap();
         let _ = std::fs::remove_dir_all(repo);
     }
 
