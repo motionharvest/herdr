@@ -26,19 +26,26 @@ impl App {
     /// thing the band exists to avoid.
     pub(crate) fn submit_composer(&mut self, pending: Pending) {
         let result = match pending.launch() {
-            Launch::Agent { agent, argv } => {
-                self.start_hidden_agent(pending.cwd.clone(), &argv, Some(agent))
+            Launch::Agent { agent, argv }
+                if pending.harness.prefix != crate::harness::AUTO_PREFIX
+                    && crate::workspace::git_space_metadata(&pending.cwd)
+                        .is_some_and(|space| !space.is_linked_worktree) =>
+            {
+                self.start_managed_worktree_agent(&pending.cwd, &argv, agent)
             }
-            Launch::Terminal { command } => {
-                self.start_hidden_terminal(pending.cwd.clone(), &command)
-            }
+            Launch::Agent { agent, argv } => self
+                .start_hidden_agent(pending.cwd.clone(), &argv, Some(agent))
+                .map(|pane_id| (pane_id, pending.cwd.clone())),
+            Launch::Terminal { command } => self
+                .start_hidden_terminal(pending.cwd.clone(), &command)
+                .map(|pane_id| (pane_id, pending.cwd.clone())),
         }
         .map_err(|err| self.agent_start_error_body(err).message);
         match result {
-            Ok(_pane_id) => {
+            Ok((_pane_id, started_cwd)) => {
                 self.state.composer.task.clear();
                 self.state.composer.add_folder(pending.cwd.clone());
-                let where_it_went = crate::workspace::display_path_with_home(&pending.cwd);
+                let where_it_went = crate::workspace::display_path_with_home(&started_cwd);
                 self.show_composer_toast(
                     ToastKind::Finished,
                     &format!("started {} in {where_it_went}", pending.harness.name),

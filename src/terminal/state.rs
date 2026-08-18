@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 // Effective state arbitration is intentionally centralized here. Hooks are the
 // default authority for agent-owned internal state, but a narrow set of strong
@@ -88,6 +88,9 @@ pub struct TerminalState {
     /// booting is not the next thing it did. Startup ends the first time the
     /// agent settles.
     starting_up: bool,
+    pub agent_run_started_at: Option<SystemTime>,
+    pub agent_last_finished_at: Option<SystemTime>,
+    pub agent_last_run_duration: Option<Duration>,
 }
 
 impl TerminalState {
@@ -117,6 +120,9 @@ impl TerminalState {
             respawn_shell_on_exit: false,
             starting_up: false,
             pending_agent_resume_plan: None,
+            agent_run_started_at: None,
+            agent_last_finished_at: None,
+            agent_last_run_duration: None,
         }
     }
 
@@ -790,6 +796,53 @@ impl TerminalState {
             || self.launch_argv.is_some()
     }
 
+    pub fn agent_run_duration(&self, now: SystemTime) -> Option<Duration> {
+        self.agent_run_started_at
+            .and_then(|started| now.duration_since(started).ok())
+            .or(self.agent_last_run_duration)
+    }
+
+    pub fn agent_idle_duration(&self, now: SystemTime) -> Option<Duration> {
+        (self.state != AgentState::Working)
+            .then(|| {
+                self.agent_last_finished_at
+                    .and_then(|finished| now.duration_since(finished).ok())
+            })
+            .flatten()
+    }
+
+    pub fn restore_agent_timing(
+        &mut self,
+        run_started_at: Option<SystemTime>,
+        last_finished_at: Option<SystemTime>,
+        last_run_duration: Option<Duration>,
+    ) {
+        self.agent_run_started_at = run_started_at;
+        self.agent_last_finished_at = last_finished_at;
+        self.agent_last_run_duration = last_run_duration;
+    }
+
+    fn record_agent_state_timing(&mut self, previous: AgentState, state: AgentState) {
+        if self.starting_up {
+            return;
+        }
+        let now = SystemTime::now();
+        if state == AgentState::Working
+            && previous != AgentState::Working
+            && previous != AgentState::Blocked
+            && self.agent_run_started_at.is_none()
+        {
+            self.agent_run_started_at = Some(now);
+            self.agent_last_finished_at = None;
+        }
+        if state == AgentState::Idle && previous != AgentState::Idle {
+            if let Some(started) = self.agent_run_started_at.take() {
+                self.agent_last_run_duration = now.duration_since(started).ok();
+            }
+            self.agent_last_finished_at = Some(now);
+        }
+    }
+
     #[cfg(test)]
     pub fn border_label(&self, show_agent_labels: bool) -> Option<String> {
         self.effective_title().or_else(|| {
@@ -837,6 +890,7 @@ impl TerminalState {
             return None;
         }
 
+        self.record_agent_state_timing(previous_state, state);
         self.state = state;
         Some(EffectiveStateChange {
             previous_agent_label,
@@ -2239,6 +2293,39 @@ mod tests {
         assert_eq!(
             terminal.hook_authority.as_ref().unwrap().source,
             "custom:pi"
+        );
+    }
+
+    #[test]
+    fn restored_agent_timing_reports_running_and_idle_durations() {
+        let mut terminal = test_terminal();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+
+        terminal.state = AgentState::Working;
+        terminal.restore_agent_timing(
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(70)),
+            None,
+            None,
+        );
+        assert_eq!(
+            terminal.agent_run_duration(now),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(terminal.agent_idle_duration(now), None);
+
+        terminal.state = AgentState::Idle;
+        terminal.restore_agent_timing(
+            None,
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(90)),
+            Some(Duration::from_secs(18)),
+        );
+        assert_eq!(
+            terminal.agent_run_duration(now),
+            Some(Duration::from_secs(18))
+        );
+        assert_eq!(
+            terminal.agent_idle_duration(now),
+            Some(Duration::from_secs(10))
         );
     }
 }

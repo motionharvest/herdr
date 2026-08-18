@@ -39,6 +39,17 @@ fn run_git(repo: &Path, args: &[&str]) {
     );
 }
 
+fn run_git_output(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
 fn create_committed_repo(path: &Path) {
     fs::create_dir_all(path).unwrap();
     run_git(path, &["init", "--quiet"]);
@@ -1860,6 +1871,78 @@ fn worktree_management_commands_work() {
     );
     assert_eq!(force_removed["result"]["type"], "worktree_removed");
     assert_eq!(force_removed["result"]["forced"], true);
+    assert!(!checkout.exists());
+
+    cleanup_spawned_herdr(herdr, base);
+}
+
+#[test]
+fn agent_start_worktree_can_land_and_delete_without_manual_git_commands() {
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+    let repo = base.join("repo");
+    let worktree_root = base.join("worktrees");
+    create_committed_repo(&repo);
+    let config = format!(
+        "onboarding = false\n[worktrees]\ndirectory = \"{}\"\n",
+        worktree_root.display()
+    );
+    let herdr = spawn_herdr_with_config(&config_home, &runtime_dir, &socket_path, None, &config);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+
+    let started = run_cli_json(
+        &socket_path,
+        &[
+            "agent",
+            "start",
+            "worker",
+            "--cwd",
+            repo.to_str().unwrap(),
+            "--worktree",
+            "worktree/agent-fast-path",
+            "--",
+            "/bin/sh",
+            "-c",
+            "sleep 30",
+        ],
+    );
+    assert_eq!(started["result"]["type"], "agent_started");
+    let workspace_id = started["result"]["agent"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let checkout = PathBuf::from(started["result"]["agent"]["cwd"].as_str().unwrap());
+    assert!(checkout.starts_with(&worktree_root));
+
+    fs::write(checkout.join("agent.txt"), "landed by herdr\n").unwrap();
+    run_git(&checkout, &["add", "agent.txt"]);
+    run_git(&checkout, &["commit", "--quiet", "-m", "agent work"]);
+
+    let landed = run_cli_json(&socket_path, &["worktree", "land", "worker", "--json"]);
+    assert_eq!(landed["result"]["type"], "worktrees_landed");
+    assert_eq!(
+        landed["result"]["landings"][0]["base_branch"],
+        serde_json::Value::String(run_git_output(&repo, &["branch", "--show-current"]))
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("agent.txt")).unwrap(),
+        "landed by herdr\n"
+    );
+
+    let removed = run_cli_json(
+        &socket_path,
+        &[
+            "worktree",
+            "remove",
+            "--workspace",
+            &workspace_id,
+            "--force",
+            "--json",
+        ],
+    );
+    assert_eq!(removed["result"]["type"], "worktree_removed");
     assert!(!checkout.exists());
 
     cleanup_spawned_herdr(herdr, base);

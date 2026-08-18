@@ -7,8 +7,6 @@ mod status;
 mod test_support;
 
 pub use self::{
-    discovery::{
-        derive_label_from_cwd, git_branch, git_space_metadata, in_git_repo, GitSpaceMetadata,
-    },
+    discovery::{derive_label_from_cwd, git_branch, git_space_metadata, GitSpaceMetadata},
     status::{git_status_cache_key, git_status_snapshot_for_cwd, GitStatusCacheEntry},
 };

@@ -49,6 +49,17 @@ Run `just check` before committing unless Can explicitly accepts narrower valida
 
 Unit tests live next to the code (`#[cfg(test)] mod tests`). New `AppState` or `Workspace` behavior should be testable with `AppState::test_new()` and `Workspace::test_new()` without PTYs.
 
+## Fast worktree workflow
+
+Use Herdr's managed agent path when an agent needs an isolated checkout:
+
+```bash
+herdr agent start <name> --cwd <parent-checkout> --worktree [branch] -- <agent-argv...>
+herdr worktree land <name>
+```
+
+Omitting `branch` generates one under `worktree/`. Landing rebases onto the parent checkout's current branch, runs the optional `[worktrees].verify` argv, and fast-forwards the parent. Use `herdr worktree land --all` to land every open linked worktree serially. Linked-agent context menus expose the same landing and deletion actions. Non-forced deletion protects uncommitted and unlanded work, then removes both the checkout and local branch. See `docs/next/website/src/content/docs/agents.mdx` and `cli-reference.mdx` for user-facing behavior.
+
 ## Vendored libghostty-vt
 
 `vendor/libghostty-vt.vendor.json` records the upstream source commit currently vendored.

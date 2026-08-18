@@ -390,6 +390,10 @@ impl App {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory,
+            worktree_verify_command: config.worktrees.verify.clone(),
+            worktree_auto_land: config.worktrees.auto_land,
+            request_land_worktree: None,
+            landing_worktrees: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -735,6 +739,11 @@ impl App {
 
             if let Some(ws_idx) = self.state.request_remove_linked_worktree.take() {
                 self.open_remove_linked_worktree_confirmation(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(ws_idx) = self.state.request_land_worktree.take() {
+                self.start_worktree_land(ws_idx);
                 needs_render = true;
             }
 
@@ -1165,6 +1174,8 @@ impl App {
         if !invalid_section("worktrees") {
             self.state.worktree_directory =
                 crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
+            self.state.worktree_verify_command = config.worktrees.verify.clone();
+            self.state.worktree_auto_land = config.worktrees.auto_land;
         }
 
         if !invalid_section("theme") {
@@ -2819,6 +2830,7 @@ mod tests {
                 workspace_id: None,
                 tab_id: None,
                 split: Some(crate::api::schema::SplitDirection::Right),
+                worktree: None,
                 focus: true,
                 argv: vec!["/usr/bin/true".into()],
             }),

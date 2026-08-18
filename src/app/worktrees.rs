@@ -7,7 +7,7 @@ use super::{
     state::{WorktreeCreateState, WorktreeOpenEntry, WorktreeOpenState, WorktreeRemoveState},
     App, Mode,
 };
-use crate::events::{AppEvent, WorktreeAddResult, WorktreeRemoveResult};
+use crate::events::{AppEvent, WorktreeAddResult, WorktreeLandResult, WorktreeRemoveResult};
 
 impl App {
     fn worktree_source_metadata(
@@ -558,14 +558,14 @@ impl App {
         remove.error = None;
         let force = remove.force_confirmation;
 
-        let command =
-            crate::worktree::build_worktree_remove_command(&remove.repo_root, &remove.path, force);
         tracing::info!(workspace_id = %remove.workspace_id, path = %remove.path.display(), force, "starting git worktree remove");
+        let repo_root = remove.repo_root.clone();
         let path = remove.path.clone();
         let workspace_id = remove.workspace_id.clone();
         let event_tx = self.event_tx.clone();
         std::thread::spawn(move || {
-            let result = crate::worktree::run_worktree_command(&command);
+            let result =
+                crate::worktree::remove_worktree_and_branch(&repo_root, &path, force).map(|_| ());
             let _ =
                 event_tx.blocking_send(AppEvent::WorktreeRemoveFinished(WorktreeRemoveResult {
                     workspace_id,
@@ -669,8 +669,8 @@ impl App {
                             space.is_linked_worktree && space.checkout_path == result.path
                         });
                     if still_same_linked_worktree {
-                        self.state.selected = ws_idx;
-                        self.state.close_selected_workspace();
+                        self.state.delete_workspace_and_agents(ws_idx);
+                        self.shutdown_detached_terminal_runtimes();
                     }
                 }
                 self.state.mode = if self.state.active.is_some() {
@@ -685,7 +685,7 @@ impl App {
                 tracing::warn!(workspace_id = %result.workspace_id, path = %result.path.display(), error = %message, "git worktree remove failed");
                 remove.removing = false;
                 if !remove.force_confirmation
-                    && crate::worktree::is_dirty_worktree_remove_error(&message)
+                    && crate::worktree::is_unsafe_worktree_remove_error(&message)
                 {
                     remove.force_confirmation = true;
                     remove.error = None;
@@ -696,6 +696,90 @@ impl App {
                 self.render_notify.notify_one();
             }
         }
+    }
+
+    pub(crate) fn start_worktree_land(&mut self, ws_idx: usize) {
+        let Some((workspace_id, repo_root, path)) =
+            self.state.workspaces.get(ws_idx).and_then(|workspace| {
+                workspace
+                    .worktree_space()
+                    .filter(|space| space.is_linked_worktree)
+                    .map(|space| {
+                        (
+                            workspace.id.clone(),
+                            space.repo_root.clone(),
+                            space.checkout_path.clone(),
+                        )
+                    })
+            })
+        else {
+            self.state.config_diagnostic = Some("Land requires a linked worktree.".into());
+            self.config_diagnostic_deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+            return;
+        };
+        if !self.state.landing_worktrees.insert(workspace_id.clone()) {
+            return;
+        }
+        let verify = self.state.worktree_verify_command.clone();
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::worktree::land_worktree(&repo_root, &path, &verify);
+            let _ = event_tx.blocking_send(AppEvent::WorktreeLandFinished(WorktreeLandResult {
+                workspace_id,
+                path,
+                result,
+            }));
+        });
+    }
+
+    pub(crate) fn handle_worktree_land_finished(&mut self, result: WorktreeLandResult) {
+        tracing::info!(workspace_id = %result.workspace_id, path = %result.path.display(), "worktree landing finished");
+        self.state.landing_worktrees.remove(&result.workspace_id);
+        let ws_idx = self
+            .state
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == result.workspace_id);
+        match result.result {
+            Ok(outcome) => {
+                self.state.config_diagnostic = Some(if outcome.already_landed {
+                    format!("{} is already on {}.", outcome.branch, outcome.base_branch)
+                } else {
+                    format!("Landed {} on {}.", outcome.branch, outcome.base_branch)
+                });
+                self.mark_git_status_refresh_due(std::time::Instant::now());
+            }
+            Err(message) => {
+                self.state.config_diagnostic = Some(format!("Landing failed: {message}"));
+                if !message.starts_with("parent checkout") {
+                    if let Some((ws_idx, pane_id)) = ws_idx.and_then(|ws_idx| {
+                        self.state.workspaces[ws_idx]
+                            .pane_details(&self.state.terminals)
+                            .first()
+                            .map(|detail| (ws_idx, detail.pane_id))
+                    }) {
+                        if let Some(target) = self.public_pane_id(ws_idx, pane_id) {
+                            let prompt = format!(
+                                "Herdr could not land this worktree: {message}\nResolve the worktree state, commit any required changes, and then run `herdr worktree land {}` to retry.",
+                                result.workspace_id
+                            );
+                            let _ = self.handle_agent_prompt(
+                                "internal:worktree-land".into(),
+                                crate::api::schema::AgentPromptParams {
+                                    target,
+                                    text: prompt,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        self.config_diagnostic_deadline =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(8));
+        self.render_dirty.store(true, Ordering::Release);
+        self.render_notify.notify_one();
     }
 }
 

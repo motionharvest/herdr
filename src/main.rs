@@ -191,6 +191,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 # [worktrees]
 # directory = "~/.herdr/worktrees"
+# verify = ["just", "check"]
+# auto_land = false
 
 [ui]
 # Sidebar width (auto-scaled based on workspace names, this sets the default)

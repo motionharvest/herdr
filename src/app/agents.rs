@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 
@@ -6,6 +7,116 @@ use super::{terminal_targets::TerminalTargetError, App, Mode};
 use crate::api::schema::{AgentStartParams, SplitDirection};
 
 impl App {
+    pub(super) fn create_managed_worktree(
+        &self,
+        cwd: &std::path::Path,
+        requested_branch: &str,
+    ) -> Result<(crate::workspace::GitSpaceMetadata, PathBuf, String), AgentStartError> {
+        let space =
+            crate::workspace::git_space_metadata(cwd).ok_or(AgentStartError::NotGitWorktree)?;
+        if space.is_linked_worktree {
+            return Err(AgentStartError::LinkedWorktreeSource);
+        }
+        let branch = if requested_branch.trim().is_empty() {
+            let seed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
+                .unwrap_or(0);
+            crate::worktree::generated_branch_slug(seed)
+        } else {
+            requested_branch.trim().to_string()
+        };
+        let checkout = crate::worktree::default_checkout_path(
+            &self.state.worktree_directory,
+            &space.label,
+            &branch,
+        );
+        if let Some(parent) = checkout.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| AgentStartError::WorktreeCreateFailed(err.to_string()))?;
+        }
+        let command = crate::worktree::build_worktree_add_new_branch_command(
+            &space.repo_root,
+            &checkout,
+            &branch,
+            "HEAD",
+        );
+        crate::worktree::run_worktree_command(&command)
+            .map_err(AgentStartError::WorktreeCreateFailed)?;
+        Ok((space, checkout, branch))
+    }
+
+    fn mark_managed_worktree_workspace(
+        &mut self,
+        ws_idx: usize,
+        space: &crate::workspace::GitSpaceMetadata,
+        checkout: &std::path::Path,
+    ) {
+        if let Some(parent) = self.state.workspaces.iter_mut().find(|workspace| {
+            workspace
+                .resolved_identity_cwd()
+                .as_deref()
+                .and_then(crate::workspace::git_space_metadata)
+                .is_some_and(|candidate| {
+                    candidate.key == space.key && !candidate.is_linked_worktree
+                })
+        }) {
+            parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+                key: space.key.clone(),
+                label: space.label.clone(),
+                repo_root: space.repo_root.clone(),
+                checkout_path: space.repo_root.clone(),
+                is_linked_worktree: false,
+            });
+        }
+        if let Some(workspace) = self.state.workspaces.get_mut(ws_idx) {
+            workspace.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+                key: space.key.clone(),
+                label: space.label.clone(),
+                repo_root: space.repo_root.clone(),
+                checkout_path: checkout.to_path_buf(),
+                is_linked_worktree: true,
+            });
+        }
+    }
+
+    pub(super) fn start_managed_worktree_agent(
+        &mut self,
+        cwd: &std::path::Path,
+        argv: &[String],
+        agent: crate::detect::Agent,
+    ) -> Result<(crate::layout::PaneId, PathBuf), AgentStartError> {
+        let managed = self.create_managed_worktree(cwd, "")?;
+        let (rows, cols) = self.state.estimate_pane_size();
+        let placement = self.spawn_agent_workspace(managed.1.clone(), rows, cols, argv, false);
+        let (ws_idx, _, pane_id) = match placement {
+            Ok(placement) => placement,
+            Err(err) => {
+                let _ = crate::worktree::remove_worktree_and_branch(
+                    &managed.0.repo_root,
+                    &managed.1,
+                    true,
+                );
+                return Err(err);
+            }
+        };
+        self.mark_managed_worktree_workspace(ws_idx, &managed.0, &managed.1);
+        if let Some(terminal_id) = self.state.workspaces[ws_idx].terminal_id(pane_id).cloned() {
+            if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                let _ = terminal.set_detected_state_with_screen_signals_at(
+                    Some(agent),
+                    crate::detect::AgentState::Idle,
+                    false,
+                    false,
+                    false,
+                    false,
+                    std::time::Instant::now(),
+                );
+            }
+        }
+        Ok((pane_id, managed.1))
+    }
+
     pub(super) fn collect_agent_infos(&self) -> Vec<crate::api::schema::AgentInfo> {
         self.state
             .workspaces
@@ -270,7 +381,23 @@ impl App {
         let focus = params.focus;
         let (rows, cols) = self.state.estimate_pane_size();
 
-        let (ws_idx, tab_idx, pane_id) = if let Some(tab_id) = params.tab_id {
+        let managed_worktree = if let Some(requested_branch) = params.worktree {
+            if params.workspace_id.is_some() || params.tab_id.is_some() || params.split.is_some() {
+                return Err(AgentStartError::WorktreePlacementConflict);
+            }
+            Some(self.create_managed_worktree(&cwd, &requested_branch)?)
+        } else {
+            None
+        };
+
+        let cwd = managed_worktree
+            .as_ref()
+            .map(|(_, checkout, _)| checkout.clone())
+            .unwrap_or(cwd);
+
+        let placement = if managed_worktree.is_some() {
+            self.spawn_agent_workspace(cwd.clone(), rows, cols, &argv, focus)
+        } else if let Some(tab_id) = params.tab_id {
             let (ws_idx, tab_idx) =
                 self.parse_tab_id(&tab_id)
                     .ok_or_else(|| AgentStartError::TargetNotFound {
@@ -294,7 +421,7 @@ impl App {
                 cwd,
                 &argv,
                 focus,
-            )?
+            )
         } else if let Some(workspace_id) = params.workspace_id {
             let ws_idx = self.parse_workspace_id(&workspace_id).ok_or_else(|| {
                 AgentStartError::TargetNotFound {
@@ -310,9 +437,9 @@ impl App {
                 cwd,
                 &argv,
                 focus,
-            )?
+            )
         } else if self.state.workspaces.is_empty() {
-            self.spawn_agent_workspace(cwd, rows, cols, &argv, focus)?
+            self.spawn_agent_workspace(cwd, rows, cols, &argv, focus)
         } else {
             let ws_idx = self.state.active.unwrap_or(0);
             let tab_idx = self.state.workspaces[ws_idx].active_tab;
@@ -324,8 +451,25 @@ impl App {
                 cwd,
                 &argv,
                 focus,
-            )?
+            )
         };
+        let (ws_idx, tab_idx, pane_id) = match placement {
+            Ok(placement) => placement,
+            Err(err) => {
+                if let Some((space, checkout, _)) = &managed_worktree {
+                    let _ = crate::worktree::remove_worktree_and_branch(
+                        &space.repo_root,
+                        checkout,
+                        true,
+                    );
+                }
+                return Err(err);
+            }
+        };
+
+        if let Some((space, checkout, _)) = &managed_worktree {
+            self.mark_managed_worktree_workspace(ws_idx, space, checkout);
+        }
 
         debug_assert_eq!(
             self.agent_info(ws_idx, pane_id).map(|agent| agent.tab_id),
@@ -354,6 +498,22 @@ impl App {
             AgentStartError::PlacementConflict => crate::api::schema::ErrorBody {
                 code: "agent_placement_conflict".into(),
                 message: "--tab must belong to --workspace".into(),
+            },
+            AgentStartError::WorktreePlacementConflict => crate::api::schema::ErrorBody {
+                code: "agent_worktree_placement_conflict".into(),
+                message: "--worktree creates its own workspace and cannot be combined with --workspace, --tab, or --split".into(),
+            },
+            AgentStartError::NotGitWorktree => crate::api::schema::ErrorBody {
+                code: "not_git_worktree".into(),
+                message: "--worktree requires --cwd inside a Git work tree".into(),
+            },
+            AgentStartError::LinkedWorktreeSource => crate::api::schema::ErrorBody {
+                code: "linked_worktree_source".into(),
+                message: "new agent worktrees must start from the parent checkout".into(),
+            },
+            AgentStartError::WorktreeCreateFailed(message) => crate::api::schema::ErrorBody {
+                code: "worktree_create_failed".into(),
+                message,
             },
             AgentStartError::SpawnFailed(message) => crate::api::schema::ErrorBody {
                 code: "agent_start_failed".into(),
@@ -542,6 +702,7 @@ impl App {
             return None;
         }
         let pane = self.pane_info(ws_idx, pane_id)?;
+        let now = std::time::SystemTime::now();
         Some(crate::api::schema::AgentInfo {
             terminal_id: pane.terminal_id,
             name: terminal.agent_name.clone(),
@@ -559,6 +720,12 @@ impl App {
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,
             revision: pane.revision,
+            run_seconds: terminal
+                .agent_run_duration(now)
+                .map(|duration| duration.as_secs()),
+            idle_seconds: terminal
+                .agent_idle_duration(now)
+                .map(|duration| duration.as_secs()),
         })
     }
 
@@ -583,6 +750,10 @@ pub(super) enum AgentStartError {
         target: String,
     },
     PlacementConflict,
+    WorktreePlacementConflict,
+    NotGitWorktree,
+    LinkedWorktreeSource,
+    WorktreeCreateFailed(String),
     SpawnFailed(String),
     DuplicateName {
         name: String,

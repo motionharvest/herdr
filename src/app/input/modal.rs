@@ -604,8 +604,12 @@ pub(super) fn apply_context_menu_action(
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::Agent { ws_idx, .. }, Some("Delete worktree checkout...")) => {
+        (ContextMenuKind::Agent { ws_idx, .. }, Some("Delete agent / worktree...")) => {
             state.request_remove_linked_worktree = Some(ws_idx);
+            leave_modal(state);
+        }
+        (ContextMenuKind::Agent { ws_idx, .. }, Some("Land on main")) => {
+            state.request_land_worktree = Some(ws_idx);
             leave_modal(state);
         }
         (ContextMenuKind::Agent { ws_idx, .. }, Some("Open worktree...")) => {

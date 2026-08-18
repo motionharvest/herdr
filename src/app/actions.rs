@@ -1389,6 +1389,31 @@ impl AppState {
             self.ensure_workspace_visible(self.selected);
         }
     }
+
+    /// Remove one linked-worktree space and end every terminal it owns.
+    /// Ordinary space close sets agents down; destructive worktree deletion
+    /// must not leave those processes running with a cwd that no longer exists.
+    pub(crate) fn delete_workspace_and_agents(&mut self, ws_idx: usize) {
+        if ws_idx >= self.workspaces.len() {
+            return;
+        }
+        let terminal_ids = self.terminal_ids_for_workspace(ws_idx);
+        if let Some(workspace_id) = self.workspaces.get(ws_idx).map(|ws| ws.id.clone()) {
+            crate::logging::workspace_closed(&workspace_id);
+        }
+        self.workspaces.remove(ws_idx);
+        self.remove_unattached_terminal_ids(terminal_ids);
+        if self.workspaces.is_empty() {
+            self.active = None;
+            self.selected = 0;
+            self.agent_table_scroll = 0;
+        } else {
+            self.selected = self.selected.min(self.workspaces.len() - 1);
+            self.active = Some(self.selected);
+            self.ensure_workspace_visible(self.selected);
+        }
+        self.mark_session_dirty();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2519,6 +2544,7 @@ impl AppState {
             AppEvent::AgentModelRefreshed { .. } => Vec::new(),
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
+            AppEvent::WorktreeLandFinished(_) => Vec::new(),
         }
     }
 

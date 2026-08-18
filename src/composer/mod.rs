@@ -511,12 +511,10 @@ impl Pending {
 
     /// What starts for this task: an agent process or an interactive terminal.
     ///
-    /// The folder decides whether the harness is asked for a worktree of its
-    /// own: a folder inside a repository has something to branch from, and a
-    /// folder outside one does not.
+    /// Herdr owns worktree creation, so harness-specific branching flags are
+    /// never added here.
     pub fn launch(&self) -> crate::harness::Launch {
-        self.harness
-            .launch(&self.task, crate::workspace::in_git_repo(&self.cwd))
+        self.harness.launch(&self.task, false)
     }
 }
 

@@ -37,7 +37,7 @@ use crate::terminal::TerminalRuntimeRegistry;
 /// State is not a column. The margin beside a row already says whether the
 /// agent is working, waiting on an answer, or finished, in one cell and in
 /// color, and a word repeating it would only take room from the summary.
-const HEADINGS: [&str; 4] = ["Agent Name", "Directory", "Agent", "Summary"];
+const HEADINGS: [&str; 6] = ["Agent Name", "Directory", "Agent", "Run", "Idle", "Summary"];
 const COLUMNS: usize = HEADINGS.len();
 /// The air after a column's widest cell, before the next column starts.
 const COLUMN_GAP: usize = 3;
@@ -118,6 +118,9 @@ pub(crate) struct AgentPanelEntry {
     pub completed: bool,
     pub custom_status: Option<String>,
     pub state_labels: std::collections::HashMap<String, String>,
+    pub run_duration: Option<std::time::Duration>,
+    pub idle_duration: Option<std::time::Duration>,
+    pub landing: bool,
 }
 
 /// Where an agent is working, kept in its two parts so a narrow column can give
@@ -411,8 +414,26 @@ fn cell_texts(app: &AppState, entry: &AgentPanelEntry) -> [String; COLUMNS] {
             .as_deref()
             .map(harness_display_name)
             .unwrap_or_default(),
+        entry.run_duration.map(compact_duration).unwrap_or_default(),
+        entry
+            .idle_duration
+            .map(compact_duration)
+            .unwrap_or_default(),
         agent_status_detail_text(app, &entry.terminal_id).unwrap_or_default(),
     ]
+}
+
+fn compact_duration(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 60 * 60 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 24 * 60 * 60 {
+        format!("{}h{}m", seconds / 3600, seconds % 3600 / 60)
+    } else {
+        format!("{}d{}h", seconds / 86_400, seconds % 86_400 / 3600)
+    }
 }
 
 /// The state, in the one word the rest of herdr uses for it.
@@ -481,7 +502,7 @@ fn agent_panel_entries_with_runtimes(
                 ws_idx,
                 tab_idx: detail.tab_idx,
                 pane_id: detail.pane_id,
-                terminal_id,
+                terminal_id: terminal_id.clone(),
                 name,
                 agent_label: Some(detail.agent_label),
                 model_info: detail.model_info,
@@ -491,6 +512,14 @@ fn agent_panel_entries_with_runtimes(
                 completed: detail.completed,
                 custom_status: detail.custom_status,
                 state_labels: detail.state_labels,
+                run_duration: app
+                    .terminals
+                    .get(&terminal_id)
+                    .and_then(|terminal| terminal.agent_run_duration(std::time::SystemTime::now())),
+                idle_duration: app.terminals.get(&terminal_id).and_then(|terminal| {
+                    terminal.agent_idle_duration(std::time::SystemTime::now())
+                }),
+                landing: app.landing_worktrees.contains(&ws.id),
             });
         }
     }
@@ -533,6 +562,9 @@ fn agent_panel_entries_with_runtimes(
             completed: detached.pane.completed,
             custom_status: presentation.custom_status,
             state_labels: presentation.state_labels,
+            run_duration: terminal.agent_run_duration(std::time::SystemTime::now()),
+            idle_duration: terminal.agent_idle_duration(std::time::SystemTime::now()),
+            landing: false,
         });
     }
     let rank: std::collections::HashMap<_, _> = app
@@ -617,10 +649,7 @@ fn detached_agent_location(
             || super::panes::display_path_with_home(&cwd),
             |status| super::panes::display_location_path(&cwd, status),
         );
-    Some(AgentLocation {
-        path,
-        git,
-    })
+    Some(AgentLocation { path, git })
 }
 
 /// Where every listed pane is working, computed once per frame from the live
@@ -872,20 +901,29 @@ pub(super) fn render_global_launcher(app: &AppState, frame: &mut Frame) {
 /// leaves a check behind, so an agent that finished never becomes
 /// indistinguishable from one that never ran.
 fn render_margin(app: &AppState, frame: &mut Frame, entry: &AgentPanelEntry, row: Rect) {
-    let marker = match (entry.state, entry.seen) {
-        (AgentState::Working, _) => Some((
+    let marker = if entry.landing {
+        Some((
             super::spinner_frame(app.spinner_tick),
             mute_when_host_unfocused(app, app.palette.yellow),
-        )),
-        (AgentState::Blocked, _) => Some((BLOCKED, mute_when_host_unfocused(app, app.palette.red))),
-        (AgentState::Idle, false) => {
-            Some((FINISHED, mute_when_host_unfocused(app, app.palette.green)))
+        ))
+    } else {
+        match (entry.state, entry.seen) {
+            (AgentState::Working, _) => Some((
+                super::spinner_frame(app.spinner_tick),
+                mute_when_host_unfocused(app, app.palette.yellow),
+            )),
+            (AgentState::Blocked, _) => {
+                Some((BLOCKED, mute_when_host_unfocused(app, app.palette.red)))
+            }
+            (AgentState::Idle, false) => {
+                Some((FINISHED, mute_when_host_unfocused(app, app.palette.green)))
+            }
+            (AgentState::Idle, true) if entry.completed => Some((
+                ACKNOWLEDGED,
+                mute_when_host_unfocused(app, app.palette.green),
+            )),
+            _ => None,
         }
-        (AgentState::Idle, true) if entry.completed => Some((
-            ACKNOWLEDGED,
-            mute_when_host_unfocused(app, app.palette.green),
-        )),
-        _ => None,
     };
     let Some((glyph, color)) = marker else {
         return;
@@ -1131,7 +1169,24 @@ mod tests {
             completed: false,
             custom_status: None,
             state_labels: std::collections::HashMap::new(),
+            run_duration: None,
+            idle_duration: None,
+            landing: false,
         }
+    }
+
+    #[test]
+    fn compact_duration_uses_readable_table_units() {
+        assert_eq!(compact_duration(std::time::Duration::from_secs(42)), "42s");
+        assert_eq!(compact_duration(std::time::Duration::from_secs(125)), "2m");
+        assert_eq!(
+            compact_duration(std::time::Duration::from_secs(7_380)),
+            "2h3m"
+        );
+        assert_eq!(
+            compact_duration(std::time::Duration::from_secs(93_600)),
+            "1d2h"
+        );
     }
 
     fn entries(paths: &[&str]) -> Vec<AgentPanelEntry> {

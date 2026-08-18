@@ -22,6 +22,13 @@ pub struct WorktreeRemoveResult {
     pub result: Result<(), String>,
 }
 
+#[derive(Debug)]
+pub struct WorktreeLandResult {
+    pub workspace_id: String,
+    pub path: std::path::PathBuf,
+    pub result: Result<crate::worktree::WorktreeLandOutcome, String>,
+}
+
 /// An event from a background task to the main loop.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -109,4 +116,6 @@ pub enum AppEvent {
     WorktreeAddFinished(WorktreeAddResult),
     /// Background `git worktree remove` completed.
     WorktreeRemoveFinished(WorktreeRemoveResult),
+    /// Background rebase, verification, and fast-forward completed.
+    WorktreeLandFinished(WorktreeLandResult),
 }

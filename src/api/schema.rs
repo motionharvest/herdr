@@ -40,6 +40,8 @@ pub enum Method {
     WorktreeOpen(WorktreeOpenParams),
     #[serde(rename = "worktree.remove")]
     WorktreeRemove(WorktreeRemoveParams),
+    #[serde(rename = "worktree.land")]
+    WorktreeLand(WorktreeLandParams),
     #[serde(rename = "tab.create")]
     TabCreate(TabCreateParams),
     #[serde(rename = "tab.list")]
@@ -194,6 +196,14 @@ pub struct WorktreeRemoveParams {
     pub force: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WorktreeLandParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub all: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -267,6 +277,10 @@ pub struct AgentStartParams {
     pub tab_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split: Option<SplitDirection>,
+    /// Create a Herdr-managed linked worktree before launching. An empty
+    /// string asks Herdr to generate the branch name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
     #[serde(default)]
     pub focus: bool,
     pub argv: Vec<String>,
@@ -703,6 +717,9 @@ pub enum ResponseResult {
         path: String,
         forced: bool,
     },
+    WorktreesLanded {
+        landings: Vec<WorktreeLandInfo>,
+    },
     TabInfo {
         tab: TabInfo,
     },
@@ -805,6 +822,16 @@ pub struct WorktreeInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeLandInfo {
+    pub workspace_id: String,
+    pub path: String,
+    pub branch: String,
+    pub base_branch: String,
+    pub commit: String,
+    pub already_landed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabInfo {
     pub tab_id: String,
     pub workspace_id: String,
@@ -842,6 +869,10 @@ pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
     pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

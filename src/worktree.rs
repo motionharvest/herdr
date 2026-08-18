@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const DEFAULT_WORKTREE_PREFIX: &str = "worktree";
 
@@ -15,6 +16,19 @@ pub(crate) struct ExistingWorktree {
     pub is_bare: bool,
     pub is_detached: bool,
     pub is_prunable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorktreeLandOutcome {
+    pub branch: String,
+    pub base_branch: String,
+    pub commit: String,
+    pub already_landed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorktreeRemovalOutcome {
+    pub branch: Option<String>,
 }
 
 pub(crate) fn generated_branch_slug(seed: u64) -> String {
@@ -115,6 +129,13 @@ pub(crate) fn is_dirty_worktree_remove_error(message: &str) -> bool {
         && lower.contains("use --force to delete it")
 }
 
+pub(crate) fn is_unsafe_worktree_remove_error(message: &str) -> bool {
+    is_dirty_worktree_remove_error(message)
+        || message == "worktree has uncommitted changes"
+        || message.starts_with("worktree has ")
+            && message.contains("commit(s) that have not landed on")
+}
+
 pub(crate) fn build_worktree_add_new_branch_command(
     repo_root: &Path,
     path: &Path,
@@ -154,6 +175,179 @@ pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), Stri
     } else {
         message
     })
+}
+
+fn run_git_output(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .map_err(|err| err.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        if stdout.is_empty() {
+            format!(
+                "git {} failed with status {}",
+                args.join(" "),
+                output.status
+            )
+        } else {
+            stdout
+        }
+    } else {
+        stderr
+    })
+}
+
+fn current_branch(cwd: &Path) -> Result<String, String> {
+    let branch = run_git_output(cwd, &["branch", "--show-current"])?;
+    if branch.is_empty() {
+        Err(format!("{} has a detached HEAD", cwd.display()))
+    } else {
+        Ok(branch)
+    }
+}
+
+fn ensure_clean(cwd: &Path, label: &str) -> Result<(), String> {
+    if run_git_output(cwd, &["status", "--porcelain"])?.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{label} has uncommitted changes"))
+    }
+}
+
+fn commits_ahead(cwd: &Path, base: &str, branch: &str) -> Result<usize, String> {
+    run_git_output(cwd, &["rev-list", "--count", &format!("{base}..{branch}")])?
+        .parse::<usize>()
+        .map_err(|err| format!("invalid git rev-list count: {err}"))
+}
+
+fn run_verify_command(cwd: &Path, argv: &[String]) -> Result<(), String> {
+    let Some(program) = argv.first() else {
+        return Ok(());
+    };
+    let output = std::process::Command::new(program)
+        .args(&argv[1..])
+        .current_dir(cwd)
+        .output()
+        .map_err(|err| format!("verify command failed to start: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let details = if stderr.is_empty() { stdout } else { stderr };
+    Err(if details.is_empty() {
+        format!("verify command failed with status {}", output.status)
+    } else {
+        format!("verify command failed: {details}")
+    })
+}
+
+/// Rebase a linked worktree onto its parent checkout, verify it, and move the
+/// parent branch forward without ever creating a merge commit.
+pub(crate) fn land_worktree(
+    repo_root: &Path,
+    checkout: &Path,
+    verify_argv: &[String],
+) -> Result<WorktreeLandOutcome, String> {
+    let repo_key = canonical_or_original(repo_root);
+    let lock = {
+        static REPO_LOCKS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Arc<Mutex<()>>>>> =
+            OnceLock::new();
+        let mut locks = REPO_LOCKS
+            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+            .lock()
+            .map_err(|_| "worktree landing lock is poisoned".to_string())?;
+        locks
+            .entry(repo_key)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    let _guard = lock
+        .lock()
+        .map_err(|_| "repository landing lock is poisoned".to_string())?;
+
+    ensure_clean(checkout, "worktree")?;
+    ensure_clean(repo_root, "parent checkout")?;
+    let base_branch = current_branch(repo_root)?;
+    let branch = current_branch(checkout)?;
+    if branch == base_branch {
+        return Err("worktree branch is the parent checkout branch".into());
+    }
+
+    for attempt in 0..2 {
+        let ahead = commits_ahead(checkout, &base_branch, &branch)?;
+        if ahead == 0 {
+            let commit = run_git_output(checkout, &["rev-parse", "HEAD"])?;
+            return Ok(WorktreeLandOutcome {
+                branch,
+                base_branch,
+                commit,
+                already_landed: true,
+            });
+        }
+
+        run_git_output(checkout, &["rebase", &base_branch]).map_err(|err| {
+            format!(
+                "rebase onto {base_branch} stopped in {}: {err}",
+                checkout.display()
+            )
+        })?;
+        run_verify_command(checkout, verify_argv)?;
+        ensure_clean(repo_root, "parent checkout")?;
+
+        match run_git_output(repo_root, &["merge", "--ff-only", &branch]) {
+            Ok(_) => {
+                let commit = run_git_output(repo_root, &["rev-parse", "HEAD"])?;
+                return Ok(WorktreeLandOutcome {
+                    branch,
+                    base_branch,
+                    commit,
+                    already_landed: false,
+                });
+            }
+            Err(err) if attempt == 0 => {
+                tracing::info!(error = %err, "base moved while landing; rebasing once more");
+            }
+            Err(err) => return Err(format!("could not fast-forward {base_branch}: {err}")),
+        }
+    }
+    Err("landing exhausted its retry".into())
+}
+
+/// Remove a worktree and its local branch. Without `force`, both uncommitted
+/// files and commits absent from the parent branch stop deletion.
+pub(crate) fn remove_worktree_and_branch(
+    repo_root: &Path,
+    checkout: &Path,
+    force: bool,
+) -> Result<WorktreeRemovalOutcome, String> {
+    let branch = current_branch(checkout).ok();
+    if !force {
+        ensure_clean(checkout, "worktree")?;
+        if let Some(branch) = branch.as_deref() {
+            let base = current_branch(repo_root)?;
+            let ahead = commits_ahead(repo_root, &base, branch)?;
+            if ahead > 0 {
+                return Err(format!(
+                    "worktree has {ahead} commit(s) that have not landed on {base}; use --force to delete it"
+                ));
+            }
+        }
+    }
+
+    run_worktree_command(&build_worktree_remove_command(repo_root, checkout, force))?;
+    if let Some(branch_name) = branch.as_deref() {
+        let delete_flag = if force { "-D" } else { "-d" };
+        run_git_output(repo_root, &["branch", delete_flag, branch_name])?;
+    }
+    Ok(WorktreeRemovalOutcome { branch })
 }
 
 pub(crate) fn parse_worktree_list_porcelain(output: &str) -> Vec<ExistingWorktree> {
@@ -484,6 +678,92 @@ prunable stale
         run_worktree_command(&remove).unwrap();
         assert!(!checkout.exists());
 
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn landing_rebases_and_fast_forwards_parent_checkout() {
+        let repo = create_committed_repo("worktree-land-repo");
+        let checkout = unique_temp_path("worktree-land-checkout");
+        let branch = "worktree/test-land";
+        run_worktree_command(&build_worktree_add_new_branch_command(
+            &repo, &checkout, branch, "HEAD",
+        ))
+        .unwrap();
+        std::fs::write(checkout.join("agent.txt"), "land me\n").unwrap();
+        run_git(&checkout, &["add", "agent.txt"]);
+        run_git(&checkout, &["commit", "--quiet", "-m", "agent work"]);
+
+        let outcome = land_worktree(&repo, &checkout, &[]).unwrap();
+
+        assert_eq!(outcome.branch, branch);
+        assert!(!outcome.already_landed);
+        assert_eq!(
+            run_git_output(&repo, &["rev-parse", "HEAD"]).unwrap(),
+            outcome.commit
+        );
+        assert_eq!(
+            run_git_output(&repo, &["rev-parse", "HEAD"]).unwrap(),
+            run_git_output(&checkout, &["rev-parse", "HEAD"]).unwrap()
+        );
+        remove_worktree_and_branch(&repo, &checkout, false).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn landing_stops_before_parent_on_verify_failure() {
+        let repo = create_committed_repo("worktree-verify-repo");
+        let checkout = unique_temp_path("worktree-verify-checkout");
+        let branch = "worktree/test-verify";
+        let parent_before = run_git_output(&repo, &["rev-parse", "HEAD"]).unwrap();
+        run_worktree_command(&build_worktree_add_new_branch_command(
+            &repo, &checkout, branch, "HEAD",
+        ))
+        .unwrap();
+        std::fs::write(checkout.join("agent.txt"), "do not land\n").unwrap();
+        run_git(&checkout, &["add", "agent.txt"]);
+        run_git(&checkout, &["commit", "--quiet", "-m", "agent work"]);
+
+        let error = land_worktree(
+            &repo,
+            &checkout,
+            &["git".into(), "rev-parse".into(), "missing-ref".into()],
+        )
+        .unwrap_err();
+
+        assert!(error.starts_with("verify command failed:"));
+        assert_eq!(
+            run_git_output(&repo, &["rev-parse", "HEAD"]).unwrap(),
+            parent_before
+        );
+        remove_worktree_and_branch(&repo, &checkout, true).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn safe_delete_refuses_unlanded_commits_and_force_deletes_branch() {
+        let repo = create_committed_repo("worktree-delete-repo");
+        let checkout = unique_temp_path("worktree-delete-checkout");
+        let branch = "worktree/test-delete";
+        run_worktree_command(&build_worktree_add_new_branch_command(
+            &repo, &checkout, branch, "HEAD",
+        ))
+        .unwrap();
+        std::fs::write(checkout.join("agent.txt"), "unlanded\n").unwrap();
+        run_git(&checkout, &["add", "agent.txt"]);
+        run_git(&checkout, &["commit", "--quiet", "-m", "agent work"]);
+
+        let error = remove_worktree_and_branch(&repo, &checkout, false).unwrap_err();
+        assert!(error.contains("1 commit(s) that have not landed"));
+        assert!(checkout.exists());
+
+        remove_worktree_and_branch(&repo, &checkout, true).unwrap();
+        assert!(!checkout.exists());
+        assert!(run_git_output(
+            &repo,
+            &["show-ref", "--verify", &format!("refs/heads/{branch}")]
+        )
+        .is_err());
         let _ = std::fs::remove_dir_all(repo);
     }
 }

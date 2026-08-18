@@ -115,6 +115,20 @@ Spawn an agent into Herdr from a script:
 herdr agent start reviewer --cwd ~/project --split right -- pi
 ```
 
+Give any harness its own Herdr-managed worktree without adding a harness-specific worktree flag:
+
+```bash
+herdr agent start reviewer --cwd ~/project --worktree -- codex
+```
+
+The agent name is also the quickest landing target:
+
+```bash
+herdr worktree land reviewer
+```
+
+The agent table shows the current run duration while the agent is working. When it becomes idle, that duration freezes and idle age starts counting. In a linked worktree, the row's context menu offers `Land on main` and `Delete agent / worktree...`; deletion warns before discarding uncommitted or unlanded work. Composer-launched editing agents use the same managed-worktree path automatically when their chosen directory is a repository.
+
 You can place that agent in a specific workspace or tab:
 
 ```bash

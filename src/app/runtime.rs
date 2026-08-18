@@ -224,7 +224,7 @@ impl App {
             .is_some_and(|deadline| now >= deadline)
         {
             self.state.spinner_tick = self.state.spinner_tick.wrapping_add(1);
-            self.next_animation_tick = Some(now + ANIMATION_INTERVAL);
+            self.next_animation_tick = None;
             changed = true;
         }
 
@@ -315,9 +315,18 @@ impl App {
     fn sync_animation_timer_with_interval(&mut self, now: Instant, interval: Duration) {
         if self.agent_panel_has_animation() {
             self.next_animation_tick.get_or_insert(now + interval);
+        } else if self.agent_panel_has_timing() {
+            self.next_animation_tick
+                .get_or_insert(now + Duration::from_secs(1));
         } else {
             self.next_animation_tick = None;
         }
+    }
+
+    fn agent_panel_has_timing(&self) -> bool {
+        self.state.terminals.values().any(|terminal| {
+            terminal.agent_run_started_at.is_some() || terminal.agent_last_finished_at.is_some()
+        })
     }
 
     /// Whether anything in the table is animating, which is what keeps the

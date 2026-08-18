@@ -57,6 +57,47 @@ pub struct DetachedAgentSnapshot {
     pub completed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTimingSnapshot {
+    pub run_started_unix_ms: Option<u64>,
+    pub last_finished_unix_ms: Option<u64>,
+    pub last_run_ms: Option<u64>,
+}
+
+impl AgentTimingSnapshot {
+    fn from_terminal(terminal: &crate::terminal::TerminalState) -> Option<Self> {
+        let snapshot = Self {
+            run_started_unix_ms: terminal.agent_run_started_at.and_then(system_time_millis),
+            last_finished_unix_ms: terminal.agent_last_finished_at.and_then(system_time_millis),
+            last_run_ms: terminal
+                .agent_last_run_duration
+                .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64),
+        };
+        (snapshot.run_started_unix_ms.is_some()
+            || snapshot.last_finished_unix_ms.is_some()
+            || snapshot.last_run_ms.is_some())
+        .then_some(snapshot)
+    }
+
+    pub(super) fn restore_into(&self, terminal: &mut crate::terminal::TerminalState) {
+        terminal.restore_agent_timing(
+            self.run_started_unix_ms.map(system_time_from_millis),
+            self.last_finished_unix_ms.map(system_time_from_millis),
+            self.last_run_ms.map(std::time::Duration::from_millis),
+        );
+    }
+}
+
+fn system_time_millis(time: std::time::SystemTime) -> Option<u64> {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+fn system_time_from_millis(millis: u64) -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis)
+}
+
 fn default_true() -> bool {
     true
 }
@@ -154,6 +195,8 @@ pub struct PaneSnapshot {
     /// Whether the agent had finished a run since it last worked.
     #[serde(default)]
     pub completed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_timing: Option<AgentTimingSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -424,6 +467,7 @@ fn capture_pane(
         launch_argv: terminal.and_then(|terminal| terminal.launch_argv.clone()),
         seen: pane.seen,
         completed: pane.completed,
+        agent_timing: terminal.and_then(AgentTimingSnapshot::from_terminal),
     }
 }
 
@@ -665,6 +709,7 @@ mod tests {
                 launch_argv: None,
                 seen: true,
                 completed: false,
+                agent_timing: None,
             },
         );
         panes.insert(
@@ -678,6 +723,7 @@ mod tests {
                 launch_argv: None,
                 seen: true,
                 completed: false,
+                agent_timing: None,
             },
         );
 
@@ -1151,6 +1197,7 @@ mod tests {
                 launch_argv: None,
                 seen: true,
                 completed: false,
+                agent_timing: None,
             },
         );
         panes.insert(
@@ -1166,6 +1213,7 @@ mod tests {
                 launch_argv: None,
                 seen: true,
                 completed: false,
+                agent_timing: None,
             },
         );
 

@@ -3,7 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorktreeCreateParams, WorktreeInfo,
-    WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams, WorktreeSourceInfo,
+    WorktreeLandInfo, WorktreeLandParams, WorktreeListParams, WorktreeOpenParams,
+    WorktreeRemoveParams, WorktreeSourceInfo,
 };
 use crate::app::App;
 
@@ -44,6 +45,86 @@ struct WorktreeSource {
 }
 
 impl App {
+    pub(super) fn handle_worktree_land(
+        &mut self,
+        id: String,
+        params: WorktreeLandParams,
+    ) -> String {
+        let workspace_indices = if params.all {
+            self.state
+                .workspaces
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, workspace)| {
+                    workspace
+                        .worktree_space()
+                        .is_some_and(|space| space.is_linked_worktree)
+                        .then_some(idx)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let ws_idx = match params.target.as_deref().filter(|target| !target.is_empty()) {
+                Some(target) => self.parse_workspace_id(target).or_else(|| {
+                    self.resolve_terminal_target(target)
+                        .ok()
+                        .map(|resolved| resolved.ws_idx)
+                }),
+                None => self.state.active.or_else(|| {
+                    self.state
+                        .workspaces
+                        .get(self.state.selected)
+                        .map(|_| self.state.selected)
+                }),
+            };
+            let Some(ws_idx) = ws_idx else {
+                return encode_error(id, "worktree_not_found", "worktree target not found");
+            };
+            vec![ws_idx]
+        };
+
+        if workspace_indices.is_empty() {
+            return encode_error(id, "worktree_not_found", "no linked worktrees are open");
+        }
+
+        let mut landings = Vec::new();
+        for ws_idx in workspace_indices {
+            let Some(space) = self
+                .state
+                .workspaces
+                .get(ws_idx)
+                .and_then(|workspace| workspace.worktree_space().cloned())
+                .filter(|space| space.is_linked_worktree)
+            else {
+                return encode_error(
+                    id,
+                    "not_linked_worktree",
+                    format!(
+                        "workspace {} is not a linked worktree",
+                        self.public_workspace_id(ws_idx)
+                    ),
+                );
+            };
+            let outcome = match crate::worktree::land_worktree(
+                &space.repo_root,
+                &space.checkout_path,
+                &self.state.worktree_verify_command,
+            ) {
+                Ok(outcome) => outcome,
+                Err(err) => return encode_error(id, "worktree_land_failed", err),
+            };
+            landings.push(WorktreeLandInfo {
+                workspace_id: self.public_workspace_id(ws_idx),
+                path: space.checkout_path.display().to_string(),
+                branch: outcome.branch,
+                base_branch: outcome.base_branch,
+                commit: outcome.commit,
+                already_landed: outcome.already_landed,
+            });
+        }
+        self.mark_git_status_refresh_due(std::time::Instant::now());
+        encode_success(id, ResponseResult::WorktreesLanded { landings })
+    }
+
     pub(super) fn handle_worktree_list(
         &mut self,
         id: String,
@@ -292,13 +373,12 @@ impl App {
             );
         }
 
-        let command = crate::worktree::build_worktree_remove_command(
+        if let Err(err) = crate::worktree::remove_worktree_and_branch(
             &space.repo_root,
             &space.checkout_path,
             params.force,
-        );
-        if let Err(err) = crate::worktree::run_worktree_command(&command) {
-            let code = if !params.force && crate::worktree::is_dirty_worktree_remove_error(&err) {
+        ) {
+            let code = if !params.force && crate::worktree::is_unsafe_worktree_remove_error(&err) {
                 "dirty_worktree_requires_force"
             } else {
                 "worktree_remove_failed"
@@ -314,8 +394,7 @@ impl App {
                 current.is_linked_worktree && current.checkout_path == space.checkout_path
             });
         if still_same_linked_worktree {
-            self.state.selected = ws_idx;
-            self.state.close_selected_workspace();
+            self.state.delete_workspace_and_agents(ws_idx);
             self.shutdown_detached_terminal_runtimes();
             self.emit_event(EventEnvelope {
                 event: EventKind::WorkspaceClosed,

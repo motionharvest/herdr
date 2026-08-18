@@ -321,6 +321,10 @@ pub struct IndexedKeysConfig {
 pub struct WorktreesConfig {
     /// Root directory under which Herdr creates <repo>/<branch-slug> checkouts.
     pub directory: String,
+    /// Program and arguments run in a worktree after rebase and before landing.
+    pub verify: Vec<String>,
+    /// Land committed work automatically when an agent becomes idle.
+    pub auto_land: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -507,6 +511,8 @@ impl Default for WorktreesConfig {
     fn default() -> Self {
         Self {
             directory: "~/.herdr/worktrees".into(),
+            verify: Vec::new(),
+            auto_land: false,
         }
     }
 }

@@ -1263,7 +1263,7 @@ impl ContextMenuState {
                         items.extend(["New worktree", "Open worktree..."]);
                     }
                     SpaceMenuKind::LinkedWorktree => {
-                        items.push("Delete worktree checkout...");
+                        items.extend(["Land on main", "Delete agent / worktree..."]);
                     }
                 }
                 items
@@ -1404,6 +1404,10 @@ pub struct AppState {
     pub worktree_open: Option<WorktreeOpenState>,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
+    pub worktree_verify_command: Vec<String>,
+    pub worktree_auto_land: bool,
+    pub request_land_worktree: Option<usize>,
+    pub landing_worktrees: std::collections::HashSet<String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1778,6 +1782,10 @@ impl AppState {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
+            worktree_verify_command: Vec::new(),
+            worktree_auto_land: false,
+            request_land_worktree: None,
+            landing_worktrees: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -1955,6 +1963,31 @@ mod tests {
             KeyCode::Char('b'),
             KeyModifiers::SHIFT,
         ));
+    }
+
+    #[test]
+    fn linked_agent_menu_offers_land_and_destructive_delete() {
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::Agent {
+                ws_idx: 0,
+                pane_id: crate::layout::PaneId::alloc(),
+                can_promote: false,
+                space: SpaceMenuKind::LinkedWorktree,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+
+        assert_eq!(
+            menu.items(),
+            vec![
+                "Rename agent",
+                "Close agent",
+                "Land on main",
+                "Delete agent / worktree...",
+            ]
+        );
     }
     #[test]
     fn pane_context_menu_offers_close_agent_only_for_agent_panes() {

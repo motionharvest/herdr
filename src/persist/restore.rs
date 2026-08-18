@@ -633,6 +633,7 @@ fn restore_pane(
     let saved_label = saved_pane.and_then(|p| p.label.clone());
     let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
     let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
+    let saved_agent_timing = saved_pane.and_then(|p| p.agent_timing.as_ref());
     let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
     let startup = {
         let mut agent_restore = AgentRestoreState {
@@ -672,6 +673,9 @@ fn restore_pane(
         }
         if let Some(agent_name) = saved_agent_name {
             terminal.set_agent_name(agent_name);
+        }
+        if let Some(timing) = saved_agent_timing {
+            timing.restore_into(&mut terminal);
         }
         if let Some(agent) = initial_restore_agent {
             let _ = terminal.set_detected_state_with_screen_signals_at(
@@ -771,6 +775,9 @@ fn restore_pane(
             }
             if let Some(agent_name) = saved_agent_name {
                 terminal.set_agent_name(agent_name);
+            }
+            if let Some(timing) = saved_agent_timing {
+                timing.restore_into(&mut terminal);
             }
             if let Some(agent) = initial_restore_agent {
                 let _ = terminal.set_detected_state_with_screen_signals_at(
@@ -1283,6 +1290,7 @@ mod tests {
                     launch_argv: None,
                     seen: true,
                     completed: false,
+                    agent_timing: None,
                 },
                 seen: false,
                 completed: true,
@@ -1343,6 +1351,7 @@ mod tests {
                     launch_argv: Some(launch_argv.clone()),
                     seen: true,
                     completed: false,
+                    agent_timing: None,
                 },
                 seen: true,
                 completed: false,
@@ -1404,6 +1413,7 @@ mod tests {
                             launch_argv: Some(launch_argv.clone()),
                             seen: true,
                             completed: false,
+                            agent_timing: None,
                         },
                     )]),
                     zoomed: false,
@@ -1468,6 +1478,7 @@ mod tests {
                 launch_argv: None,
                 seen,
                 completed,
+                agent_timing: None,
             }
         };
         let snapshot = SessionSnapshot {
@@ -1594,6 +1605,7 @@ mod tests {
                             launch_argv: None,
                             seen: true,
                             completed: false,
+                            agent_timing: None,
                         },
                     )]),
                     zoomed: false,
@@ -1672,6 +1684,7 @@ mod tests {
                             launch_argv: None,
                             seen: true,
                             completed: false,
+                            agent_timing: None,
                         },
                     )]),
                     zoomed: false,
@@ -1837,6 +1850,7 @@ mod tests {
                 launch_argv: None,
                 seen: true,
                 completed: false,
+                agent_timing: None,
             },
         );
         let history = SessionHistorySnapshot {
@@ -1894,6 +1908,7 @@ mod tests {
             launch_argv: None,
             seen: true,
             completed: false,
+            agent_timing: None,
         };
         SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,

@@ -216,12 +216,6 @@ fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
     (!stdout.is_empty()).then(|| stdout.to_string())
 }
 
-/// Whether a folder sits inside a git repository, which is what a harness flag
-/// that branches from one needs to be true before it is passed.
-pub fn in_git_repo(cwd: &Path) -> bool {
-    git_repo_root(cwd).is_some()
-}
-
 pub(super) fn git_repo_root(start: &Path) -> Option<PathBuf> {
     let mut current = if start.is_dir() {
         start.to_path_buf()

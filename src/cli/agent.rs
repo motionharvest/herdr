@@ -34,12 +34,12 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
 
 fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let Some(name) = args.first() else {
-        eprintln!("usage: herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
+        eprintln!("usage: herdr agent start <name> [--cwd PATH] [--worktree [BRANCH]] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
         return Ok(2);
     };
 
     let Some(separator) = args.iter().position(|arg| arg == "--") else {
-        eprintln!("usage: herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
+        eprintln!("usage: herdr agent start <name> [--cwd PATH] [--worktree [BRANCH]] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
         return Ok(2);
     };
     if separator == args.len() - 1 {
@@ -51,6 +51,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let mut workspace_id = None;
     let mut tab_id = None;
     let mut split = None;
+    let mut worktree = None;
     let mut focus = false;
 
     let mut index = 1;
@@ -88,6 +89,13 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                 split = Some(super::parse_split_direction(value)?);
                 index += 2;
             }
+            "--worktree" => {
+                let branch = args
+                    .get(index + 1)
+                    .filter(|value| index + 1 < separator && !value.starts_with('-'));
+                worktree = Some(branch.cloned().unwrap_or_default());
+                index += if branch.is_some() { 2 } else { 1 };
+            }
             "--focus" => {
                 focus = true;
                 index += 1;
@@ -103,6 +111,10 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         }
     }
 
+    if worktree.is_some() && cwd.is_none() {
+        cwd = Some(std::env::current_dir()?.display().to_string());
+    }
+
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:start".into(),
         method: Method::AgentStart(AgentStartParams {
@@ -111,6 +123,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
             workspace_id,
             tab_id,
             split,
+            worktree,
             focus,
             argv: args[separator + 1..].to_vec(),
         }),
@@ -523,7 +536,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent focus <target>");
     eprintln!("  herdr agent wait <target> --status <idle|working|blocked|unknown> [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
-    eprintln!("  herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
+    eprintln!("  herdr agent start <name> [--cwd PATH] [--worktree [BRANCH]] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
     eprintln!("  targets accept terminal ids, pane names, unique agent names, detected/reported agent labels, and legacy pane ids");
     eprintln!(
         "  agent send writes literal text without submitting; agent prompt pastes the text and presses Enter"

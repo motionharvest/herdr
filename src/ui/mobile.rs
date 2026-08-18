@@ -864,6 +864,9 @@ mod tests {
             completed: false,
             custom_status: None,
             state_labels: std::collections::HashMap::new(),
+            run_duration: None,
+            idle_duration: None,
+            landing: false,
         }
     }
 

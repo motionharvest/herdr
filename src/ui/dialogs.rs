@@ -347,7 +347,7 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            " delete worktree checkout?",
+            " delete agent / worktree?",
             Style::default()
                 .fg(app.palette.red)
                 .add_modifier(Modifier::BOLD),
@@ -355,7 +355,7 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
         rows[0],
     );
     frame.render_widget(
-        Paragraph::new(" This removes the checkout folder:")
+        Paragraph::new(" This removes the checkout folder and local branch:")
             .style(Style::default().fg(app.palette.overlay0)),
         rows[1],
     );
@@ -365,13 +365,13 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
         rows[2],
     );
     frame.render_widget(
-        Paragraph::new(" The branch is not deleted. The Herdr workspace will close.")
+        Paragraph::new(" The agent space will close. Land work first if you need it.")
             .style(Style::default().fg(app.palette.overlay0)),
         rows[3],
     );
     if remove.force_confirmation {
         frame.render_widget(
-            Paragraph::new(" Dirty or untracked files will be permanently deleted.")
+            Paragraph::new(" Uncommitted files or unlanded commits will be permanently deleted.")
                 .style(Style::default().fg(app.palette.red)),
             rows[4],
         );

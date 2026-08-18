@@ -1,6 +1,6 @@
 use crate::api::schema::{
-    Method, Request, WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams,
-    WorktreeRemoveParams,
+    Method, Request, WorktreeCreateParams, WorktreeLandParams, WorktreeListParams,
+    WorktreeOpenParams, WorktreeRemoveParams,
 };
 
 pub(super) fn run_worktree_command(args: &[String]) -> std::io::Result<i32> {
@@ -14,6 +14,7 @@ pub(super) fn run_worktree_command(args: &[String]) -> std::io::Result<i32> {
         "create" => worktree_create(&args[1..]),
         "open" => worktree_open(&args[1..]),
         "remove" => worktree_remove(&args[1..]),
+        "land" => worktree_land(&args[1..]),
         "help" | "--help" | "-h" => {
             print_worktree_help();
             Ok(0)
@@ -23,6 +24,34 @@ pub(super) fn run_worktree_command(args: &[String]) -> std::io::Result<i32> {
             Ok(2)
         }
     }
+}
+
+fn worktree_land(args: &[String]) -> std::io::Result<i32> {
+    let mut target = None;
+    let mut all = false;
+    for arg in args {
+        match arg.as_str() {
+            "--all" => all = true,
+            "--json" => {}
+            option if option.starts_with('-') => {
+                eprintln!("unknown option: {option}");
+                return Ok(2);
+            }
+            value if target.is_none() => target = Some(value.to_string()),
+            _ => {
+                eprintln!("usage: herdr worktree land [target | --all] [--json]");
+                return Ok(2);
+            }
+        }
+    }
+    if all && target.is_some() {
+        eprintln!("usage: herdr worktree land [target | --all] [--json]");
+        return Ok(2);
+    }
+    super::print_response(&super::send_request(&Request {
+        id: "cli:worktree:land".into(),
+        method: Method::WorktreeLand(WorktreeLandParams { target, all }),
+    })?)
 }
 
 fn worktree_list(args: &[String]) -> std::io::Result<i32> {
@@ -305,6 +334,7 @@ fn print_worktree_help() {
         "  herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
     );
     eprintln!("  herdr worktree remove --workspace ID [--force] [--json]");
+    eprintln!("  herdr worktree land [target | --all] [--json]");
 }
 
 fn normalize_path_arg(value: &str) -> std::io::Result<String> {

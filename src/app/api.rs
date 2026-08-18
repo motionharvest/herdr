@@ -92,6 +92,11 @@ impl App {
             return;
         }
 
+        if let AppEvent::WorktreeLandFinished(result) = ev {
+            self.handle_worktree_land_finished(result);
+            return;
+        }
+
         if let AppEvent::PaneDied { pane_id } = &ev {
             if self.runtime_exit_action(*pane_id) == RuntimeExitAction::RespawnShell
                 && self.respawn_shell_for_launch_pane(*pane_id)
@@ -148,6 +153,18 @@ impl App {
         for update in &pane_updates {
             self.refresh_new_herdr_toast_context_for_update(update, &previous_toast);
             self.emit_pane_state_update(update);
+            if self.state.worktree_auto_land
+                && update.previous_state != crate::detect::AgentState::Idle
+                && update.state == crate::detect::AgentState::Idle
+                && self
+                    .state
+                    .workspaces
+                    .get(update.ws_idx)
+                    .and_then(|workspace| workspace.worktree_space())
+                    .is_some_and(|space| space.is_linked_worktree)
+            {
+                self.state.request_land_worktree = Some(update.ws_idx);
+            }
         }
         self.sync_agent_metadata_deadline();
         if let Some((pane_id, agent)) = released_agent {
@@ -570,6 +587,7 @@ impl App {
             Method::WorktreeRemove(params) => {
                 return self.handle_worktree_remove(request.id, params);
             }
+            Method::WorktreeLand(params) => return self.handle_worktree_land(request.id, params),
             Method::TabList(params) => return self.handle_tab_list(request.id, params),
             Method::TabGet(target) => return self.handle_tab_get(request.id, target),
             Method::TabCreate(params) => return self.handle_tab_create(request.id, params),
