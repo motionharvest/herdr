@@ -2480,6 +2480,31 @@ mod tests {
     }
 
     #[test]
+    fn grok_still_running_command_is_visible_working() {
+        let screen =
+            "     Worked for 8m28s                                          stop  [hooks: 2]\n\
+             ◎ 1 command still running\n\
+           Shift+Tab:mode  │  Ctrl+x:shortcuts";
+        let detection = detect_agent(Some(Agent::Grok), screen);
+        assert_eq!(detection.state, AgentState::Working);
+        assert!(detection.visible_working);
+        assert!(!detection.ambiguous);
+    }
+
+    #[test]
+    fn grok_waiting_for_response_is_visible_working() {
+        let screen = "    Waiting for response… 2.1s\n\
+           ╭────╮\n\
+           │ ❯  │\n\
+           ╰─ Grok 4.6 ─╯\n\
+           Shift+Tab:mode  │  Ctrl+x:shortcuts";
+        let detection = detect_agent(Some(Agent::Grok), screen);
+        assert_eq!(detection.state, AgentState::Working);
+        assert!(detection.visible_working);
+        assert!(!detection.ambiguous);
+    }
+
+    #[test]
     fn grok_frame_without_chrome_is_ambiguous() {
         let detection = detect_agent(Some(Agent::Grok), "I'll check the other agents next.");
         assert_eq!(detection.state, AgentState::Idle);
