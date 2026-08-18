@@ -13,7 +13,10 @@
 //! never names a session, and its hooks carry only the session id, so a Codex
 //! pane had nothing to show. The rollout does record what the user last asked
 //! for, so that prompt becomes the title instead: the summary column then says
-//! what a Codex agent is working on rather than staying blank.
+//! what a Codex agent is working on rather than staying blank. Grok does name
+//! a session, but only after the first prompt, and its hook reports the id at
+//! SessionStart, before that name exists. The generated title is written to
+//! the session's `summary.json`, so that file is what fills the column.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -89,7 +92,7 @@ pub struct AgentModelRefreshResult {
 
 /// Whether model info can be probed for this agent's sessions.
 pub fn probe_supported(agent: Agent) -> bool {
-    matches!(agent, Agent::Claude | Agent::Codex)
+    matches!(agent, Agent::Claude | Agent::Codex | Agent::Grok)
 }
 
 pub(crate) fn refresh_agent_model_infos(
@@ -122,6 +125,7 @@ fn refresh_job(job: AgentModelRefreshJob) -> Option<AgentModelRefreshResult> {
     let info = match job.agent {
         Agent::Claude => parse_claude_transcript_tail(&tail),
         Agent::Codex => parse_codex_rollout_tail(&tail),
+        Agent::Grok => parse_grok_summary_tail(&tail),
         _ => None,
     }
     // The tail window can land past the last model-bearing entry (e.g. a huge
@@ -137,6 +141,7 @@ fn refresh_job(job: AgentModelRefreshJob) -> Option<AgentModelRefreshResult> {
                 .map(|cached| cached.title_scanned_len),
             parse_codex_rollout_title,
         ),
+        Agent::Grok => (parse_grok_summary_title(&tail), 0),
         _ => (None, 0),
     };
     let title = title.or_else(|| job.cached.and_then(|cached| cached.title));
@@ -158,6 +163,7 @@ fn resolve_session_file(agent: Agent, session_id: &str) -> Option<PathBuf> {
     match agent {
         Agent::Claude => claude_session_file(&crate::integration::claude_dir().ok()?, session_id),
         Agent::Codex => codex_session_file(&crate::integration::codex_dir().ok()?, session_id),
+        Agent::Grok => grok_session_file(&crate::integration::grok_dir().ok()?, session_id),
         _ => None,
     }
 }
@@ -190,6 +196,17 @@ fn claude_session_file(claude_dir: &Path, session_id: &str) -> Option<PathBuf> {
 fn codex_session_file(codex_home: &Path, session_id: &str) -> Option<PathBuf> {
     let suffix = format!("-{session_id}.jsonl");
     find_file_with_suffix(&codex_home.join("sessions"), &suffix, 4)
+}
+
+/// Grok sessions live at `<home>/sessions/<encoded-cwd>/<session-id>/summary.json`.
+fn grok_session_file(grok_home: &Path, session_id: &str) -> Option<PathBuf> {
+    for entry in fs::read_dir(grok_home.join("sessions")).ok()?.flatten() {
+        let candidate = entry.path().join(session_id).join("summary.json");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn find_file_with_suffix(dir: &Path, suffix: &str, depth: u8) -> Option<PathBuf> {
@@ -371,6 +388,39 @@ fn parse_codex_rollout_title(tail: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The title Grok generated for the session, taken from `summary.json`.
+///
+/// Grok writes that name after the first prompt and regenerates it a couple of
+/// times before freezing it. A missing or blank `generated_title` is a session
+/// that has not been named yet, so the column stays empty until one appears.
+fn parse_grok_summary_title(content: &str) -> Option<String> {
+    let entry = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    session_title_from_prompt(
+        entry
+            .get("generated_title")
+            .and_then(|title| title.as_str())?,
+    )
+}
+
+/// `current_model_id` plus `reasoning_effort` from the same summary file.
+fn parse_grok_summary_tail(content: &str) -> Option<AgentModelInfo> {
+    let entry = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    let model = entry
+        .get("current_model_id")
+        .and_then(|model| model.as_str())?;
+    if model.is_empty() {
+        return None;
+    }
+    Some(AgentModelInfo {
+        model: model.to_string(),
+        effort: entry
+            .get("reasoning_effort")
+            .and_then(|effort| effort.as_str())
+            .filter(|effort| !effort.is_empty())
+            .map(str::to_string),
+    })
 }
 
 /// One line, cut to length — or nothing at all when the text is the harness
@@ -585,8 +635,8 @@ mod tests {
     #[test]
     fn claude_sessions_report_their_own_title_so_the_probe_reads_none() {
         let tail = r#"{"type":"user","message":{"role":"user","content":"fix the tests"}}"#;
-        // Only the Codex branch of `refresh_job` looks for a title; a Claude
-        // transcript is read for its model alone.
+        // A Claude transcript is read for its model alone. Codex and Grok are
+        // the branches of `refresh_job` that look for a title.
         assert_eq!(parse_codex_rollout_title(tail), None);
     }
 
@@ -671,9 +721,110 @@ mod tests {
         assert!(valid_probe_session_id(
             "f9b54ddd-8bf9-47d9-81d7-a3b37ee93a93"
         ));
+        assert!(valid_probe_session_id(
+            "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c"
+        ));
         assert!(!valid_probe_session_id("../../etc/passwd"));
         assert!(!valid_probe_session_id("a/b"));
         assert!(!valid_probe_session_id(""));
+    }
+
+    #[test]
+    fn grok_sessions_are_probe_supported() {
+        assert!(probe_supported(Agent::Grok));
+    }
+
+    #[test]
+    fn grok_refresh_reads_generated_title_and_model_from_summary() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-agent-model-grok-refresh-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let summary = root.join("summary.json");
+        fs::write(
+            &summary,
+            r#"{
+              "generated_title": "Grok agents missing session summary status",
+              "session_summary": "Grok agents missing session summary status",
+              "current_model_id": "grok-4.6",
+              "reasoning_effort": "high"
+            }"#,
+        )
+        .unwrap();
+        let modified = fs::metadata(&summary).unwrap().modified().unwrap();
+
+        let refreshed = refresh_job(AgentModelRefreshJob {
+            terminal_id: TerminalId::alloc(),
+            agent: Agent::Grok,
+            session_id: "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c".into(),
+            cached: Some(AgentModelCacheEntry {
+                session_id: "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c".into(),
+                session_file: summary,
+                modified: modified - std::time::Duration::from_secs(60),
+                info: None,
+                title: None,
+                title_scanned_len: 0,
+            }),
+        })
+        .unwrap();
+
+        assert_eq!(
+            refreshed.entry.title.as_deref(),
+            Some("Grok agents missing session summary status")
+        );
+        assert_eq!(
+            refreshed.entry.info,
+            Some(AgentModelInfo {
+                model: "grok-4.6".into(),
+                effort: Some("high".into()),
+            })
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn grok_title_is_absent_until_the_session_is_named() {
+        assert_eq!(
+            parse_grok_summary_title(r#"{"current_model_id":"grok-4.6"}"#),
+            None
+        );
+        assert_eq!(
+            parse_grok_summary_title(r#"{"generated_title":"","session_summary":""}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn grok_session_file_resolves_cwd_grouped_summaries() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-agent-model-grok-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let session = root
+            .join("sessions")
+            .join("%2Fhome%2Faaron%2Flab%2Fherdr")
+            .join("01a016ad-b38c-7c12-9e2b-32bd13e0cb7c");
+        fs::create_dir_all(&session).unwrap();
+        let summary = session.join("summary.json");
+        fs::write(&summary, "{}").unwrap();
+
+        assert_eq!(
+            grok_session_file(&root, "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c"),
+            Some(summary)
+        );
+        assert_eq!(grok_session_file(&root, "missing"), None);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

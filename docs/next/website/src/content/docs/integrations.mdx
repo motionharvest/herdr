@@ -165,7 +165,7 @@ Install the Grok hook:
 herdr integration install grok
 ```
 
-The hook reports session identity through the same local socket API used by other integrations. Grok state comes from Herdr's screen detection.
+The hook reports session identity through the same local socket API used by other integrations. Grok state comes from Herdr's screen detection. After the hook reports a session id, Herdr reads that session's `summary.json` for the generated title and the current model, which is what fills the agent table's summary and model columns.
 
 Herdr uses `~/.grok` by default, or `GROK_HOME` when set. The Grok home directory must already exist. Install writes `hooks/herdr-agent-state.sh` and `hooks/herdr-agent-state.json`. Uninstall removes those two files and leaves any other hooks in that directory.
 

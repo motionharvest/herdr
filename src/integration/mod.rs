@@ -2679,7 +2679,7 @@ fn qodercli_dir() -> io::Result<PathBuf> {
     config_dir_from_env_or_home(QODERCLI_CONFIG_DIR_ENV_VAR, &[".qoder"])
 }
 
-fn grok_dir() -> io::Result<PathBuf> {
+pub(crate) fn grok_dir() -> io::Result<PathBuf> {
     config_dir_from_env_or_home(GROK_HOME_ENV_VAR, &[".grok"])
 }
 

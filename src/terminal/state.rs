@@ -1974,6 +1974,22 @@ mod tests {
         );
 
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:grok".into(),
+            agent: "grok".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id(
+                "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c",
+            )
+            .unwrap(),
+        });
+        assert_eq!(
+            terminal.model_probe_session(),
+            Some((
+                Agent::Grok,
+                "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c".to_string()
+            ))
+        );
+
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "herdr:pi".into(),
             agent: "pi".into(),
             session_ref: crate::agent_resume::AgentSessionRef::path("/tmp/pi.jsonl").unwrap(),
