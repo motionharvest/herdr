@@ -2,9 +2,10 @@
 //!
 //! One row per agent, every agent herdr is running, whichever space it belongs
 //! to. The row is what the sidebar's card used to be, written across instead of
-//! down: what the agent is called, where it is working, which harness is behind
-//! it, and what it says it is doing. How it is getting on is the margin beside
-//! the row rather than a column of its own.
+//! down: what the agent is called, what it says it is doing, the folder it is
+//! in, which harness is behind it, how long it has been running or idle, and
+//! the branch it is on. How it is getting on is the margin beside the row
+//! rather than a column of its own.
 //!
 //! The table takes the rows it needs and no more, up to a share of the frame,
 //! because the panes below it are the part actually being watched. Agents past
@@ -19,7 +20,7 @@
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::Line,
     widgets::Paragraph,
     Frame,
 };
@@ -31,14 +32,27 @@ use crate::detect::AgentState;
 use crate::layout::PaneId;
 use crate::terminal::TerminalRuntimeRegistry;
 
-/// The columns, left to right. The summary is last because it is the one that
-/// has no length of its own: it takes whatever the others leave.
+/// The columns, left to right. Summary has no length of its own: it takes
+/// whatever the others leave, even though it is not last.
 ///
 /// State is not a column. The margin beside a row already says whether the
 /// agent is working, waiting on an answer, or finished, in one cell and in
 /// color, and a word repeating it would only take room from the summary.
-const HEADINGS: [&str; 6] = ["Agent Name", "Directory", "Agent", "Run", "Idle", "Summary"];
+const HEADINGS: [&str; 7] = [
+    "Agent Name",
+    "Summary",
+    "Directory",
+    "Agent",
+    "Run",
+    "Idle",
+    "Git Status",
+];
 const COLUMNS: usize = HEADINGS.len();
+const COL_NAME: usize = 0;
+const COL_SUMMARY: usize = 1;
+const COL_DIRECTORY: usize = 2;
+const COL_AGENT: usize = 3;
+const COL_GIT: usize = 6;
 /// The air after a column's widest cell, before the next column starts.
 const COLUMN_GAP: usize = 3;
 /// The left margin, clear of the first column, where the animation goes.
@@ -125,8 +139,8 @@ pub(crate) struct AgentPanelEntry {
     pub land_failed: bool,
 }
 
-/// Where an agent is working, kept in its two parts so a narrow column can give
-/// up the path's leading folders without giving up the git status.
+/// Where an agent is working, kept in its two parts so the table can put the
+/// folder in one column and the branch in another.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AgentLocation {
     /// The pane's cwd, with `$HOME` written as `~`.
@@ -136,28 +150,9 @@ pub(crate) struct AgentLocation {
 }
 
 impl AgentLocation {
-    /// The label narrowed to `width` columns and split into the part that reads
-    /// as the folder and the part that reads as the git status, so the two can
-    /// be drawn in different tones from a single decision about what fits.
-    ///
-    /// Context goes before identity: leading folders are dropped first, marked
-    /// by `…/`, so the folder the agent is actually in and its branch both
-    /// survive as long as they can. Only when even the last folder and the
-    /// branch will not sit together does the branch go, and only after that
-    /// does a word get cut.
-    pub(crate) fn fit(&self, width: usize) -> (String, Option<String>) {
-        let elisions = path_elisions(&self.path);
-        for git in [self.git.as_deref(), None] {
-            let git = git.map(|git| format!(" ({git})"));
-            let git_width = git.as_deref().map_or(0, |git| git.chars().count());
-            for path in &elisions {
-                if path.chars().count() + git_width <= width {
-                    return (path.clone(), git);
-                }
-            }
-        }
-        let shortest = elisions.last().unwrap_or(&self.path);
-        (truncate_chars(shortest, width), None)
+    /// The last folder of the path: `herdr` from `~/lab/herdr`.
+    pub(crate) fn folder(&self) -> &str {
+        last_folder(&self.path)
     }
 
     /// The whole thing at full length: `~/lab/herdr (feat/space-done !)`.
@@ -169,19 +164,14 @@ impl AgentLocation {
     }
 }
 
-/// A path written at decreasing lengths: whole, then with one more leading
-/// folder replaced by `…/` each time, down to its last folder alone.
-fn path_elisions(path: &str) -> Vec<String> {
-    let mut elisions = vec![path.to_string()];
-    let mut rest = path;
-    while let Some(slash) = rest.find('/') {
-        rest = &rest[slash + '/'.len_utf8()..];
-        if rest.is_empty() {
-            break;
-        }
-        elisions.push(format!("…/{rest}"));
-    }
-    elisions
+/// The last folder in a path. A trailing slash is ignored, so `~/lab/herdr/`
+/// and `~/lab/herdr` name the same folder. A path with no slash is itself.
+fn last_folder(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(path)
 }
 
 /// One group of columns: its own headings, its own columns, and its own slice of
@@ -386,19 +376,27 @@ fn column_widths(app: &AppState, held: &[AgentPanelEntry], group_width: u16) -> 
         .collect();
     for entry in held {
         for (column, text) in cell_texts(app, entry).iter().enumerate() {
+            if column == COL_SUMMARY {
+                continue;
+            }
             wanted[column] = wanted[column].max(text.chars().count());
         }
     }
-    // Each column takes what it wants or what is left, whichever is less. A
-    // group squeezed thin therefore loses its rightmost columns rather than
-    // spilling over the group beside it.
+    // Each measured column takes what it wants or what is left, whichever is
+    // less. A group squeezed thin therefore loses its rightmost columns rather
+    // than spilling over the group beside it. Summary is skipped here and
+    // takes whatever remains, because a long title must not push Directory or
+    // Git Status off the row.
     let mut room = (group_width as usize).saturating_sub(GUTTER as usize);
     let mut widths = vec![0usize; COLUMNS];
-    for (column, width) in widths.iter_mut().enumerate().take(COLUMNS - 1) {
+    for (column, width) in widths.iter_mut().enumerate() {
+        if column == COL_SUMMARY {
+            continue;
+        }
         *width = (wanted[column] + COLUMN_GAP).min(room);
         room -= *width;
     }
-    widths[COLUMNS - 1] = room;
+    widths[COL_SUMMARY] = room;
     widths
 }
 
@@ -406,10 +404,17 @@ fn column_widths(app: &AppState, held: &[AgentPanelEntry], group_width: u16) -> 
 fn cell_texts(app: &AppState, entry: &AgentPanelEntry) -> [String; COLUMNS] {
     [
         entry.name.clone(),
+        if entry.landing {
+            "landing".to_string()
+        } else if entry.land_failed {
+            "land failed".to_string()
+        } else {
+            agent_status_detail_text(app, &entry.terminal_id).unwrap_or_default()
+        },
         entry
             .location
             .as_ref()
-            .map(AgentLocation::label)
+            .map(|location| location.folder().to_string())
             .unwrap_or_default(),
         entry
             .agent_label
@@ -421,13 +426,11 @@ fn cell_texts(app: &AppState, entry: &AgentPanelEntry) -> [String; COLUMNS] {
             .idle_duration
             .map(compact_duration)
             .unwrap_or_default(),
-        if entry.landing {
-            "landing".to_string()
-        } else if entry.land_failed {
-            "land failed".to_string()
-        } else {
-            agent_status_detail_text(app, &entry.terminal_id).unwrap_or_default()
-        },
+        entry
+            .location
+            .as_ref()
+            .and_then(|location| location.git.clone())
+            .unwrap_or_default(),
     ]
 }
 
@@ -721,19 +724,6 @@ pub(crate) fn harness_display_name(label: &str) -> String {
     }
 }
 
-pub(crate) fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    text.chars()
-        .take(max_chars.saturating_sub(1))
-        .collect::<String>()
-        + "…"
-}
-
 /// A cell in a column that wide: padded out, or cut short with an ellipsis.
 fn pad(text: &str, width: usize) -> String {
     let length = text.chars().count();
@@ -964,7 +954,7 @@ fn cell_line<'a>(
 ) -> Line<'a> {
     let dim = Style::default().fg(app.palette.overlay0);
     match column {
-        0 => {
+        COL_NAME => {
             // A set-down agent's name is written a shade quieter: the row is
             // real, but nothing on screen is showing it.
             let style = if selected {
@@ -978,8 +968,8 @@ fn cell_line<'a>(
             };
             Line::styled(pad(text, width), style)
         }
-        1 => location_line(app, entry, width, folders),
-        2 => Line::styled(
+        COL_DIRECTORY => folder_line(app, entry, width, folders),
+        COL_AGENT => Line::styled(
             pad(text, width),
             Style::default().fg(if selected {
                 app.palette.text
@@ -987,15 +977,18 @@ fn cell_line<'a>(
                 app.palette.subtext0
             }),
         ),
+        COL_GIT => Line::styled(
+            pad(text, width),
+            Style::default().fg(mute_when_host_unfocused(app, app.palette.mauve)),
+        ),
         _ => Line::styled(pad(text, width), dim),
     }
 }
 
-/// The folder in the color that folder is written in everywhere in the table,
-/// then the branch beside it in the tone branches are written in. The two are
-/// fitted together, so a narrow column gives up leading folders before it gives
-/// up the branch.
-fn location_line<'a>(
+/// The last folder, in the color that folder is written in everywhere in the
+/// table. The branch lives in its own column, so this cell never shares the
+/// cell with git status.
+fn folder_line<'a>(
     app: &AppState,
     entry: &AgentPanelEntry,
     width: usize,
@@ -1004,25 +997,14 @@ fn location_line<'a>(
     let Some(location) = entry.location.as_ref() else {
         return Line::styled(pad("", width), Style::default().fg(app.palette.overlay0));
     };
-    let room = width.saturating_sub(1);
-    let (path, git) = location.fit(room);
-    let written = path.chars().count() + git.as_deref().map_or(0, |git| git.chars().count());
     let color = folders
         .get(location.path.as_str())
         .copied()
         .unwrap_or(app.palette.subtext0);
-    let mut spans = vec![Span::styled(
-        path,
+    Line::styled(
+        pad(location.folder(), width),
         Style::default().fg(mute_when_host_unfocused(app, color)),
-    )];
-    if let Some(git) = git {
-        spans.push(Span::styled(
-            git,
-            Style::default().fg(mute_when_host_unfocused(app, app.palette.mauve)),
-        ));
-    }
-    spans.push(Span::raw(" ".repeat(width.saturating_sub(written))));
-    Line::from(spans)
+    )
 }
 
 /// What color each folder in the table is written in.
@@ -1297,8 +1279,80 @@ mod tests {
         let row = row_of(&state, pane_id);
         assert!(!row.docked);
         assert_eq!(
-            cell_texts(&state, &row)[COLUMNS - 1],
+            cell_texts(&state, &row)[COL_SUMMARY],
             "Reposition the credits"
+        );
+    }
+
+    #[test]
+    fn directory_is_the_last_folder_and_git_status_is_its_own_column() {
+        let state = AppState::test_new();
+        let mut row = entry("~/lab/herdr");
+        row.name = "Olivia".into();
+        row.agent_label = Some("codex".into());
+        row.location = Some(AgentLocation {
+            path: "~/lab/herdr".into(),
+            git: Some("feat/space-done !".into()),
+        });
+        let texts = cell_texts(&state, &row);
+        assert_eq!(texts[COL_NAME], "Olivia");
+        assert_eq!(texts[COL_DIRECTORY], "herdr");
+        assert_eq!(texts[COL_AGENT], "Codex");
+        assert_eq!(texts[COL_GIT], "feat/space-done !");
+        assert!(!texts[COL_DIRECTORY].contains('/'));
+        assert!(!texts[COL_DIRECTORY].contains('('));
+    }
+
+    #[test]
+    fn last_folder_drops_the_path_and_keeps_the_name() {
+        assert_eq!(last_folder("~/lab/herdr"), "herdr");
+        assert_eq!(last_folder("~/lab/herdr/"), "herdr");
+        assert_eq!(last_folder("herdr"), "herdr");
+        assert_eq!(last_folder("~"), "~");
+        assert_eq!(last_folder("/"), "/");
+    }
+
+    #[test]
+    fn a_long_summary_does_not_steal_the_short_columns() {
+        let mut state = state_with_agents(1);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let path = "~/very/long/path/that/would/stretch/the/column/if/kept";
+        let git = "feat/a-long-branch-name !";
+        state.view.agent_locations.insert(
+            pane_id,
+            AgentLocation {
+                path: path.into(),
+                git: Some(git.into()),
+            },
+        );
+        let id = state.terminals.keys().next().cloned().expect("a terminal");
+        if let Some(terminal) = state.terminals.get_mut(&id) {
+            terminal.session_title = Some(
+                "A long summary that would steal the row if it were measured like the others"
+                    .into(),
+            );
+        }
+        let (layout, _) = split_agent_table(&mut state, Rect::new(0, 0, 120, 20));
+        let columns = &layout.groups[0].columns;
+        let texts = cell_texts(&state, &row_of(&state, pane_id));
+        assert_eq!(texts[COL_DIRECTORY], "kept");
+        assert_eq!(texts[COL_GIT], git);
+        assert!(
+            columns[COL_DIRECTORY].width < path.chars().count() as u16,
+            "directory {} kept the path's width {}",
+            columns[COL_DIRECTORY].width,
+            path.chars().count()
+        );
+        assert!(
+            columns[COL_GIT].width as usize >= HEADINGS[COL_GIT].chars().count(),
+            "git status {} lost its heading",
+            columns[COL_GIT].width
+        );
+        assert!(
+            (columns[COL_SUMMARY].width as usize) < texts[COL_SUMMARY].chars().count(),
+            "summary {} was measured to its text {}",
+            columns[COL_SUMMARY].width,
+            texts[COL_SUMMARY].chars().count()
         );
     }
 
