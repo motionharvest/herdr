@@ -289,6 +289,16 @@ impl App {
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            if let Some(reason) = self
+                .state
+                .commit_typed_folder_on_away_click(mouse.column, mouse.row)
+            {
+                self.show_composer_trouble(reason);
+                return;
+            }
+        }
+
         if self.handle_overlay_mouse(mouse) {
             return;
         }

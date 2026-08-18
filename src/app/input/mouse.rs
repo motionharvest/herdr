@@ -1183,6 +1183,29 @@ impl AppState {
             .filter(|pane_id| *pane_id != source_pane_id)
     }
 
+    /// A click outside the open folder box, while a path is being typed, settles
+    /// that path the same way Enter does. Returns the reason the path could not
+    /// be settled, which is the click being refused so the field stays as it is.
+    pub(super) fn commit_typed_folder_on_away_click(
+        &mut self,
+        col: u16,
+        row: u16,
+    ) -> Option<String> {
+        if self.composer.open != Some(crate::composer::Focus::Folder) {
+            return None;
+        }
+        if self.composer.path().is_empty() {
+            return None;
+        }
+        if rect_contains(self.view.composer.folder, col, row) {
+            return None;
+        }
+        match self.composer.take_folder() {
+            Ok(()) => None,
+            Err(err) => Some(err.message()),
+        }
+    }
+
     /// A click in the band takes the keyboard to the control it landed on, and
     /// a click on the folder or the agent opens its list there and then — the
     /// click is the asking to see the choices. A click on a control whose list
@@ -3575,6 +3598,142 @@ mod tests {
         };
 
         assert_eq!(wheel_routing(input_state), WheelRouting::HostScroll);
+    }
+
+    #[test]
+    fn clicking_away_from_a_typed_directory_settles_it() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("space")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Composer;
+        app.state
+            .composer
+            .add_folder(std::path::PathBuf::from("/tmp"));
+        app.state
+            .composer
+            .open_dropdown(crate::composer::Focus::Folder);
+        app.state.composer.edit_path(|path| path.set_text("/usr"));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+
+        let task = app.state.view.composer.task;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            task.x + 4,
+            task.y,
+        ));
+
+        assert_eq!(
+            app.state.composer.folder_path(),
+            Some(std::path::Path::new("/usr")),
+            "the typed path should be kept the way Enter keeps it"
+        );
+        assert_eq!(app.state.composer.open, None);
+        assert_eq!(app.state.composer.focus, crate::composer::Focus::Task);
+    }
+
+    #[test]
+    fn clicking_a_pane_while_typing_a_directory_settles_it() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("space")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Composer;
+        app.state
+            .composer
+            .add_folder(std::path::PathBuf::from("/tmp"));
+        app.state
+            .composer
+            .open_dropdown(crate::composer::Focus::Folder);
+        app.state.composer.edit_path(|path| path.set_text("/usr"));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+
+        let pane = app.state.view.pane_infos[0].inner_rect;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            pane.x + 1,
+            pane.y + 1,
+        ));
+
+        assert_eq!(
+            app.state.composer.folder_path(),
+            Some(std::path::Path::new("/usr"))
+        );
+        assert_eq!(app.state.composer.open, None);
+        assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn clicking_away_from_an_unsettled_path_keeps_the_list_open() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("space")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Composer;
+        app.state
+            .composer
+            .add_folder(std::path::PathBuf::from("/tmp"));
+        app.state
+            .composer
+            .open_dropdown(crate::composer::Focus::Folder);
+        app.state
+            .composer
+            .edit_path(|path| path.set_text("/definitely/not/here"));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+
+        let task = app.state.view.composer.task;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            task.x + 4,
+            task.y,
+        ));
+
+        assert_eq!(
+            app.state.composer.folder_path(),
+            Some(std::path::Path::new("/tmp")),
+            "an unusable path is not kept"
+        );
+        assert_eq!(
+            app.state.composer.open,
+            Some(crate::composer::Focus::Folder)
+        );
+        assert_eq!(app.state.composer.path().text(), "/definitely/not/here");
+    }
+
+    #[test]
+    fn clicking_a_listed_folder_still_takes_that_row() {
+        let unique = format!(
+            "herdr-composer-click-row-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        for child in ["herdr", "herdr-old"] {
+            std::fs::create_dir_all(root.join(child)).unwrap();
+        }
+        let root = root.canonicalize().unwrap();
+
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("space")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Composer;
+        app.state
+            .composer
+            .open_dropdown(crate::composer::Focus::Folder);
+        app.state.composer.edit_path(|path| {
+            path.set_text(&format!("{}/her", root.display()));
+        });
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+
+        let row = app.state.view.composer.dropdown_rows[1];
+        let col = app.state.view.composer.dropdown.x;
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+
+        assert_eq!(
+            app.state.composer.folder_path(),
+            Some(root.join("herdr-old").as_path())
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
