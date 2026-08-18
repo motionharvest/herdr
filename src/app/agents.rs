@@ -15,7 +15,8 @@ impl App {
         let space =
             crate::workspace::git_space_metadata(cwd).ok_or(AgentStartError::NotGitWorktree)?;
         if space.is_linked_worktree {
-            return Err(AgentStartError::LinkedWorktreeSource);
+            let checkout = space.repo_root.clone();
+            return Ok((space, checkout, String::new()));
         }
         let branch = if requested_branch.trim().is_empty() {
             let seed = SystemTime::now()
@@ -395,7 +396,22 @@ impl App {
             .map(|(_, checkout, _)| checkout.clone())
             .unwrap_or(cwd);
 
-        let placement = if managed_worktree.is_some() {
+        let existing_worktree_ws_idx = managed_worktree
+            .as_ref()
+            .and_then(|(_, checkout, _)| self.workspace_for_checkout(checkout));
+
+        let placement = if let Some(ws_idx) = existing_worktree_ws_idx {
+            let tab_idx = self.state.workspaces[ws_idx].active_tab;
+            let target_pane = self.state.workspaces[ws_idx].tabs[tab_idx].layout.focused();
+            self.spawn_agent_split(
+                ws_idx,
+                target_pane,
+                SplitDirection::Right,
+                cwd,
+                &argv,
+                focus,
+            )
+        } else if managed_worktree.is_some() {
             self.spawn_agent_workspace(cwd.clone(), rows, cols, &argv, focus)
         } else if let Some(tab_id) = params.tab_id {
             let (ws_idx, tab_idx) =
@@ -457,11 +473,13 @@ impl App {
             Ok(placement) => placement,
             Err(err) => {
                 if let Some((space, checkout, _)) = &managed_worktree {
-                    let _ = crate::worktree::remove_worktree_and_branch(
-                        &space.repo_root,
-                        checkout,
-                        true,
-                    );
+                    if !space.is_linked_worktree {
+                        let _ = crate::worktree::remove_worktree_and_branch(
+                            &space.repo_root,
+                            checkout,
+                            true,
+                        );
+                    }
                 }
                 return Err(err);
             }
@@ -506,10 +524,6 @@ impl App {
             AgentStartError::NotGitWorktree => crate::api::schema::ErrorBody {
                 code: "not_git_worktree".into(),
                 message: "--worktree requires --cwd inside a Git work tree".into(),
-            },
-            AgentStartError::LinkedWorktreeSource => crate::api::schema::ErrorBody {
-                code: "linked_worktree_source".into(),
-                message: "new agent worktrees must start from the parent checkout".into(),
             },
             AgentStartError::WorktreeCreateFailed(message) => crate::api::schema::ErrorBody {
                 code: "worktree_create_failed".into(),
@@ -600,6 +614,19 @@ impl App {
                 ),
             },
         }
+    }
+
+    fn workspace_for_checkout(&self, checkout: &std::path::Path) -> Option<usize> {
+        let checkout = crate::worktree::canonical_or_original(checkout);
+        self.state.workspaces.iter().position(|ws| {
+            if let Some(membership) = ws.worktree_space() {
+                return crate::worktree::canonical_or_original(&membership.checkout_path)
+                    == checkout;
+            }
+            ws.resolved_identity_cwd()
+                .as_deref()
+                .is_some_and(|cwd| crate::worktree::canonical_or_original(cwd) == checkout)
+        })
     }
 
     fn spawn_agent_workspace(
@@ -752,7 +779,6 @@ pub(super) enum AgentStartError {
     PlacementConflict,
     WorktreePlacementConflict,
     NotGitWorktree,
-    LinkedWorktreeSource,
     WorktreeCreateFailed(String),
     SpawnFailed(String),
     DuplicateName {
@@ -891,5 +917,258 @@ mod tests {
         let terminal_id = app.state.terminal_id_for_pane(0, pane_id).unwrap();
         app.state.terminal_runtime_shutdowns.push(terminal_id);
         app.shutdown_detached_terminal_runtimes();
+    }
+
+    fn unique_temp_path(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("herdr-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    fn run_git(repo: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "git command failed: git -C {} {}",
+            repo.display(),
+            args.join(" ")
+        );
+    }
+
+    fn create_committed_repo(name: &str) -> std::path::PathBuf {
+        let repo = unique_temp_path(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "--quiet"]);
+        run_git(&repo, &["config", "user.email", "herdr@example.invalid"]);
+        run_git(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("README.md"), "test\n").unwrap();
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "--quiet", "-m", "initial"]);
+        repo
+    }
+
+    fn add_linked_worktree(repo: &std::path::Path, name: &str, branch: &str) -> std::path::PathBuf {
+        let checkout = unique_temp_path(name);
+        run_git(
+            repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                branch,
+                checkout.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        checkout
+    }
+
+    fn shutdown_started_runtimes(app: &mut App) {
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[tokio::test]
+    async fn starting_with_worktree_from_a_linked_worktree_uses_that_checkout() {
+        let repo = create_committed_repo("agent-reuse-worktree-repo");
+        let checkout =
+            add_linked_worktree(&repo, "agent-reuse-worktree-checkout", "worktree/reuse");
+        let worktrees_before = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .len();
+
+        let mut app = test_app();
+        let started = app.start_agent(crate::api::schema::AgentStartParams {
+            name: "reviewer".into(),
+            cwd: Some(checkout.display().to_string()),
+            workspace_id: None,
+            tab_id: None,
+            split: None,
+            worktree: Some(String::new()),
+            focus: false,
+            argv: vec!["sleep".into(), "30".into()],
+        });
+
+        let agent = match started {
+            Ok((agent, _)) => agent,
+            Err(err) => {
+                let message = app.agent_start_error_body(err).message;
+                shutdown_started_runtimes(&mut app);
+                let _ = crate::worktree::remove_worktree_and_branch(&repo, &checkout, true);
+                let _ = std::fs::remove_dir_all(&repo);
+                panic!("start from a linked worktree should reuse it: {message}");
+            }
+        };
+
+        let started_cwd = crate::worktree::canonical_or_original(std::path::Path::new(
+            agent.cwd.as_deref().unwrap_or(""),
+        ));
+        let expected_cwd = crate::worktree::canonical_or_original(&checkout);
+        let worktrees_after = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .len();
+
+        shutdown_started_runtimes(&mut app);
+        let _ = crate::worktree::remove_worktree_and_branch(&repo, &checkout, true);
+        let _ = std::fs::remove_dir_all(&repo);
+
+        assert_eq!(started_cwd, expected_cwd);
+        assert_eq!(worktrees_after, worktrees_before);
+    }
+
+    #[tokio::test]
+    async fn starting_with_worktree_from_an_open_linked_worktree_keeps_that_workspace() {
+        let repo = create_committed_repo("agent-reuse-open-repo");
+        let checkout = add_linked_worktree(&repo, "agent-reuse-open-checkout", "worktree/open");
+        let space = crate::workspace::git_space_metadata(&checkout).unwrap();
+
+        let mut app = test_app();
+        app.state.workspaces[0].identity_cwd = checkout.clone();
+        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: space.key,
+            label: space.label,
+            repo_root: space.repo_root,
+            checkout_path: checkout.clone(),
+            is_linked_worktree: true,
+        });
+        let workspace_id = app.state.workspaces[0].id.clone();
+        let workspaces_before = app.state.workspaces.len();
+
+        let started = app.start_agent(crate::api::schema::AgentStartParams {
+            name: "reviewer".into(),
+            cwd: Some(checkout.display().to_string()),
+            workspace_id: None,
+            tab_id: None,
+            split: None,
+            worktree: Some(String::new()),
+            focus: false,
+            argv: vec!["sleep".into(), "30".into()],
+        });
+
+        let agent = match started {
+            Ok((agent, _)) => agent,
+            Err(err) => {
+                let message = app.agent_start_error_body(err).message;
+                shutdown_started_runtimes(&mut app);
+                let _ = crate::worktree::remove_worktree_and_branch(&repo, &checkout, true);
+                let _ = std::fs::remove_dir_all(&repo);
+                panic!("start from an open linked worktree should stay there: {message}");
+            }
+        };
+
+        let workspaces_after = app.state.workspaces.len();
+        let started_workspace = agent.workspace_id.clone();
+        shutdown_started_runtimes(&mut app);
+        let _ = crate::worktree::remove_worktree_and_branch(&repo, &checkout, true);
+        let _ = std::fs::remove_dir_all(&repo);
+
+        assert_eq!(workspaces_after, workspaces_before);
+        assert_eq!(started_workspace, workspace_id);
+    }
+
+    #[tokio::test]
+    async fn starting_with_worktree_from_a_worktree_subdirectory_uses_that_checkout() {
+        let repo = create_committed_repo("agent-reuse-subdir-repo");
+        let checkout = add_linked_worktree(&repo, "agent-reuse-subdir-checkout", "worktree/subdir");
+        let nested = checkout.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let worktrees_before = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .len();
+
+        let mut app = test_app();
+        let started = app.start_agent(crate::api::schema::AgentStartParams {
+            name: "reviewer".into(),
+            cwd: Some(nested.display().to_string()),
+            workspace_id: None,
+            tab_id: None,
+            split: None,
+            worktree: Some(String::new()),
+            focus: false,
+            argv: vec!["sleep".into(), "30".into()],
+        });
+
+        let agent = match started {
+            Ok((agent, _)) => agent,
+            Err(err) => {
+                let message = app.agent_start_error_body(err).message;
+                shutdown_started_runtimes(&mut app);
+                let _ = crate::worktree::remove_worktree_and_branch(&repo, &checkout, true);
+                let _ = std::fs::remove_dir_all(&repo);
+                panic!("start from a worktree subdirectory should reuse the worktree: {message}");
+            }
+        };
+
+        let started_cwd = crate::worktree::canonical_or_original(std::path::Path::new(
+            agent.cwd.as_deref().unwrap_or(""),
+        ));
+        let expected_cwd = crate::worktree::canonical_or_original(&checkout);
+        let worktrees_after = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .len();
+
+        shutdown_started_runtimes(&mut app);
+        let _ = crate::worktree::remove_worktree_and_branch(&repo, &checkout, true);
+        let _ = std::fs::remove_dir_all(&repo);
+
+        assert_eq!(started_cwd, expected_cwd);
+        assert_eq!(worktrees_after, worktrees_before);
+    }
+
+    #[tokio::test]
+    async fn composer_start_from_a_linked_worktree_stays_in_that_checkout() {
+        let repo = create_committed_repo("composer-reuse-worktree-repo");
+        let checkout = add_linked_worktree(
+            &repo,
+            "composer-reuse-worktree-checkout",
+            "worktree/composer",
+        );
+        let worktrees_before = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .len();
+
+        let mut app = test_app();
+        let workspaces_before = app.state.workspaces.len();
+        app.submit_composer(crate::composer::Pending {
+            cwd: checkout.clone(),
+            harness: crate::harness::named("Claude Code").unwrap(),
+            task: "run the tests".into(),
+        });
+
+        let worktrees_after = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .len();
+        let workspaces_after = app.state.workspaces.len();
+        let started_cwd = app.state.detached_agents.first().and_then(|agent| {
+            app.state
+                .terminals
+                .get(&agent.pane.attached_terminal_id)
+                .map(|terminal| crate::worktree::canonical_or_original(&terminal.cwd))
+        });
+        let toast = app.state.toast.clone();
+
+        shutdown_started_runtimes(&mut app);
+        let _ = crate::worktree::remove_worktree_and_branch(&repo, &checkout, true);
+        let _ = std::fs::remove_dir_all(&repo);
+
+        assert_eq!(worktrees_after, worktrees_before);
+        assert_eq!(workspaces_after, workspaces_before);
+        assert_eq!(
+            started_cwd,
+            Some(crate::worktree::canonical_or_original(&checkout))
+        );
+        assert!(
+            toast.is_some_and(|toast| toast.kind == crate::app::state::ToastKind::Finished),
+            "the composer should start in the current worktree"
+        );
     }
 }

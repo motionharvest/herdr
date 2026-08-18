@@ -121,6 +121,8 @@ Give any harness its own Herdr-managed worktree without adding a harness-specifi
 herdr agent start reviewer --cwd ~/project --worktree -- codex
 ```
 
+If the start directory is already a linked worktree, Herdr starts the agent there and does not create another checkout.
+
 The agent name is also the quickest landing target:
 
 ```bash

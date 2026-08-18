@@ -277,8 +277,9 @@ pub struct AgentStartParams {
     pub tab_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split: Option<SplitDirection>,
-    /// Create a Herdr-managed linked worktree before launching. An empty
-    /// string asks Herdr to generate the branch name.
+    /// Start in a Herdr-managed linked worktree. An empty string asks Herdr
+    /// to generate the branch name. If `cwd` is already a linked worktree,
+    /// that checkout is reused instead of creating another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<String>,
     #[serde(default)]

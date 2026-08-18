@@ -184,7 +184,7 @@ Agent targets can be terminal IDs, pane names, unique agent names, detected or r
 
 `agent status` prints one plain-text line per agent — name, status, and the reported session title when the agent has reported one — instead of JSON. `agent read` reads the resolved terminal stream. `agent send` writes literal text to that stream without submitting; `agent prompt` pastes the text and presses Enter, so the message arrives and submits as one. `agent get`, `agent focus`, `agent wait`, and `agent attach` require the resolved terminal to have agent identity. `agent rename` can assign that identity.
 
-`agent start --worktree` creates a linked checkout under `[worktrees].directory`, launches the agent as that checkout's workspace, and leaves the harness argv unchanged. Omit `BRANCH` for a generated `worktree/...` branch. Because it creates a workspace, `--worktree` cannot be combined with `--workspace`, `--tab`, or `--split`.
+`agent start --worktree` starts the agent in a linked worktree and leaves the harness argv unchanged. If `--cwd` is already a linked worktree, that checkout is reused and no new branch is created; an already-open workspace for that checkout is reused too. Otherwise Herdr creates a linked checkout under `[worktrees].directory` and launches the agent as that checkout's workspace. Omit `BRANCH` for a generated `worktree/...` branch. Because it owns placement, `--worktree` cannot be combined with `--workspace`, `--tab`, or `--split`.
 
 Use `pane send-text`, `pane send-keys`, `pane run`, and `terminal attach` for ordinary terminals, servers, tests, shells, or low-level terminal control. Use `pane run` when you want to submit a command with Enter.
 

@@ -58,6 +58,8 @@ herdr agent start <name> --cwd <parent-checkout> --worktree [branch] -- <agent-a
 herdr worktree land <name>
 ```
 
+If the current directory is already a linked worktree, start there. `--worktree` reuses that checkout instead of creating another one. Use `--cwd` of the parent only when you want a new isolated checkout.
+
 Omitting `branch` generates one under `worktree/`. Landing rebases onto the parent checkout's current branch, runs the optional `[worktrees].verify` argv, and fast-forwards the parent. Use `herdr worktree land --all` to land every open linked worktree serially. Linked-agent context menus expose the same landing and deletion actions. Non-forced deletion protects uncommitted and unlanded work, then removes both the checkout and local branch. See `docs/next/website/src/content/docs/agents.mdx` and `cli-reference.mdx` for user-facing behavior.
 
 ## Vendored libghostty-vt
