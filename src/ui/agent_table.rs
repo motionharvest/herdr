@@ -578,17 +578,14 @@ fn agent_location(
     let tab = ws.tabs.get(tab_idx)?;
     let cwd = tab.cwd_for_pane(pane_id, &app.terminals, terminal_runtimes)?;
     let git_status = ws.git_status_for_pane(pane_id);
-    let git = git_status
-        .branch
-        .filter(|branch| !branch.is_empty())
-        .map(|branch| {
-            format!(
-                "{branch} {}",
-                super::panes::worktree_state_marker(git_status.worktree_state)
-            )
-        });
+    let git = super::panes::git_branch_label(&git_status).map(|branch| {
+        format!(
+            "{branch} {}",
+            super::panes::worktree_state_marker(git_status.worktree_state)
+        )
+    });
     Some(AgentLocation {
-        path: super::panes::display_path_with_home(&cwd),
+        path: super::panes::display_location_path(&cwd, &git_status),
         git,
     })
 }
@@ -607,17 +604,21 @@ fn detached_agent_location(
         .detached_git_statuses
         .get(&detached.pane_id)
         .and_then(|status| {
-            let branch = status
-                .branch
-                .as_deref()
-                .filter(|branch| !branch.is_empty())?;
+            let branch = super::panes::git_branch_label(status)?;
             Some(format!(
                 "{branch} {}",
                 super::panes::worktree_state_marker(status.worktree_state)
             ))
         });
+    let path = app
+        .detached_git_statuses
+        .get(&detached.pane_id)
+        .map_or_else(
+            || super::panes::display_path_with_home(&cwd),
+            |status| super::panes::display_location_path(&cwd, status),
+        );
     Some(AgentLocation {
-        path: super::panes::display_path_with_home(&cwd),
+        path,
         git,
     })
 }

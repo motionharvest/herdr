@@ -617,6 +617,71 @@ fn pane_name_label(
 
 pub(super) use crate::workspace::display_path_with_home;
 
+/// The checkout a worktree nested inside its own repository is written
+/// against: the repository's own checkout.
+///
+/// A worktree made under `<repo>/.claude/worktrees/<name>` repeats the
+/// repository's whole path and then adds a name the branch beside it already
+/// carries, so the location says the same thing twice and pushes everything
+/// else off the row. Written against the repository, the path is the
+/// repository's and the name is the branch's. A worktree that lives outside
+/// its repository keeps its own path, which is the only place its folder is
+/// named.
+pub(super) fn primary_checkout_root(
+    space: &crate::workspace::GitSpaceMetadata,
+) -> Option<&std::path::Path> {
+    if !space.is_linked_worktree {
+        return None;
+    }
+    let common_dir = std::path::Path::new(&space.key);
+    if common_dir.file_name() != Some(std::ffi::OsStr::new(".git")) {
+        return None;
+    }
+    let primary_root = common_dir.parent()?;
+    std::path::Path::new(&space.checkout_key)
+        .starts_with(primary_root)
+        .then_some(primary_root)
+}
+
+/// Where a pane reads as working: its own path, unless it sits in a worktree
+/// nested inside its repository, in which case the same place written against
+/// the repository's checkout.
+pub(super) fn display_location_path(
+    path: &std::path::Path,
+    git_status: &crate::workspace::WorkspaceGitStatusSnapshot,
+) -> String {
+    let rewritten = git_status.space.as_ref().and_then(|space| {
+        let primary_root = primary_checkout_root(space)?;
+        let below_root = path.strip_prefix(&space.repo_root).ok()?;
+        if below_root.as_os_str().is_empty() {
+            return Some(primary_root.to_path_buf());
+        }
+        Some(primary_root.join(below_root))
+    });
+    display_path_with_home(rewritten.as_deref().unwrap_or(path))
+}
+
+/// What the parentheses after the path carry: the branch, marked as a worktree
+/// when the path was written against the repository instead of the checkout.
+pub(super) fn git_branch_label(
+    git_status: &crate::workspace::WorkspaceGitStatusSnapshot,
+) -> Option<String> {
+    let branch = git_status
+        .branch
+        .as_deref()
+        .filter(|branch| !branch.is_empty());
+    let nested_worktree = git_status
+        .space
+        .as_ref()
+        .and_then(primary_checkout_root)
+        .is_some();
+    match (nested_worktree, branch) {
+        (true, Some(branch)) => Some(format!("worktree {branch}")),
+        (true, None) => Some("worktree".to_string()),
+        (false, branch) => branch.map(str::to_string),
+    }
+}
+
 /// Single-glyph dirty marker for a worktree state, shared by pane chrome and
 /// the agent panel.
 pub(super) fn worktree_state_marker(state: crate::workspace::GitWorktreeState) -> &'static str {
@@ -1255,11 +1320,99 @@ mod tests {
     use crate::layout::PaneId;
     use crate::selection::Selection;
     use crate::terminal::TerminalRuntime;
-    use crate::workspace::Workspace;
+    use crate::workspace::{Workspace, WorkspaceGitStatusSnapshot};
     use ratatui::layout::Direction;
 
     fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
         col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
+    }
+
+    fn checkout(
+        key: &str,
+        checkout_key: &str,
+        is_linked_worktree: bool,
+    ) -> WorkspaceGitStatusSnapshot {
+        WorkspaceGitStatusSnapshot {
+            branch: Some("eich".to_string()),
+            ahead_behind: None,
+            space: Some(crate::workspace::GitSpaceMetadata {
+                key: key.to_string(),
+                checkout_key: checkout_key.to_string(),
+                label: "herdr".to_string(),
+                repo_root: checkout_key.into(),
+                is_linked_worktree,
+            }),
+            worktree_state: crate::workspace::GitWorktreeState::Clean,
+        }
+    }
+
+    #[test]
+    fn a_worktree_inside_its_repository_reads_as_the_repository() {
+        let status = checkout(
+            "/repo/herdr/.git",
+            "/repo/herdr/.claude/worktrees/eich",
+            true,
+        );
+
+        assert_eq!(
+            display_location_path(
+                std::path::Path::new("/repo/herdr/.claude/worktrees/eich"),
+                &status
+            ),
+            "/repo/herdr"
+        );
+        assert_eq!(git_branch_label(&status).as_deref(), Some("worktree eich"));
+    }
+
+    #[test]
+    fn a_folder_below_a_nested_worktree_keeps_what_is_below_it() {
+        let status = checkout(
+            "/repo/herdr/.git",
+            "/repo/herdr/.claude/worktrees/eich",
+            true,
+        );
+
+        assert_eq!(
+            display_location_path(
+                std::path::Path::new("/repo/herdr/.claude/worktrees/eich/website"),
+                &status
+            ),
+            "/repo/herdr/website"
+        );
+    }
+
+    #[test]
+    fn a_worktree_outside_its_repository_keeps_its_own_path() {
+        let status = checkout("/repo/herdr/.git", "/repo/herdr-eich", true);
+
+        assert_eq!(
+            display_location_path(std::path::Path::new("/repo/herdr-eich"), &status),
+            "/repo/herdr-eich"
+        );
+        assert_eq!(git_branch_label(&status).as_deref(), Some("eich"));
+    }
+
+    #[test]
+    fn a_repository_that_is_not_a_worktree_keeps_its_own_path() {
+        let status = checkout("/repo/herdr/.git", "/repo/herdr", false);
+
+        assert_eq!(
+            display_location_path(std::path::Path::new("/repo/herdr"), &status),
+            "/repo/herdr"
+        );
+        assert_eq!(git_branch_label(&status).as_deref(), Some("eich"));
+    }
+
+    #[test]
+    fn a_nested_worktree_off_a_branch_still_reads_as_a_worktree() {
+        let mut status = checkout(
+            "/repo/herdr/.git",
+            "/repo/herdr/.claude/worktrees/eich",
+            true,
+        );
+        status.branch = None;
+
+        assert_eq!(git_branch_label(&status).as_deref(), Some("worktree"));
     }
 
     #[test]
