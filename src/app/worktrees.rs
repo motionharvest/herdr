@@ -4,7 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{
-    state::{WorktreeCreateState, WorktreeOpenEntry, WorktreeOpenState, WorktreeRemoveState},
+    state::{
+        ToastKind, ToastNotification, WorktreeCreateState, WorktreeOpenEntry, WorktreeOpenState,
+        WorktreeRemoveState,
+    },
     App, Mode,
 };
 use crate::events::{AppEvent, WorktreeAddResult, WorktreeLandResult, WorktreeRemoveResult};
@@ -699,7 +702,7 @@ impl App {
     }
 
     pub(crate) fn start_worktree_land(&mut self, ws_idx: usize) {
-        let Some((workspace_id, repo_root, path)) =
+        let Some((workspace_id, repo_root, path, label)) =
             self.state.workspaces.get(ws_idx).and_then(|workspace| {
                 workspace
                     .worktree_space()
@@ -709,18 +712,32 @@ impl App {
                             workspace.id.clone(),
                             space.repo_root.clone(),
                             space.checkout_path.clone(),
+                            workspace.display_name(),
                         )
                     })
             })
         else {
-            self.state.config_diagnostic = Some("Land requires a linked worktree.".into());
-            self.config_diagnostic_deadline =
-                Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+            self.set_land_toast(
+                ToastKind::NeedsAttention,
+                "Landing failed",
+                "Land requires a linked worktree.",
+            );
             return;
         };
         if !self.state.landing_worktrees.insert(workspace_id.clone()) {
+            self.set_land_toast(
+                ToastKind::NeedsAttention,
+                "Already landing",
+                format!("{label} is already landing."),
+            );
             return;
         }
+        self.state.landing_failures.remove(&workspace_id);
+        self.set_land_toast(
+            ToastKind::Finished,
+            "Landing",
+            format!("Committing if needed, then landing {label}."),
+        );
         let verify = self.state.worktree_verify_command.clone();
         let event_tx = self.event_tx.clone();
         std::thread::spawn(move || {
@@ -736,50 +753,48 @@ impl App {
     pub(crate) fn handle_worktree_land_finished(&mut self, result: WorktreeLandResult) {
         tracing::info!(workspace_id = %result.workspace_id, path = %result.path.display(), "worktree landing finished");
         self.state.landing_worktrees.remove(&result.workspace_id);
-        let ws_idx = self
-            .state
-            .workspaces
-            .iter()
-            .position(|workspace| workspace.id == result.workspace_id);
         match result.result {
             Ok(outcome) => {
-                self.state.config_diagnostic = Some(if outcome.already_landed {
-                    format!("{} is already on {}.", outcome.branch, outcome.base_branch)
+                self.state.landing_failures.remove(&result.workspace_id);
+                let title = if outcome.already_landed {
+                    "Already on parent"
+                } else if outcome.committed {
+                    "Committed and landed"
                 } else {
-                    format!("Landed {} on {}.", outcome.branch, outcome.base_branch)
-                });
+                    "Landed"
+                };
+                self.set_land_toast(
+                    ToastKind::Finished,
+                    title,
+                    format!("{} is on {}.", outcome.branch, outcome.base_branch),
+                );
                 self.mark_git_status_refresh_due(std::time::Instant::now());
             }
             Err(message) => {
-                self.state.config_diagnostic = Some(format!("Landing failed: {message}"));
-                if !message.starts_with("parent checkout") {
-                    if let Some((ws_idx, pane_id)) = ws_idx.and_then(|ws_idx| {
-                        self.state.workspaces[ws_idx]
-                            .pane_details(&self.state.terminals)
-                            .first()
-                            .map(|detail| (ws_idx, detail.pane_id))
-                    }) {
-                        if let Some(target) = self.public_pane_id(ws_idx, pane_id) {
-                            let prompt = format!(
-                                "Herdr could not land this worktree: {message}\nResolve the worktree state, commit any required changes, and then run `herdr worktree land {}` to retry.",
-                                result.workspace_id
-                            );
-                            let _ = self.handle_agent_prompt(
-                                "internal:worktree-land".into(),
-                                crate::api::schema::AgentPromptParams {
-                                    target,
-                                    text: prompt,
-                                },
-                            );
-                        }
-                    }
-                }
+                self.state
+                    .landing_failures
+                    .insert(result.workspace_id.clone(), message.clone());
+                self.set_land_toast(ToastKind::NeedsAttention, "Landing failed", message);
             }
         }
-        self.config_diagnostic_deadline =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(8));
         self.render_dirty.store(true, Ordering::Release);
         self.render_notify.notify_one();
+    }
+
+    fn set_land_toast(
+        &mut self,
+        kind: ToastKind,
+        title: impl Into<String>,
+        context: impl Into<String>,
+    ) {
+        let previous = self.state.toast.clone();
+        self.state.toast = Some(ToastNotification {
+            kind,
+            title: title.into(),
+            context: context.into(),
+            target: None,
+        });
+        self.sync_toast_deadline(previous);
     }
 }
 
@@ -1280,5 +1295,76 @@ mod tests {
         assert!(app.state.workspaces.is_empty());
 
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn land_without_a_linked_worktree_shows_a_failure_toast() {
+        let mut app = app_for_worktree_tests();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("plain")];
+
+        app.start_worktree_land(0);
+
+        let toast = app.state.toast.as_ref().expect("failure toast");
+        assert_eq!(toast.kind, ToastKind::NeedsAttention);
+        assert_eq!(toast.title, "Landing failed");
+        assert_eq!(toast.context, "Land requires a linked worktree.");
+        assert!(app.state.landing_worktrees.is_empty());
+    }
+
+    #[test]
+    fn land_finished_failure_toasts_and_marks_the_row() {
+        let mut app = app_for_worktree_tests();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("issue")];
+        let workspace_id = app.state.workspaces[0].id.clone();
+        app.state.landing_worktrees.insert(workspace_id.clone());
+
+        app.handle_worktree_land_finished(WorktreeLandResult {
+            workspace_id: workspace_id.clone(),
+            path: "/tmp/issue".into(),
+            result: Err("parent checkout has uncommitted changes".into()),
+        });
+
+        assert!(!app.state.landing_worktrees.contains(&workspace_id));
+        assert_eq!(
+            app.state
+                .landing_failures
+                .get(&workspace_id)
+                .map(String::as_str),
+            Some("parent checkout has uncommitted changes")
+        );
+        let toast = app.state.toast.as_ref().expect("failure toast");
+        assert_eq!(toast.kind, ToastKind::NeedsAttention);
+        assert_eq!(toast.title, "Landing failed");
+        assert_eq!(toast.context, "parent checkout has uncommitted changes");
+    }
+
+    #[test]
+    fn land_finished_success_toasts_and_clears_the_failure_mark() {
+        let mut app = app_for_worktree_tests();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("issue")];
+        let workspace_id = app.state.workspaces[0].id.clone();
+        app.state.landing_worktrees.insert(workspace_id.clone());
+        app.state
+            .landing_failures
+            .insert(workspace_id.clone(), "old".into());
+
+        app.handle_worktree_land_finished(WorktreeLandResult {
+            workspace_id: workspace_id.clone(),
+            path: "/tmp/issue".into(),
+            result: Ok(crate::worktree::WorktreeLandOutcome {
+                branch: "worktree/issue".into(),
+                base_branch: "main".into(),
+                commit: "abc".into(),
+                already_landed: false,
+                committed: true,
+            }),
+        });
+
+        assert!(!app.state.landing_worktrees.contains(&workspace_id));
+        assert!(!app.state.landing_failures.contains_key(&workspace_id));
+        let toast = app.state.toast.as_ref().expect("success toast");
+        assert_eq!(toast.kind, ToastKind::Finished);
+        assert_eq!(toast.title, "Committed and landed");
+        assert_eq!(toast.context, "worktree/issue is on main.");
     }
 }

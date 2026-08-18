@@ -66,6 +66,7 @@ const ACKNOWLEDGED: &str = "✓";
 /// What stands beside an agent that is waiting on an answer, which is the one
 /// state that wants something from you rather than reporting on itself.
 const BLOCKED: &str = "◆";
+const LAND_FAILED: &str = "✕";
 /// Half blocks closing either end of the selected row's band. Each fills the
 /// half of its cell that faces the text, so the band gains half a column of
 /// padding on each side instead of a full one.
@@ -121,6 +122,7 @@ pub(crate) struct AgentPanelEntry {
     pub run_duration: Option<std::time::Duration>,
     pub idle_duration: Option<std::time::Duration>,
     pub landing: bool,
+    pub land_failed: bool,
 }
 
 /// Where an agent is working, kept in its two parts so a narrow column can give
@@ -419,7 +421,13 @@ fn cell_texts(app: &AppState, entry: &AgentPanelEntry) -> [String; COLUMNS] {
             .idle_duration
             .map(compact_duration)
             .unwrap_or_default(),
-        agent_status_detail_text(app, &entry.terminal_id).unwrap_or_default(),
+        if entry.landing {
+            "landing".to_string()
+        } else if entry.land_failed {
+            "land failed".to_string()
+        } else {
+            agent_status_detail_text(app, &entry.terminal_id).unwrap_or_default()
+        },
     ]
 }
 
@@ -520,6 +528,7 @@ fn agent_panel_entries_with_runtimes(
                     terminal.agent_idle_duration(std::time::SystemTime::now())
                 }),
                 landing: app.landing_worktrees.contains(&ws.id),
+                land_failed: app.landing_failures.contains_key(&ws.id),
             });
         }
     }
@@ -565,6 +574,7 @@ fn agent_panel_entries_with_runtimes(
             run_duration: terminal.agent_run_duration(std::time::SystemTime::now()),
             idle_duration: terminal.agent_idle_duration(std::time::SystemTime::now()),
             landing: false,
+            land_failed: false,
         });
     }
     let rank: std::collections::HashMap<_, _> = app
@@ -906,6 +916,8 @@ fn render_margin(app: &AppState, frame: &mut Frame, entry: &AgentPanelEntry, row
             super::spinner_frame(app.spinner_tick),
             mute_when_host_unfocused(app, app.palette.yellow),
         ))
+    } else if entry.land_failed {
+        Some((LAND_FAILED, mute_when_host_unfocused(app, app.palette.red)))
     } else {
         match (entry.state, entry.seen) {
             (AgentState::Working, _) => Some((
@@ -1172,6 +1184,7 @@ mod tests {
             run_duration: None,
             idle_duration: None,
             landing: false,
+            land_failed: false,
         }
     }
 

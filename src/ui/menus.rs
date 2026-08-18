@@ -262,10 +262,10 @@ pub(super) fn render_context_menu(app: &AppState, frame: &mut Frame) {
         return;
     };
 
-    let items: Vec<ListItem> = menu
-        .items()
+    let menu_items = menu.items();
+    let items: Vec<ListItem> = menu_items
         .iter()
-        .map(|item| ListItem::new(Line::from(*item)))
+        .map(|item| ListItem::new(Line::from(item.as_str())))
         .collect();
     let list = List::new(items)
         .style(Style::default().fg(p.text))

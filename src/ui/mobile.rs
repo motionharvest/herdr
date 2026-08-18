@@ -867,6 +867,7 @@ mod tests {
             run_duration: None,
             idle_duration: None,
             landing: false,
+            land_failed: false,
         }
     }
 

@@ -912,7 +912,7 @@ pub(crate) fn stabilize_agent_state(
     now: std::time::Instant,
     last_claude_working_at: &mut Option<std::time::Instant>,
 ) -> AgentState {
-    if agent != Some(Agent::Claude) {
+    if !matches!(agent, Some(Agent::Claude) | Some(Agent::Grok)) {
         return raw;
     }
 
@@ -970,6 +970,54 @@ mod tests {
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())
+    }
+
+    #[test]
+    fn grok_working_is_sticky_for_short_gap() {
+        let now = std::time::Instant::now();
+        let mut last_working = None;
+
+        let working = stabilize_agent_state(
+            Some(Agent::Grok),
+            AgentState::Idle,
+            AgentState::Working,
+            now,
+            &mut last_working,
+        );
+        assert_eq!(working, AgentState::Working);
+
+        let still_working = stabilize_agent_state(
+            Some(Agent::Grok),
+            AgentState::Working,
+            AgentState::Idle,
+            now + std::time::Duration::from_millis(400),
+            &mut last_working,
+        );
+        assert_eq!(still_working, AgentState::Working);
+    }
+
+    #[test]
+    fn grok_ambiguous_frame_holds_the_previous_state() {
+        let now = std::time::Instant::now();
+        let mut last_working = None;
+
+        let state = stabilize_agent_detection(
+            Some(Agent::Grok),
+            AgentState::Working,
+            AgentDetection {
+                state: AgentState::Idle,
+                skip_state_update: false,
+                ambiguous: true,
+                visible_blocker: false,
+                visible_idle: false,
+                visible_working: false,
+            },
+            false,
+            now + CLAUDE_WORKING_HOLD + Duration::from_secs(30),
+            &mut last_working,
+        );
+
+        assert_eq!(state, AgentState::Working);
     }
 
     #[test]

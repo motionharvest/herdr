@@ -3,7 +3,8 @@ use ratatui::layout::{Direction, Rect};
 
 use crate::{
     app::state::{
-        AppState, ContextMenuKind, ContextMenuState, MenuListState, Mode, NavigatorStateFilter,
+        is_land_menu_item, AppState, ContextMenuKind, ContextMenuState, MenuListState, Mode,
+        NavigatorStateFilter,
     },
     input::TerminalKey,
     layout::NavDirection,
@@ -594,7 +595,8 @@ pub(super) fn apply_context_menu_action(
     menu: ContextMenuState,
     idx: usize,
 ) {
-    let item = menu.items().get(idx).copied();
+    let items = menu.items();
+    let item = items.get(idx).map(String::as_str);
     match (menu.kind, item) {
         (ContextMenuKind::DetachedAgent { pane_id }, Some("Close agent")) => {
             state.close_detached_agent(pane_id);
@@ -608,7 +610,7 @@ pub(super) fn apply_context_menu_action(
             state.request_remove_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::Agent { ws_idx, .. }, Some("Land on main")) => {
+        (ContextMenuKind::Agent { ws_idx, .. }, Some(item)) if is_land_menu_item(item) => {
             state.request_land_worktree = Some(ws_idx);
             leave_modal(state);
         }
@@ -991,7 +993,7 @@ mod tests {
         let idx = menu
             .items()
             .iter()
-            .position(|item| *item == "Close pane")
+            .position(|item| item == "Close pane")
             .expect("close pane item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 

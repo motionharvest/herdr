@@ -1228,14 +1228,27 @@ pub enum ContextMenuKind {
 }
 
 /// What a space offers a menu, which is what its Git state allows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpaceMenuKind {
     /// Not a Git checkout, so it adds nothing to the menu.
     Plain,
     /// A Git checkout worktrees can be made from.
     Repo,
     /// A linked worktree, which can be given up rather than added to.
-    LinkedWorktree,
+    /// `parent_branch` is the branch currently checked out in the parent
+    /// checkout, which is where land will go.
+    LinkedWorktree { parent_branch: Option<String> },
+}
+
+pub fn land_menu_label(parent_branch: Option<&str>) -> String {
+    match parent_branch {
+        Some(branch) if !branch.is_empty() => format!("Land on {branch}"),
+        _ => "Land on parent".to_string(),
+    }
+}
+
+pub fn is_land_menu_item(item: &str) -> bool {
+    item.starts_with("Land on ")
 }
 
 /// Right-click context menu state.
@@ -1247,23 +1260,24 @@ pub struct ContextMenuState {
 }
 
 impl ContextMenuState {
-    pub fn items(&self) -> Vec<&'static str> {
-        match self.kind {
-            ContextMenuKind::DetachedAgent { .. } => vec!["Close agent"],
+    pub fn items(&self) -> Vec<String> {
+        match &self.kind {
+            ContextMenuKind::DetachedAgent { .. } => vec!["Close agent".into()],
             ContextMenuKind::Agent {
                 can_promote, space, ..
             } => {
-                let mut items = vec!["Rename agent", "Close agent"];
-                if can_promote {
-                    items.push("Move to new space");
+                let mut items = vec!["Rename agent".into(), "Close agent".into()];
+                if *can_promote {
+                    items.push("Move to new space".into());
                 }
                 match space {
                     SpaceMenuKind::Plain => {}
                     SpaceMenuKind::Repo => {
-                        items.extend(["New worktree", "Open worktree..."]);
+                        items.extend(["New worktree".into(), "Open worktree...".into()]);
                     }
-                    SpaceMenuKind::LinkedWorktree => {
-                        items.extend(["Land on main", "Delete agent / worktree..."]);
+                    SpaceMenuKind::LinkedWorktree { parent_branch } => {
+                        items.push(land_menu_label(parent_branch.as_deref()));
+                        items.push("Delete agent / worktree...".into());
                     }
                 }
                 items
@@ -1275,18 +1289,26 @@ impl ContextMenuState {
                 can_reset,
                 ..
             } => {
-                let mut items = vec!["Rename pane"];
-                if has_manual_label {
-                    items.push("Clear pane name");
+                let mut items = vec!["Rename pane".into()];
+                if *has_manual_label {
+                    items.push("Clear pane name".into());
                 }
-                items.extend(["Split vertically", "Split horizontally", "Zoom"]);
-                items.push(if dimmed { "Undim" } else { "Dim" });
-                items.push("Close pane");
-                if can_reset {
-                    items.push("Reset agent");
+                items.extend([
+                    "Split vertically".into(),
+                    "Split horizontally".into(),
+                    "Zoom".into(),
+                ]);
+                items.push(if *dimmed {
+                    "Undim".into()
+                } else {
+                    "Dim".into()
+                });
+                items.push("Close pane".into());
+                if *can_reset {
+                    items.push("Reset agent".into());
                 }
-                if has_agent {
-                    items.push("Close agent");
+                if *has_agent {
+                    items.push("Close agent".into());
                 }
                 items
             }
@@ -1408,6 +1430,7 @@ pub struct AppState {
     pub worktree_auto_land: bool,
     pub request_land_worktree: Option<usize>,
     pub landing_worktrees: std::collections::HashSet<String>,
+    pub landing_failures: std::collections::HashMap<String, String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1786,6 +1809,7 @@ impl AppState {
             worktree_auto_land: false,
             request_land_worktree: None,
             landing_worktrees: std::collections::HashSet::new(),
+            landing_failures: std::collections::HashMap::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -1972,7 +1996,9 @@ mod tests {
                 ws_idx: 0,
                 pane_id: crate::layout::PaneId::alloc(),
                 can_promote: false,
-                space: SpaceMenuKind::LinkedWorktree,
+                space: SpaceMenuKind::LinkedWorktree {
+                    parent_branch: Some("main".into()),
+                },
             },
             x: 0,
             y: 0,
@@ -1987,7 +2013,21 @@ mod tests {
                 "Land on main",
                 "Delete agent / worktree...",
             ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn land_menu_label_uses_the_parent_checkout_branch() {
+        assert_eq!(land_menu_label(Some("main")), "Land on main");
+        assert_eq!(land_menu_label(Some("release")), "Land on release");
+        assert_eq!(land_menu_label(None), "Land on parent");
+        assert_eq!(land_menu_label(Some("")), "Land on parent");
+        assert!(is_land_menu_item("Land on release"));
+        assert!(is_land_menu_item("Land on parent"));
+        assert!(!is_land_menu_item("Delete agent / worktree..."));
     }
     #[test]
     fn pane_context_menu_offers_close_agent_only_for_agent_panes() {
@@ -2006,7 +2046,7 @@ mod tests {
 
         assert_eq!(
             menu_for(true).items(),
-            &[
+            [
                 "Rename pane",
                 "Split vertically",
                 "Split horizontally",
@@ -2015,7 +2055,13 @@ mod tests {
                 "Close pane",
                 "Close agent",
             ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
         );
-        assert!(!menu_for(false).items().contains(&"Close agent"));
+        assert!(!menu_for(false)
+            .items()
+            .iter()
+            .any(|item| item == "Close agent"));
     }
 }

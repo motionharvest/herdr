@@ -116,11 +116,11 @@ auto_land = false
 
 Herdr creates checkouts under `<directory>/<repo>/<branch-slug>`. For sibling-style checkouts, set this to a directory such as `~/Projects/herdr-worktrees`. Relative values are resolved to an absolute path when the app applies the config.
 
-`verify` is an optional program-and-arguments array. `Land on main` runs it in the agent worktree after rebasing and before the parent checkout advances. An empty array skips verification. `auto_land` queues the same landing whenever an agent in a linked worktree becomes idle; it defaults to `false`, so landing stays explicit until you have seen the verification command work for that repository.
+`verify` is an optional program-and-arguments array. The land action runs it in the agent worktree after rebasing and before the parent checkout advances. An empty array skips verification. `auto_land` queues the same landing whenever an agent in a linked worktree becomes idle; it defaults to `false`, so landing stays explicit until you have seen the verification command work for that repository.
 
 Worktree actions are available from agent-table rows. `New worktree` creates a branch and checkout and opens it as a new Herdr space. `Open worktree...` lists existing Git worktree checkouts for that repository. Composer-launched editing agents use managed worktrees automatically when their selected directory is a repository, and stay in that checkout when it is already a linked worktree.
 
-`Land on main` rebases the worktree branch onto the branch checked out in the parent workspace, runs `verify`, and fast-forwards the parent checkout. A conflict stays in the agent worktree, and a failed rebase or verification is sent back to that agent. Herdr serializes landings for one repository so agents cannot race to move the same parent branch.
+The land item on a linked worktree row is named for the branch currently checked out in the parent checkout, such as `Land on main`. It rebases the worktree branch onto that parent branch, runs `verify`, and fast-forwards the parent checkout. A conflict stays in the agent worktree. Herdr serializes landings for one repository so agents cannot race to move the same parent branch.
 
 Deleting an agent worktree is explicit. Use `Delete agent / worktree...` on its agent-table row. Herdr refuses the first deletion when the checkout has uncommitted files or commits that have not landed, then shows the destructive confirmation. Confirming ends the worktree's agents and removes both the checkout and its local branch; closing a space still removes neither.
 

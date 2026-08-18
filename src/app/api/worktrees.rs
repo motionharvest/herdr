@@ -119,6 +119,7 @@ impl App {
                 base_branch: outcome.base_branch,
                 commit: outcome.commit,
                 already_landed: outcome.already_landed,
+                committed: outcome.committed,
             });
         }
         self.mark_git_status_refresh_due(std::time::Instant::now());

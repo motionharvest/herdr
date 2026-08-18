@@ -830,6 +830,7 @@ pub struct WorktreeLandInfo {
     pub base_branch: String,
     pub commit: String,
     pub already_landed: bool,
+    pub committed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

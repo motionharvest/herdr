@@ -24,6 +24,7 @@ pub(crate) struct WorktreeLandOutcome {
     pub base_branch: String,
     pub commit: String,
     pub already_landed: bool,
+    pub committed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,6 +222,39 @@ fn ensure_clean(cwd: &Path, label: &str) -> Result<(), String> {
     }
 }
 
+fn git_state_path_exists(cwd: &Path, name: &str) -> bool {
+    let Ok(relative) = run_git_output(cwd, &["rev-parse", "--git-path", name]) else {
+        return false;
+    };
+    let path = PathBuf::from(&relative);
+    if path.is_absolute() {
+        path.exists()
+    } else {
+        cwd.join(path).exists()
+    }
+}
+
+fn commit_dirty_worktree(checkout: &Path) -> Result<bool, String> {
+    if git_state_path_exists(checkout, "MERGE_HEAD")
+        || git_state_path_exists(checkout, "rebase-merge")
+        || git_state_path_exists(checkout, "rebase-apply")
+        || git_state_path_exists(checkout, "CHERRY_PICK_HEAD")
+    {
+        return Err("worktree has a rebase or merge in progress".into());
+    }
+    if run_git_output(checkout, &["status", "--porcelain"])?.is_empty() {
+        return Ok(false);
+    }
+    run_git_output(checkout, &["add", "--all"])?;
+    if run_git_output(checkout, &["diff", "--cached", "--name-only"])?.is_empty() {
+        return Ok(false);
+    }
+    let branch = current_branch(checkout)?;
+    let message = format!("land {branch}");
+    run_git_output(checkout, &["commit", "-m", &message])?;
+    Ok(true)
+}
+
 fn commits_ahead(cwd: &Path, base: &str, branch: &str) -> Result<usize, String> {
     run_git_output(cwd, &["rev-list", "--count", &format!("{base}..{branch}")])?
         .parse::<usize>()
@@ -273,6 +307,7 @@ pub(crate) fn land_worktree(
         .lock()
         .map_err(|_| "repository landing lock is poisoned".to_string())?;
 
+    let committed = commit_dirty_worktree(checkout)?;
     ensure_clean(checkout, "worktree")?;
     ensure_clean(repo_root, "parent checkout")?;
     let base_branch = current_branch(repo_root)?;
@@ -290,6 +325,7 @@ pub(crate) fn land_worktree(
                 base_branch,
                 commit,
                 already_landed: true,
+                committed,
             });
         }
 
@@ -310,6 +346,7 @@ pub(crate) fn land_worktree(
                     base_branch,
                     commit,
                     already_landed: false,
+                    committed,
                 });
             }
             Err(err) if attempt == 0 => {
@@ -705,6 +742,33 @@ prunable stale
         assert_eq!(
             run_git_output(&repo, &["rev-parse", "HEAD"]).unwrap(),
             run_git_output(&checkout, &["rev-parse", "HEAD"]).unwrap()
+        );
+        remove_worktree_and_branch(&repo, &checkout, false).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn landing_commits_dirty_worktree_then_fast_forwards() {
+        let repo = create_committed_repo("worktree-land-dirty-repo");
+        let checkout = unique_temp_path("worktree-land-dirty-checkout");
+        let branch = "worktree/test-land-dirty";
+        run_worktree_command(&build_worktree_add_new_branch_command(
+            &repo, &checkout, branch, "HEAD",
+        ))
+        .unwrap();
+        std::fs::write(checkout.join("agent.txt"), "commit then land\n").unwrap();
+
+        let outcome = land_worktree(&repo, &checkout, &[]).unwrap();
+
+        assert!(outcome.committed);
+        assert!(!outcome.already_landed);
+        assert_eq!(
+            run_git_output(&repo, &["rev-parse", "HEAD"]).unwrap(),
+            outcome.commit
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("agent.txt")).unwrap(),
+            "commit then land\n"
         );
         remove_worktree_and_branch(&repo, &checkout, false).unwrap();
         let _ = std::fs::remove_dir_all(repo);

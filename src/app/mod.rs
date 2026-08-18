@@ -394,6 +394,7 @@ impl App {
             worktree_auto_land: config.worktrees.auto_land,
             request_land_worktree: None,
             landing_worktrees: std::collections::HashSet::new(),
+            landing_failures: std::collections::HashMap::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,

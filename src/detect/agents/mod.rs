@@ -66,6 +66,7 @@ pub(super) fn detect(agent: Agent, screen_content: &str) -> AgentDetection {
 fn is_ambiguous(agent: Agent, content: &str) -> bool {
     match agent {
         Agent::Claude => claude_code::is_ambiguous(content),
+        Agent::Grok => grok::is_ambiguous(content),
         _ => false,
     }
 }
@@ -104,6 +105,7 @@ fn has_visible_idle(agent: Agent, content: &str, state: AgentState) -> bool {
         Agent::Claude => claude_code::has_prompt_box(content),
         Agent::Codex => codex::has_prompt(content),
         Agent::Kimi => kimi::has_prompt_box(content),
+        Agent::Grok => grok::has_visible_idle(content),
         _ => false,
     }
 }
@@ -117,6 +119,7 @@ fn has_visible_working(agent: Agent, content: &str, state: AgentState) -> bool {
         Agent::Claude => claude_code::has_working_chrome(content),
         Agent::Codex => codex::has_visible_working(content),
         Agent::Kimi => kimi::has_visible_working(content),
+        Agent::Grok => grok::has_visible_working(content),
         _ => false,
     }
 }

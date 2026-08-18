@@ -2469,6 +2469,25 @@ mod tests {
         assert_eq!(detect_state(Some(Agent::Grok), screen), AgentState::Idle);
     }
 
+    #[test]
+    fn grok_thinking_screen_is_visible_working() {
+        let screen =
+            "    ⠙ Thinking… 25s  [stop]\nShift+Tab:mode  │  Esc:cancel  │  Ctrl+x:shortcuts";
+        let detection = detect_agent(Some(Agent::Grok), screen);
+        assert_eq!(detection.state, AgentState::Working);
+        assert!(detection.visible_working);
+        assert!(!detection.ambiguous);
+    }
+
+    #[test]
+    fn grok_frame_without_chrome_is_ambiguous() {
+        let detection = detect_agent(Some(Agent::Grok), "I'll check the other agents next.");
+        assert_eq!(detection.state, AgentState::Idle);
+        assert!(detection.ambiguous);
+        assert!(!detection.visible_idle);
+        assert!(!detection.visible_working);
+    }
+
     // ---- Hermes ----
 
     #[test]
