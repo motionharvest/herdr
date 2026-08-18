@@ -2204,6 +2204,50 @@ mod tests {
         }
     }
     #[test]
+    fn clicking_config_warning_dismiss_clears_the_warning() {
+        let mut app = app_for_mouse_test();
+        app.state.mode = Mode::Navigate;
+        app.state.config_diagnostic =
+            Some("This workspace is not a Herdr-managed worktree checkout.".into());
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 24));
+
+        let dismiss = crate::ui::config_diagnostic_dismiss_rect(
+            app.state.view.terminal_area,
+            app.state.config_diagnostic.as_deref().unwrap(),
+        )
+        .expect("dismiss control");
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            dismiss.x + dismiss.width.saturating_sub(2),
+            dismiss.y,
+        ));
+
+        assert!(app.state.config_diagnostic.is_none());
+    }
+
+    #[test]
+    fn clicking_config_warning_text_does_not_dismiss() {
+        let mut app = app_for_mouse_test();
+        app.state.mode = Mode::Navigate;
+        let message = "This workspace is not a Herdr-managed worktree checkout.";
+        app.state.config_diagnostic = Some(message.into());
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 24));
+
+        let dismiss =
+            crate::ui::config_diagnostic_dismiss_rect(app.state.view.terminal_area, message)
+                .expect("dismiss control");
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            dismiss.x.saturating_sub(4),
+            dismiss.y,
+        ));
+
+        assert_eq!(app.state.config_diagnostic.as_deref(), Some(message));
+    }
+
+    #[test]
     fn clicking_agent_toast_focuses_target_pane() {
         let mut app = app_for_mouse_test();
         let active = Workspace::test_new("active");

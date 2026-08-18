@@ -290,6 +290,10 @@ impl App {
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.dismiss_config_diagnostic_at(mouse) {
+            return;
+        }
+
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             if let Some(reason) = self
                 .state
@@ -362,6 +366,30 @@ impl App {
             self.selection_autoscroll_deadline =
                 Some(std::time::Instant::now() + super::SELECTION_AUTOSCROLL_INTERVAL);
         }
+    }
+
+    fn dismiss_config_diagnostic_at(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+        let Some(message) = self.state.config_diagnostic.as_deref() else {
+            return false;
+        };
+        let Some(rect) =
+            crate::ui::config_diagnostic_dismiss_rect(self.state.view.terminal_area, message)
+        else {
+            return false;
+        };
+        if mouse.column < rect.x
+            || mouse.column >= rect.x + rect.width
+            || mouse.row < rect.y
+            || mouse.row >= rect.y + rect.height
+        {
+            return false;
+        }
+        self.state.config_diagnostic = None;
+        self.config_diagnostic_deadline = None;
+        true
     }
 
     fn handle_agent_name_double_click(&mut self, mouse: MouseEvent) -> bool {

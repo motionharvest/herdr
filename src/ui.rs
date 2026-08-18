@@ -57,6 +57,7 @@ pub(crate) use self::scrollbar::{
     scrollbar_offset_from_row, scrollbar_thumb_grab_offset,
 };
 use self::settings::render_settings_overlay;
+pub(crate) use self::status::config_diagnostic_dismiss_rect;
 use self::status::{
     render_config_diagnostic, render_copy_feedback, render_toast_notification,
     toast_notification_rect,

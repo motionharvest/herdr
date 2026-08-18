@@ -5,12 +5,15 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::widgets::panel_contrast_fg;
 use crate::{
     app::state::{CopyFeedback, Palette, ToastKind, ToastNotification},
     detect::AgentState,
 };
+
+const CONFIG_DIAGNOSTIC_DISMISS_SUFFIX: &str = " ✕ ";
 
 pub(crate) fn copy_feedback_rect(area: Rect, feedback: &CopyFeedback, offset_rows: u16) -> Rect {
     if area.width == 0 || area.height == 0 {
@@ -128,6 +131,21 @@ pub(super) fn render_copy_feedback(
     frame.render_widget(Paragraph::new(text), inner);
 }
 
+pub(crate) fn config_diagnostic_dismiss_rect(area: Rect, message: &str) -> Option<Rect> {
+    if area.width == 0 || area.height == 0 || first_nonempty_line(message).is_none() {
+        return None;
+    }
+    let hit_width = (CONFIG_DIAGNOSTIC_DISMISS_SUFFIX.width() as u16)
+        .min(area.width)
+        .max(1);
+    Some(Rect::new(
+        area.x + area.width.saturating_sub(hit_width),
+        area.y,
+        hit_width,
+        1,
+    ))
+}
+
 pub(super) fn render_config_diagnostic(frame: &mut Frame, area: Rect, message: &str, p: &Palette) {
     let style = Style::default()
         .fg(panel_contrast_fg(p))
@@ -140,8 +158,12 @@ pub(super) fn render_config_diagnostic(frame: &mut Frame, area: Rect, message: &
         .take(area.height as usize)
         .enumerate()
     {
-        let text = format!(" config warning: {line} ");
-        let width = (text.len() as u16).min(area.width);
+        let text = if row == 0 {
+            config_diagnostic_banner_text(line, area.width)
+        } else {
+            truncate_to_display_width(&format!(" config warning: {line} "), area.width as usize)
+        };
+        let width = (text.width() as u16).min(area.width);
         let notif_area = Rect::new(
             area.x + area.width.saturating_sub(width),
             area.y + row as u16,
@@ -152,6 +174,43 @@ pub(super) fn render_config_diagnostic(frame: &mut Frame, area: Rect, message: &
         frame.render_widget(Clear, notif_area);
         frame.render_widget(Paragraph::new(Span::styled(text, style)), notif_area);
     }
+}
+
+fn first_nonempty_line(message: &str) -> Option<&str> {
+    message.lines().find(|line| !line.trim().is_empty())
+}
+
+fn config_diagnostic_banner_text(line: &str, max_width: u16) -> String {
+    let suffix = CONFIG_DIAGNOSTIC_DISMISS_SUFFIX;
+    let suffix_width = suffix.width();
+    let max = max_width as usize;
+    if max == 0 {
+        return String::new();
+    }
+    if max <= suffix_width {
+        return truncate_to_display_width(suffix, max);
+    }
+    format!(
+        "{}{suffix}",
+        truncate_to_display_width(&format!(" config warning: {line}"), max - suffix_width)
+    )
+}
+
+fn truncate_to_display_width(text: &str, max_width: usize) -> String {
+    if text.width() <= max_width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let width = ch.width().unwrap_or(0);
+        if used + width > max_width {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out
 }
 
 pub(super) fn state_dot(state: AgentState, seen: bool, p: &Palette) -> (&'static str, Style) {
@@ -196,5 +255,73 @@ pub(super) fn state_label_color(state: AgentState, seen: bool, p: &Palette) -> C
         (AgentState::Idle, false) => p.teal,
         (AgentState::Idle, true) => p.green,
         (AgentState::Unknown, _) => p.overlay0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::state::Palette;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn config_warning_renders_dismiss_cross_at_the_far_right() {
+        let palette = Palette::catppuccin();
+        let area = Rect::new(0, 0, 80, 5);
+        let message = "This workspace is not a Herdr-managed worktree checkout.";
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_config_diagnostic(frame, area, message, &palette);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let cross_col = (0..area.width)
+            .rev()
+            .find(|x| buffer[(*x, 0)].symbol() == "✕")
+            .expect("dismiss cross should render");
+        let last_content_col = (0..area.width)
+            .rev()
+            .find(|x| !buffer[(*x, 0)].symbol().trim().is_empty())
+            .expect("warning should render");
+
+        assert_eq!(
+            cross_col, last_content_col,
+            "dismiss cross should be the last glyph on the warning"
+        );
+        assert!(
+            cross_col + 2 >= area.x + area.width,
+            "dismiss cross at column {cross_col} should sit at the far right of the {area:?} warning"
+        );
+        let dismiss = config_diagnostic_dismiss_rect(area, message).expect("dismiss rect");
+        assert!(
+            cross_col >= dismiss.x && cross_col < dismiss.x + dismiss.width,
+            "dismiss rect {dismiss:?} should cover rendered cross at column {cross_col}"
+        );
+    }
+
+    #[test]
+    fn config_warning_keeps_dismiss_cross_when_the_message_is_wider_than_the_area() {
+        let palette = Palette::catppuccin();
+        let area = Rect::new(0, 0, 24, 1);
+        let message = "This workspace is not a Herdr-managed worktree checkout.";
+        let backend = TestBackend::new(24, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_config_diagnostic(frame, area, message, &palette);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let cross_col = (0..area.width)
+            .rev()
+            .find(|x| buffer[(*x, 0)].symbol() == "✕")
+            .expect("dismiss cross should remain visible");
+        assert_eq!(cross_col + 2, area.width);
     }
 }
