@@ -324,6 +324,15 @@ pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::Pan
     state.mode = Mode::RenamePane;
 }
 
+fn land_agent_prompt_target(state: &AppState, pane_id: crate::layout::PaneId) -> String {
+    crate::ui::agent_panel_entries(state)
+        .into_iter()
+        .find(|entry| entry.pane_id == pane_id)
+        .map(|entry| entry.name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| format!("p_{}", pane_id.raw()))
+}
+
 pub(super) fn leave_modal(state: &mut AppState) {
     if state.active.is_some() {
         state.mode = Mode::Terminal;
@@ -619,8 +628,10 @@ pub(super) fn apply_context_menu_action(
                 SpaceMenuKind::LinkedWorktree { parent_branch, .. } => parent_branch,
                 _ => None,
             };
-            state.request_land_agent_prompt =
-                Some((pane_id, land_prompt_text(parent_branch.as_deref())));
+            state.request_land_agent_prompt = Some((
+                land_agent_prompt_target(state, pane_id),
+                land_prompt_text(parent_branch.as_deref()),
+            ));
             leave_modal(state);
         }
         (ContextMenuKind::Agent { ws_idx, .. }, Some("Open worktree...")) => {
@@ -1051,8 +1062,24 @@ mod tests {
     #[test]
     fn land_menu_prompts_the_agent_instead_of_running_git() {
         let mut state = state_with_workspaces(&["main"]);
+        state.ensure_test_terminals();
         state.mode = Mode::ContextMenu;
         let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("agent pane")
+            .attached_terminal_id
+            .clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("agent terminal")
+            .set_agent_name("grok".into());
+        let name = crate::ui::agent_panel_entries(&state)
+            .into_iter()
+            .find(|entry| entry.pane_id == pane_id)
+            .expect("table row")
+            .name;
         let menu = ContextMenuState {
             kind: ContextMenuKind::Agent {
                 ws_idx: 0,
@@ -1080,7 +1107,7 @@ mod tests {
         assert_eq!(state.request_land_worktree, None);
         assert_eq!(
             state.request_land_agent_prompt,
-            Some((pane_id, land_prompt_text(Some("main"))))
+            Some((name, land_prompt_text(Some("main"))))
         );
         assert_eq!(state.mode, Mode::Terminal);
     }

@@ -4,16 +4,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{
-    api_helpers::{encode_api_keys, encode_api_text},
     state::{
         ToastKind, ToastNotification, WorktreeCreateState, WorktreeLandState, WorktreeOpenEntry,
         WorktreeOpenState, WorktreeRemoveState,
     },
     App, Mode,
 };
+use crate::api::schema::AgentPromptParams;
 use crate::events::{AppEvent, WorktreeAddResult, WorktreeLandResult, WorktreeRemoveResult};
-use crate::layout::PaneId;
-use bytes::Bytes;
 
 impl App {
     fn worktree_source_metadata(
@@ -714,23 +712,14 @@ impl App {
         }
     }
 
-    pub(crate) fn submit_land_prompt(&mut self, pane_id: PaneId, text: &str) {
-        let Some((ws_idx, _)) = self.find_pane(pane_id) else {
-            return;
-        };
-        self.state.focus_pane_in_workspace(ws_idx, pane_id);
-        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
-            return;
-        };
-        if !text.is_empty() {
-            let text_bytes = encode_api_text(runtime, text);
-            let _ = runtime.try_send_bytes(Bytes::from(text_bytes));
-        }
-        if let Ok(encoded_enter) = encode_api_keys(runtime, &["Enter".into()]) {
-            for bytes in encoded_enter {
-                let _ = runtime.try_send_bytes(Bytes::from(bytes));
-            }
-        }
+    pub(crate) fn submit_land_prompt(&mut self, target: &str, text: &str) {
+        let _ = self.handle_agent_prompt(
+            "land".into(),
+            AgentPromptParams {
+                target: target.to_string(),
+                text: text.to_string(),
+            },
+        );
     }
 
     pub(crate) fn start_worktree_land(&mut self, ws_idx: usize) {

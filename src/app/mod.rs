@@ -749,8 +749,8 @@ impl App {
                 needs_render = true;
             }
 
-            if let Some((pane_id, text)) = self.state.request_land_agent_prompt.take() {
-                self.submit_land_prompt(pane_id, &text);
+            if let Some((target, text)) = self.state.request_land_agent_prompt.take() {
+                self.submit_land_prompt(&target, &text);
                 needs_render = true;
             }
 

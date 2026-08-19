@@ -411,92 +411,9 @@ impl HeadlessServer {
                 crate::render_prof::event("full_render_cause.scheduled_tasks");
             }
 
-            // Handle deferred requests.
-            if self.app.state.request_complete_onboarding {
-                self.app.state.request_complete_onboarding = false;
-                self.app.open_settings_from_onboarding();
+            if self.drain_deferred_requests() {
                 needs_render = true;
                 needs_full_render = true;
-                crate::render_prof::event("full_render_cause.deferred_onboarding");
-            }
-
-            if self.app.state.request_new_workspace {
-                self.app.state.request_new_workspace = false;
-                self.app.create_workspace();
-                needs_render = true;
-                needs_full_render = true;
-                crate::render_prof::event("full_render_cause.deferred_new_workspace");
-            }
-
-            if self.app.state.request_new_tab {
-                self.app.state.request_new_tab = false;
-                self.app.create_tab();
-                needs_render = true;
-                needs_full_render = true;
-                crate::render_prof::event("full_render_cause.deferred_new_tab");
-            }
-
-            if let Some(ws_idx) = self.app.state.request_new_linked_worktree.take() {
-                self.app.open_new_linked_worktree_dialog(ws_idx);
-                needs_render = true;
-                needs_full_render = true;
-                crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
-            }
-
-            if let Some(ws_idx) = self.app.state.request_open_existing_worktree.take() {
-                self.app.open_existing_worktree_dialog(ws_idx);
-                needs_render = true;
-                needs_full_render = true;
-                crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
-            }
-
-            if let Some(cwd) = self.app.state.request_new_workspace_cwd.take() {
-                if let Err(err) = self.app.create_workspace_with_options(cwd, true) {
-                    error!(err = %err, "failed to create workspace at requested cwd");
-                    self.app.state.mode = app::Mode::Navigate;
-                }
-                needs_render = true;
-                needs_full_render = true;
-                crate::render_prof::event("full_render_cause.deferred_workspace_cwd");
-            }
-
-            if let Some(ws_idx) = self.app.state.request_remove_linked_worktree.take() {
-                self.app.open_remove_linked_worktree_confirmation(ws_idx);
-                needs_render = true;
-                needs_full_render = true;
-                crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
-            }
-
-            if self.app.state.request_submit_worktree_create {
-                self.app.state.request_submit_worktree_create = false;
-                self.app.start_worktree_add();
-                needs_render = true;
-                needs_full_render = true;
-                crate::render_prof::event("full_render_cause.deferred_worktree_submit");
-            }
-
-            if self.app.state.request_submit_worktree_open {
-                self.app.state.request_submit_worktree_open = false;
-                self.app.open_selected_existing_worktree();
-                needs_render = true;
-                needs_full_render = true;
-                crate::render_prof::event("full_render_cause.deferred_worktree_submit");
-            }
-
-            if self.app.state.request_submit_worktree_remove {
-                self.app.state.request_submit_worktree_remove = false;
-                self.app.start_worktree_remove();
-                needs_render = true;
-                needs_full_render = true;
-                crate::render_prof::event("full_render_cause.deferred_worktree_submit");
-            }
-
-            if self.app.state.request_reload_config {
-                self.app.state.request_reload_config = false;
-                self.reload_server_config(true);
-                needs_render = true;
-                needs_full_render = true;
-                crate::render_prof::event("full_render_cause.config_reload");
             }
 
             if latest_app_client(&self.clients).is_some() && self.app.ensure_default_workspace() {
@@ -1600,6 +1517,100 @@ impl HeadlessServer {
             changed |= self.handle_internal_event_with_forwarding(ev);
         }
         (had_event, changed)
+    }
+
+    fn drain_deferred_requests(&mut self) -> bool {
+        let mut needs_render = false;
+
+        if self.app.state.request_complete_onboarding {
+            self.app.state.request_complete_onboarding = false;
+            self.app.open_settings_from_onboarding();
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_onboarding");
+        }
+
+        if self.app.state.request_new_workspace {
+            self.app.state.request_new_workspace = false;
+            self.app.create_workspace();
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_new_workspace");
+        }
+
+        if self.app.state.request_new_tab {
+            self.app.state.request_new_tab = false;
+            self.app.create_tab();
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_new_tab");
+        }
+
+        if let Some(ws_idx) = self.app.state.request_new_linked_worktree.take() {
+            self.app.open_new_linked_worktree_dialog(ws_idx);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
+        }
+
+        if let Some(ws_idx) = self.app.state.request_open_existing_worktree.take() {
+            self.app.open_existing_worktree_dialog(ws_idx);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
+        }
+
+        if let Some(cwd) = self.app.state.request_new_workspace_cwd.take() {
+            if let Err(err) = self.app.create_workspace_with_options(cwd, true) {
+                error!(err = %err, "failed to create workspace at requested cwd");
+                self.app.state.mode = app::Mode::Navigate;
+            }
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_workspace_cwd");
+        }
+
+        if let Some(ws_idx) = self.app.state.request_remove_linked_worktree.take() {
+            self.app.open_remove_linked_worktree_confirmation(ws_idx);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
+        }
+
+        if let Some(ws_idx) = self.app.state.request_land_worktree.take() {
+            self.app.start_worktree_land(ws_idx);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_land");
+        }
+
+        if let Some((target, text)) = self.app.state.request_land_agent_prompt.take() {
+            self.app.submit_land_prompt(&target, &text);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_land_prompt");
+        }
+
+        if self.app.state.request_submit_worktree_create {
+            self.app.state.request_submit_worktree_create = false;
+            self.app.start_worktree_add();
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_submit");
+        }
+
+        if self.app.state.request_submit_worktree_open {
+            self.app.state.request_submit_worktree_open = false;
+            self.app.open_selected_existing_worktree();
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_submit");
+        }
+
+        if self.app.state.request_submit_worktree_remove {
+            self.app.state.request_submit_worktree_remove = false;
+            self.app.start_worktree_remove();
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_submit");
+        }
+
+        if self.app.state.request_reload_config {
+            self.app.state.request_reload_config = false;
+            self.reload_server_config(true);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.config_reload");
+        }
+
+        needs_render
     }
 
     /// Play a settings sound preview. The server has no speakers of its own in
@@ -5852,6 +5863,58 @@ next_tab = ""
             other => panic!("expected ReloadSoundConfig, got {other:?}"),
         }
         assert!(!server.app.state.request_client_config_reload);
+    }
+
+    #[test]
+    fn land_menu_request_prompts_the_agent_pane() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let _runtime_guard = rt.enter();
+        let mut server = test_headless_server();
+        let mut workspace = crate::workspace::Workspace::test_new("space");
+        let pane_id = workspace.tabs[0].root_pane;
+        let (runtime, mut input_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        workspace.insert_test_runtime(pane_id, runtime);
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.ensure_test_terminals();
+        server.app.state.active = Some(0);
+        let terminal_id = server.app.state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("agent pane")
+            .attached_terminal_id
+            .clone();
+        server
+            .app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("agent terminal")
+            .set_agent_name("grok".into());
+        let name = crate::ui::agent_panel_entries(&server.app.state)
+            .into_iter()
+            .find(|entry| entry.pane_id == pane_id)
+            .expect("table row")
+            .name;
+        let text = crate::app::state::land_prompt_text(Some("main"));
+        server.app.state.request_land_agent_prompt = Some((name, text.clone()));
+
+        server.drain_deferred_requests();
+
+        assert!(server.app.state.request_land_agent_prompt.is_none());
+        let mut sent = Vec::new();
+        while let Ok(chunk) = input_rx.try_recv() {
+            sent.extend_from_slice(&chunk);
+        }
+        let sent = String::from_utf8_lossy(&sent);
+        assert!(
+            sent.contains(&text),
+            "headless server should paste the land prompt into the agent pane, got {sent:?}"
+        );
+        drop(server);
+        drop(_runtime_guard);
+        rt.shutdown_timeout(Duration::from_millis(100));
     }
 
     #[test]

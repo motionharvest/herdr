@@ -1493,7 +1493,7 @@ pub struct AppState {
     pub worktree_verify_command: Vec<String>,
     pub worktree_auto_land: bool,
     pub request_land_worktree: Option<usize>,
-    pub request_land_agent_prompt: Option<(crate::layout::PaneId, String)>,
+    pub request_land_agent_prompt: Option<(String, String)>,
     pub landing_worktrees: std::collections::HashSet<String>,
     pub landing_failures: std::collections::HashMap<String, String>,
     pub request_complete_onboarding: bool,
