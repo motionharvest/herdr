@@ -10,7 +10,7 @@
 
 ---
 
-**agent multiplexer that lives in your terminal.**
+**agent multiplexer that lives in the terminal.**
 
 workspaces, tabs, panes. mouse-native: click, drag, split. every agent at a glance: blocked, working, done. detach and reattach, agents keep running. no gui app, no electron, no mac-only native wrapper. you see the agent's own terminal, not someone's interpretation of it.
 
