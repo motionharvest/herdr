@@ -1155,12 +1155,7 @@ mod tests {
             .unwrap()
             .len();
         let workspaces_after = app.state.workspaces.len();
-        let started_cwd = app.state.detached_agents.first().and_then(|agent| {
-            app.state
-                .terminals
-                .get(&agent.pane.attached_terminal_id)
-                .map(|terminal| crate::worktree::canonical_or_original(&terminal.cwd))
-        });
+        let started_cwd = started_agent_cwd(&app);
         let toast = app.state.toast.clone();
 
         shutdown_started_runtimes(&mut app);
@@ -1197,12 +1192,7 @@ mod tests {
         let worktrees_after = crate::worktree::list_existing_worktrees(&repo)
             .unwrap()
             .len();
-        let started_cwd = app.state.detached_agents.first().and_then(|agent| {
-            app.state
-                .terminals
-                .get(&agent.pane.attached_terminal_id)
-                .map(|terminal| crate::worktree::canonical_or_original(&terminal.cwd))
-        });
+        let started_cwd = started_agent_cwd(&app);
         shutdown_started_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&repo);
 
@@ -1251,6 +1241,108 @@ mod tests {
         assert_eq!(
             started_cwd,
             Some(crate::worktree::canonical_or_original(&created[0].path))
+        );
+    }
+
+    fn started_agent_cwd(app: &App) -> Option<std::path::PathBuf> {
+        let focused = focused_pane_id(app);
+        app.find_pane(focused)
+            .and_then(|(_, pane)| app.state.terminals.get(&pane.attached_terminal_id))
+            .map(|terminal| crate::worktree::canonical_or_original(&terminal.cwd))
+    }
+
+    fn focused_pane_id(app: &App) -> crate::layout::PaneId {
+        let ws_idx = app.state.active.expect("an active workspace");
+        app.state.workspaces[ws_idx]
+            .focused_pane_id()
+            .expect("a focused pane")
+    }
+
+    #[tokio::test]
+    async fn composer_start_with_worktree_focuses_the_new_agent_pane() {
+        let repo = create_committed_repo("composer-focus-worktree-repo");
+        let mut app = test_app();
+        app.state.mode = crate::app::Mode::Composer;
+        let original_workspace = app.state.workspaces[0].id.clone();
+        let original_pane = focused_pane_id(&app);
+
+        app.submit_composer(crate::composer::Pending {
+            cwd: repo.clone(),
+            harness: crate::harness::named("Claude Code").unwrap(),
+            task: "run the tests".into(),
+            worktree: true,
+        });
+
+        let listed = crate::worktree::list_existing_worktrees(&repo).unwrap();
+        let parent = crate::worktree::canonical_or_original(&repo);
+        let created: Vec<_> = listed
+            .iter()
+            .filter(|worktree| crate::worktree::canonical_or_original(&worktree.path) != parent)
+            .collect();
+        let focused = focused_pane_id(&app);
+        let active_workspace = app
+            .state
+            .active
+            .and_then(|idx| app.state.workspaces.get(idx));
+        let focused_in_layout = active_workspace
+            .and_then(|workspace| workspace.pane_state(focused))
+            .is_some();
+        let mode = app.state.mode;
+        let workspace_id = active_workspace.map(|workspace| workspace.id.clone());
+
+        shutdown_started_runtimes(&mut app);
+        for worktree in &created {
+            let _ = crate::worktree::remove_worktree_and_branch(&repo, &worktree.path, true);
+        }
+        let _ = std::fs::remove_dir_all(&repo);
+
+        assert_eq!(mode, crate::app::Mode::Terminal);
+        assert_ne!(workspace_id.as_deref(), Some(original_workspace.as_str()));
+        assert_ne!(focused, original_pane);
+        assert!(focused_in_layout);
+        assert!(
+            created.len() == 1,
+            "the focused start still creates one worktree"
+        );
+    }
+
+    #[tokio::test]
+    async fn composer_start_without_worktree_focuses_the_new_agent_pane() {
+        let repo = create_committed_repo("composer-focus-folder-repo");
+        let mut app = test_app();
+        app.state.mode = crate::app::Mode::Composer;
+        let original_pane = focused_pane_id(&app);
+
+        app.submit_composer(crate::composer::Pending {
+            cwd: repo.clone(),
+            harness: crate::harness::named("Claude Code").unwrap(),
+            task: "run the tests".into(),
+            worktree: false,
+        });
+
+        let focused = focused_pane_id(&app);
+        let focused_in_layout = app.find_pane(focused).is_some();
+        let still_detached = app
+            .state
+            .detached_agents
+            .iter()
+            .any(|agent| agent.pane_id == focused);
+        let mode = app.state.mode;
+        let started_cwd = app
+            .find_pane(focused)
+            .and_then(|(_, pane)| app.state.terminals.get(&pane.attached_terminal_id))
+            .map(|terminal| crate::worktree::canonical_or_original(&terminal.cwd));
+
+        shutdown_started_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&repo);
+
+        assert_eq!(mode, crate::app::Mode::Terminal);
+        assert_ne!(focused, original_pane);
+        assert!(focused_in_layout);
+        assert!(!still_detached);
+        assert_eq!(
+            started_cwd,
+            Some(crate::worktree::canonical_or_original(&repo))
         );
     }
 }

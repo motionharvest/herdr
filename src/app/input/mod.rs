@@ -38,7 +38,9 @@ pub(crate) use self::agent_table::{
     agent_table_delete_intercept, confirm_close_agent_accept, confirm_close_agent_cancel,
     handle_confirm_close_agent_key,
 };
-pub(crate) use self::composer::{enter_composer_mode, handle_composer_key, ComposerKeyOutcome};
+pub(crate) use self::composer::{
+    enter_composer_mode, handle_composer_key, leave_composer_mode, ComposerKeyOutcome,
+};
 pub(crate) use self::{
     modal::{
         handle_confirm_close_key, handle_context_menu_key, handle_global_menu_key,

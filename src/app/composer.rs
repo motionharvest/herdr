@@ -5,11 +5,10 @@
 //! there is nothing to wait for and nothing that can be swallowed by a prompt
 //! that was not listening yet.
 //!
-//! The agent starts hidden. Starting work is not the same as wanting to watch
-//! it, and a band that rearranges the screen every time it is used cannot be
-//! used while something else is being read. The agent runs, its row appears in
-//! the table, and the panes on screen stay exactly as they were. Dragging its
-//! row onto a pane is what gives it one.
+//! The agent is shown as soon as it starts. The band is for sending work, and
+//! the next thing to do with that work is look at it, so the new pane takes
+//! the keyboard. A managed worktree already has a space of its own; anything
+//! that started set down is cut in next to the pane that had focus.
 
 use std::path::PathBuf;
 
@@ -19,11 +18,12 @@ use crate::composer::Pending;
 use crate::harness::Launch;
 
 impl App {
-    /// Start an agent on the task in the band, and empty the field.
+    /// Start an agent on the task in the band, show it, and empty the field.
     ///
     /// The field is emptied only once the agent is running. A task that could
     /// not be started is a task still worth having, and retyping it is the one
-    /// thing the band exists to avoid.
+    /// thing the band exists to avoid. The new pane takes the keyboard, so the
+    /// next keys go to the agent that received the task.
     pub(crate) fn submit_composer(&mut self, pending: Pending) {
         let result = match pending.launch() {
             Launch::Agent { agent, argv }
@@ -43,9 +43,10 @@ impl App {
         }
         .map_err(|err| self.agent_start_error_body(err).message);
         match result {
-            Ok((_pane_id, started_cwd)) => {
+            Ok((pane_id, started_cwd)) => {
                 self.state.composer.task.clear();
                 self.state.composer.add_folder(pending.cwd.clone());
+                self.focus_composer_started_agent(pane_id);
                 let where_it_went = crate::workspace::display_path_with_home(&started_cwd);
                 self.show_composer_toast(
                     ToastKind::Finished,
@@ -63,6 +64,33 @@ impl App {
                 );
             }
         }
+    }
+
+    /// Put the keyboard on the agent the band just started.
+    ///
+    /// A worktree start already has a pane in a space, so that space is
+    /// focused. A set-down start is cut in against the pane that had the
+    /// keyboard, rather than taking that pane over: replacing would end a
+    /// shell that was being looked at. If the pane is too small to cut, the
+    /// new agent takes it the same way clicking its row would.
+    fn focus_composer_started_agent(&mut self, pane_id: crate::layout::PaneId) {
+        if let Some((ws_idx, _)) = self.find_pane(pane_id) {
+            self.state.focus_pane_in_workspace(ws_idx, pane_id);
+        } else if let Some(target) = self
+            .state
+            .active
+            .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
+            .and_then(crate::workspace::Workspace::focused_pane_id)
+        {
+            if !self.state.dock_detached_agent(
+                pane_id,
+                target,
+                crate::layout::DropZone::Edge(crate::layout::SplitSide::Right),
+            ) {
+                self.state.open_detached_agent(pane_id);
+            }
+        }
+        crate::app::input::leave_composer_mode(&mut self.state);
     }
 
     /// Say why a key could not do what it asked for. The band keeps whatever
