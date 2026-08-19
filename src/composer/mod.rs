@@ -1,10 +1,11 @@
 //! The band across the top of the frame that starts agents.
 //!
-//! Three controls, read left to right: where to work, who works, what to do.
-//! Type a path, `Enter`, type a task, `Enter`, and an agent is running. It takes
-//! no `Tab` at all — the keyboard starts wherever the first thing left to do is,
-//! and settling a control hands it on to the next: directory, agent, task is
-//! both the order they are read in and the order they are filled in.
+//! Four controls, read left to right: where to work, whether in a worktree,
+//! who works, what to do. Type a path, `Enter`, type a task, `Enter`, and an
+//! agent is running. It takes no `Tab` at all — the keyboard starts wherever
+//! the first thing left to do is, and settling a control hands it on to the
+//! next: directory, agent, task. The worktree box sits between directory and
+//! agent and is flipped by a click.
 //!
 //! Nothing here starts anything or draws anything. This is what the band holds
 //! and what a key does to it; `app::composer` starts the agent and
@@ -96,8 +97,9 @@ pub struct ComposerState {
     /// stale run of letters never blocks a fresh one.
     typed_agent: String,
     /// Whether a named agent should start in a Herdr-managed worktree. The
-    /// box on the caption row is the one control for it: checked is the
-    /// default, because two agents editing one checkout overwrite each other.
+    /// checkbox between Directory and Agent is the one control for it: checked
+    /// is the default, because two agents editing one checkout overwrite each
+    /// other.
     pub worktree: bool,
 }
 

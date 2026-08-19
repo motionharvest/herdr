@@ -3949,13 +3949,14 @@ mod tests {
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
 
         let worktree = app.state.view.composer.worktree;
-        assert!(worktree.width > 0, "the box has to be on the caption row");
+        assert!(worktree.width > 0, "the checkbox is on the band");
         assert!(app.state.composer.worktree);
+        let value_row = app.state.view.composer.value_row;
 
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            worktree.x,
-            worktree.y,
+            worktree.x + 2,
+            value_row,
         ));
 
         assert!(!app.state.composer.worktree);
@@ -3964,7 +3965,7 @@ mod tests {
 
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            worktree.x + worktree.width - 1,
+            worktree.x,
             worktree.y,
         ));
         assert!(app.state.composer.worktree);
