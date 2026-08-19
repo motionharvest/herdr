@@ -1269,13 +1269,8 @@ pub fn is_land_menu_item(item: &str) -> bool {
     item.starts_with("Land on ")
 }
 
-pub fn land_prompt_text(parent_branch: Option<&str>) -> String {
-    match parent_branch {
-        Some(branch) if !branch.is_empty() => format!(
-            "Land this worktree onto {branch}. Commit anything outstanding, then get this checkout onto the parent repo's {branch}."
-        ),
-        _ => "Land this worktree onto the parent checkout. Commit anything outstanding, then get this checkout onto the parent repo.".to_string(),
-    }
+pub fn land_prompt_text() -> String {
+    "Commit any outstanding work on this worktree branch first. Write the commit message yourself so it names the change. Then run `herdr worktree land` from this checkout, with no extra arguments. That rebases onto whatever branch the parent checkout currently has checked out, runs verify, and fast-forwards the parent. Do not merge, do not open a pull request, do not present integration options, and do not push unless I ask.".to_string()
 }
 
 /// Right-click context menu state.
@@ -2187,18 +2182,10 @@ mod tests {
     }
 
     #[test]
-    fn land_prompt_tells_the_agent_to_commit_and_land_on_the_parent_branch() {
+    fn land_prompt_tells_the_agent_to_commit_then_run_herdr_worktree_land() {
         assert_eq!(
-            land_prompt_text(Some("main")),
-            "Land this worktree onto main. Commit anything outstanding, then get this checkout onto the parent repo's main."
-        );
-        assert_eq!(
-            land_prompt_text(None),
-            "Land this worktree onto the parent checkout. Commit anything outstanding, then get this checkout onto the parent repo."
-        );
-        assert_eq!(
-            land_prompt_text(Some("")),
-            "Land this worktree onto the parent checkout. Commit anything outstanding, then get this checkout onto the parent repo."
+            land_prompt_text(),
+            "Commit any outstanding work on this worktree branch first. Write the commit message yourself so it names the change. Then run `herdr worktree land` from this checkout, with no extra arguments. That rebases onto whatever branch the parent checkout currently has checked out, runs verify, and fast-forwards the parent. Do not merge, do not open a pull request, do not present integration options, and do not push unless I ask."
         );
     }
     #[test]

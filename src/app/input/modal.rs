@@ -4,7 +4,7 @@ use ratatui::layout::{Direction, Rect};
 use crate::{
     app::state::{
         is_land_menu_item, land_prompt_text, AppState, ContextMenuKind, ContextMenuState,
-        MenuListState, Mode, NavigatorStateFilter, SpaceMenuKind,
+        MenuListState, Mode, NavigatorStateFilter,
     },
     input::TerminalKey,
     layout::NavDirection,
@@ -623,15 +623,9 @@ pub(super) fn apply_context_menu_action(
             state.request_remove_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::Agent { pane_id, space, .. }, Some(item)) if is_land_menu_item(item) => {
-            let parent_branch = match space {
-                SpaceMenuKind::LinkedWorktree { parent_branch, .. } => parent_branch,
-                _ => None,
-            };
-            state.request_land_agent_prompt = Some((
-                land_agent_prompt_target(state, pane_id),
-                land_prompt_text(parent_branch.as_deref()),
-            ));
+        (ContextMenuKind::Agent { pane_id, .. }, Some(item)) if is_land_menu_item(item) => {
+            state.request_land_agent_prompt =
+                Some((land_agent_prompt_target(state, pane_id), land_prompt_text()));
             leave_modal(state);
         }
         (ContextMenuKind::Agent { ws_idx, .. }, Some("Open worktree...")) => {
@@ -1101,7 +1095,7 @@ mod tests {
         assert_eq!(state.request_land_worktree, None);
         assert_eq!(
             state.request_land_agent_prompt,
-            Some((name, land_prompt_text(Some("main"))))
+            Some((name, land_prompt_text()))
         );
         assert_eq!(state.mode, Mode::Terminal);
     }

@@ -5897,7 +5897,7 @@ next_tab = ""
             .find(|entry| entry.pane_id == pane_id)
             .expect("table row")
             .name;
-        let text = crate::app::state::land_prompt_text(Some("main"));
+        let text = crate::app::state::land_prompt_text();
         server.app.state.request_land_agent_prompt = Some((name, text.clone()));
 
         server.drain_deferred_requests();
