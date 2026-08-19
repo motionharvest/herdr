@@ -151,6 +151,14 @@ impl AppState {
             return None;
         }
 
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && matches!(self.mode, Mode::Terminal | Mode::Navigate | Mode::Composer)
+            && rect_contains(self.view.composer.worktree, mouse.column, mouse.row)
+        {
+            self.composer.worktree = !self.composer.worktree;
+            return None;
+        }
+
         // The composer is chrome above every surface, so a click in it takes
         // focus from whatever had it, the same way clicking a pane does — and
         // it takes the keyboard to the control that was actually clicked.
@@ -3832,6 +3840,37 @@ mod tests {
         assert_eq!(app.state.composer.hover, Some(1));
         assert_eq!(app.state.composer.highlight, 0);
         assert_eq!(app.state.composer.open, Some(crate::composer::Focus::Agent));
+    }
+
+    #[test]
+    fn clicking_the_worktree_box_flips_it_and_leaves_the_keyboard() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("space")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Composer;
+        app.state.composer.focus = crate::composer::Focus::Task;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+
+        let worktree = app.state.view.composer.worktree;
+        assert!(worktree.width > 0, "the box has to be on the caption row");
+        assert!(app.state.composer.worktree);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            worktree.x,
+            worktree.y,
+        ));
+
+        assert!(!app.state.composer.worktree);
+        assert_eq!(app.state.mode, Mode::Composer);
+        assert_eq!(app.state.composer.focus, crate::composer::Focus::Task);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            worktree.x + worktree.width - 1,
+            worktree.y,
+        ));
+        assert!(app.state.composer.worktree);
     }
 
     #[test]

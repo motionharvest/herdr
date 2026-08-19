@@ -27,7 +27,8 @@ impl App {
     pub(crate) fn submit_composer(&mut self, pending: Pending) {
         let result = match pending.launch() {
             Launch::Agent { agent, argv }
-                if pending.harness.prefix != crate::harness::AUTO_PREFIX
+                if pending.worktree
+                    && pending.harness.prefix != crate::harness::AUTO_PREFIX
                     && crate::workspace::git_space_metadata(&pending.cwd)
                         .is_some_and(|space| !space.is_linked_worktree) =>
             {

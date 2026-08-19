@@ -1148,6 +1148,7 @@ mod tests {
             cwd: checkout.clone(),
             harness: crate::harness::named("Claude Code").unwrap(),
             task: "run the tests".into(),
+            worktree: true,
         });
 
         let worktrees_after = crate::worktree::list_existing_worktrees(&repo)
@@ -1175,6 +1176,81 @@ mod tests {
         assert!(
             toast.is_some_and(|toast| toast.kind == crate::app::state::ToastKind::Finished),
             "the composer should start in the current worktree"
+        );
+    }
+
+    #[tokio::test]
+    async fn composer_start_with_worktree_cleared_stays_in_the_chosen_folder() {
+        let repo = create_committed_repo("composer-no-worktree-repo");
+        let worktrees_before = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .len();
+
+        let mut app = test_app();
+        app.submit_composer(crate::composer::Pending {
+            cwd: repo.clone(),
+            harness: crate::harness::named("Claude Code").unwrap(),
+            task: "run the tests".into(),
+            worktree: false,
+        });
+
+        let worktrees_after = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .len();
+        let started_cwd = app.state.detached_agents.first().and_then(|agent| {
+            app.state
+                .terminals
+                .get(&agent.pane.attached_terminal_id)
+                .map(|terminal| crate::worktree::canonical_or_original(&terminal.cwd))
+        });
+        shutdown_started_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&repo);
+
+        assert_eq!(worktrees_after, worktrees_before);
+        assert_eq!(
+            started_cwd,
+            Some(crate::worktree::canonical_or_original(&repo))
+        );
+    }
+
+    #[tokio::test]
+    async fn composer_start_with_worktree_checked_creates_a_linked_checkout() {
+        let repo = create_committed_repo("composer-yes-worktree-repo");
+        let worktrees_before = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .len();
+
+        let mut app = test_app();
+        app.submit_composer(crate::composer::Pending {
+            cwd: repo.clone(),
+            harness: crate::harness::named("Claude Code").unwrap(),
+            task: "run the tests".into(),
+            worktree: true,
+        });
+
+        let listed = crate::worktree::list_existing_worktrees(&repo).unwrap();
+        let parent = crate::worktree::canonical_or_original(&repo);
+        let created: Vec<_> = listed
+            .iter()
+            .filter(|worktree| crate::worktree::canonical_or_original(&worktree.path) != parent)
+            .collect();
+        let started_cwd = app.state.workspaces.iter().rev().find_map(|workspace| {
+            workspace
+                .resolved_identity_cwd()
+                .map(|cwd| crate::worktree::canonical_or_original(&cwd))
+        });
+
+        shutdown_started_runtimes(&mut app);
+        for worktree in &created {
+            let _ = crate::worktree::remove_worktree_and_branch(&repo, &worktree.path, true);
+        }
+        let _ = std::fs::remove_dir_all(&repo);
+
+        assert_eq!(listed.len(), worktrees_before + 1);
+        assert_eq!(created.len(), 1);
+        assert_eq!(
+            started_cwd,
+            Some(crate::worktree::canonical_or_original(&created[0].path))
         );
     }
 }

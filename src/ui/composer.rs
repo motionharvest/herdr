@@ -29,6 +29,9 @@ const OPENED: &str = "▴";
 const FOLDER_CAPTION: &str = "Directory";
 const AGENT_CAPTION: &str = "Agent";
 const TASK_CAPTION: &str = "Task";
+const WORKTREE_CAPTION: &str = "Worktree";
+const WORKTREE_CHECKED: &str = "[✓]";
+const WORKTREE_UNCHECKED: &str = "[ ]";
 /// What the folder control says when there is nowhere to work yet.
 const PLACEHOLDER: &str = "add a directory…";
 /// What the agent control says when nothing this band can start is installed.
@@ -59,6 +62,8 @@ pub(crate) struct ComposerLayout {
     pub folder: Rect,
     pub agent: Rect,
     pub task: Rect,
+    /// The Worktree checkbox on the caption row, immediately after Task.
+    pub worktree: Rect,
     /// The columns between the left of the task box and its text — the border,
     /// its inset, the prefix, and the prompt. The drawing indents by it and a
     /// click subtracts it, and they only land on the same character if one
@@ -139,6 +144,7 @@ pub(crate) fn split_composer(app: &mut AppState, area: Rect) -> (ComposerLayout,
         ),
     );
     let task = Rect::new(area.x + task_x, top, task_width, 2 + task_rows);
+    let worktree = worktree_rect(task.x, caption_row, area);
 
     let (dropdown, dropdown_rows) = match app.composer.open {
         Some(Focus::Folder) if folder.height > 3 => item_rows(folder, value_row),
@@ -152,6 +158,7 @@ pub(crate) fn split_composer(app: &mut AppState, area: Rect) -> (ComposerLayout,
         folder,
         agent,
         task,
+        worktree,
         task_lead: PROMPT_INSET + lead,
         value_row,
         caption_row,
@@ -208,6 +215,17 @@ fn folder_control_width(app: &AppState, cap: u16) -> u16 {
     (wanted + 5).min(cap)
 }
 
+/// `[✓] Worktree` sits on the caption row, two columns after the Task word.
+fn worktree_rect(task_x: u16, caption_row: u16, area: Rect) -> Rect {
+    let width = (WORKTREE_CHECKED.chars().count() + 1 + WORKTREE_CAPTION.chars().count()) as u16;
+    let x = task_x + 2 + TASK_CAPTION.chars().count() as u16 + GAP;
+    if x.saturating_add(width) > area.x + area.width {
+        Rect::default()
+    } else {
+        Rect::new(x, caption_row, width, 1)
+    }
+}
+
 /// What stands between a box's left border and the first character typed: the
 /// prefix, where there is one, and the prompt.
 fn lead_width(prefix: &str) -> u16 {
@@ -240,7 +258,29 @@ fn draw_controls(app: &AppState, frame: &mut Frame, layout: &ComposerLayout) {
     draw_folder(app, frame, layout, in_band);
     draw_agent(app, frame, layout, in_band);
     draw_task(app, frame, layout, in_band);
+    draw_worktree(app, frame, layout);
     place_cursor(app, frame, layout, in_band);
+}
+
+fn draw_worktree(app: &AppState, frame: &mut Frame, layout: &ComposerLayout) {
+    let rect = layout.worktree;
+    if rect.width == 0 {
+        return;
+    }
+    let mark = if app.composer.worktree {
+        WORKTREE_CHECKED
+    } else {
+        WORKTREE_UNCHECKED
+    };
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            format!("{mark} {WORKTREE_CAPTION}"),
+            Style::default()
+                .fg(app.palette.overlay0)
+                .add_modifier(Modifier::ITALIC),
+        )),
+        rect,
+    );
 }
 
 fn draw_folder(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_band: bool) {
@@ -740,6 +780,16 @@ mod tests {
         assert!(captions.contains("Directory"), "captions: {captions}");
         assert!(captions.contains("Agent"), "captions: {captions}");
         assert!(captions.contains("Task"), "captions: {captions}");
+        let task_at = captions.find("Task").expect("Task caption");
+        let worktree_at = captions.find("Worktree").expect("Worktree checkbox");
+        assert!(
+            worktree_at > task_at,
+            "Worktree sits to the right of Task: {captions}"
+        );
+        assert!(
+            captions.contains("[✓]"),
+            "the box starts checked: {captions}"
+        );
         let borders = row_text(&buffer, 1, 100);
         assert!(borders.contains("╭"), "the boxes open: {borders}");
         let values = row_text(&buffer, 2, 100);
@@ -914,6 +964,19 @@ mod tests {
         assert_eq!(elide("~/a/very/long/path/to/herdr", 10), "…/to/herdr");
         assert_eq!(elide("~/a/very/long/path/to/herdr", 16), "…/path/to/herdr");
         assert_eq!(elide("~/lab/averylongfoldername", 8), "…dername");
+    }
+
+    #[test]
+    fn clearing_the_worktree_box_draws_it_empty() {
+        let mut app = band_state();
+        app.composer.worktree = false;
+        let captions = row_text(&draw(&mut app, 100, 24), 0, 100);
+        assert!(captions.contains("[ ]"), "cleared: {captions}");
+        assert!(captions.contains("Worktree"), "the label stays: {captions}");
+        assert!(
+            !captions.contains("[✓]"),
+            "and the tick is gone: {captions}"
+        );
     }
 
     #[test]

@@ -95,6 +95,10 @@ pub struct ComposerState {
     /// letter at a time and starts over on a letter that fits no name, so a
     /// stale run of letters never blocks a fresh one.
     typed_agent: String,
+    /// Whether a named agent should start in a Herdr-managed worktree. The
+    /// box on the caption row is the one control for it: checked is the
+    /// default, because two agents editing one checkout overwrite each other.
+    pub worktree: bool,
 }
 
 impl Default for ComposerState {
@@ -113,6 +117,7 @@ impl Default for ComposerState {
             matches: Vec::new(),
             task: TextField::default(),
             typed_agent: String::new(),
+            worktree: true,
         }
     }
 }
@@ -488,6 +493,7 @@ impl ComposerState {
             cwd: self.folder_path()?.to_path_buf(),
             harness: self.harness()?,
             task: task.trim().to_string(),
+            worktree: self.worktree,
         })
     }
 }
@@ -501,6 +507,9 @@ pub struct Pending {
     /// agent rather than to the task, so it is put on once, where the command
     /// line is built, instead of being carried around already attached.
     pub task: String,
+    /// Whether this start should create a Herdr-managed worktree. Auto still
+    /// does not, because Auto is a router rather than a new checkout.
+    pub worktree: bool,
 }
 
 impl Pending {
@@ -929,5 +938,21 @@ mod tests {
         let mut nowhere = ComposerState::default();
         nowhere.task.set_text("fix the tests");
         assert_eq!(nowhere.pending(), None, "nowhere to send it");
+    }
+
+    #[test]
+    fn a_pending_task_asks_for_a_worktree_until_the_box_is_cleared() {
+        let mut composer = composer_with_folders(&["/tmp"]);
+        composer.task.set_text("fix the tests");
+        assert!(
+            composer.pending().unwrap().worktree,
+            "a new band starts agents in a worktree"
+        );
+
+        composer.worktree = false;
+        assert!(
+            !composer.pending().unwrap().worktree,
+            "clearing the box is what keeps the chosen folder"
+        );
     }
 }
