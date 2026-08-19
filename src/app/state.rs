@@ -1270,7 +1270,7 @@ pub fn is_land_menu_item(item: &str) -> bool {
 }
 
 pub fn land_prompt_text() -> String {
-    "Commit any outstanding work on this worktree branch first. Write the commit message yourself so it names the change. Then run `herdr worktree land` from this checkout, with no extra arguments. That rebases onto whatever branch the parent checkout currently has checked out, runs verify, and fast-forwards the parent. Do not merge, do not open a pull request, do not present integration options, and do not push unless I ask.".to_string()
+    "Commit outstanding work, then run `herdr worktree land`.".to_string()
 }
 
 /// Right-click context menu state.
@@ -2185,7 +2185,7 @@ mod tests {
     fn land_prompt_tells_the_agent_to_commit_then_run_herdr_worktree_land() {
         assert_eq!(
             land_prompt_text(),
-            "Commit any outstanding work on this worktree branch first. Write the commit message yourself so it names the change. Then run `herdr worktree land` from this checkout, with no extra arguments. That rebases onto whatever branch the parent checkout currently has checked out, runs verify, and fast-forwards the parent. Do not merge, do not open a pull request, do not present integration options, and do not push unless I ask."
+            "Commit outstanding work, then run `herdr worktree land`."
         );
     }
     #[test]
