@@ -1272,6 +1272,15 @@ pub fn is_land_menu_item(item: &str) -> bool {
     item.starts_with("Land on ")
 }
 
+pub fn land_prompt_text(parent_branch: Option<&str>) -> String {
+    match parent_branch {
+        Some(branch) if !branch.is_empty() => format!(
+            "Land this worktree onto {branch}. Commit anything outstanding, then get this checkout onto the parent repo's {branch}."
+        ),
+        _ => "Land this worktree onto the parent checkout. Commit anything outstanding, then get this checkout onto the parent repo.".to_string(),
+    }
+}
+
 /// Right-click context menu state.
 pub struct ContextMenuState {
     pub kind: ContextMenuKind,
@@ -1483,6 +1492,7 @@ pub struct AppState {
     pub worktree_verify_command: Vec<String>,
     pub worktree_auto_land: bool,
     pub request_land_worktree: Option<usize>,
+    pub request_land_agent_prompt: Option<(crate::layout::PaneId, String)>,
     pub landing_worktrees: std::collections::HashSet<String>,
     pub landing_failures: std::collections::HashMap<String, String>,
     pub request_complete_onboarding: bool,
@@ -1863,6 +1873,7 @@ impl AppState {
             worktree_verify_command: Vec::new(),
             worktree_auto_land: false,
             request_land_worktree: None,
+            request_land_agent_prompt: None,
             landing_worktrees: std::collections::HashSet::new(),
             landing_failures: std::collections::HashMap::new(),
             request_complete_onboarding: false,
@@ -2205,6 +2216,22 @@ mod tests {
         assert!(is_land_menu_item("Land on release"));
         assert!(is_land_menu_item("Land on parent"));
         assert!(!is_land_menu_item("Delete agent / worktree..."));
+    }
+
+    #[test]
+    fn land_prompt_tells_the_agent_to_commit_and_land_on_the_parent_branch() {
+        assert_eq!(
+            land_prompt_text(Some("main")),
+            "Land this worktree onto main. Commit anything outstanding, then get this checkout onto the parent repo's main."
+        );
+        assert_eq!(
+            land_prompt_text(None),
+            "Land this worktree onto the parent checkout. Commit anything outstanding, then get this checkout onto the parent repo."
+        );
+        assert_eq!(
+            land_prompt_text(Some("")),
+            "Land this worktree onto the parent checkout. Commit anything outstanding, then get this checkout onto the parent repo."
+        );
     }
     #[test]
     fn pane_context_menu_offers_close_agent_only_for_agent_panes() {

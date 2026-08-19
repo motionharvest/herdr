@@ -3,8 +3,8 @@ use ratatui::layout::{Direction, Rect};
 
 use crate::{
     app::state::{
-        is_land_menu_item, AppState, ContextMenuKind, ContextMenuState, MenuListState, Mode,
-        NavigatorStateFilter,
+        is_land_menu_item, land_prompt_text, AppState, ContextMenuKind, ContextMenuState,
+        MenuListState, Mode, NavigatorStateFilter, SpaceMenuKind,
     },
     input::TerminalKey,
     layout::NavDirection,
@@ -614,8 +614,13 @@ pub(super) fn apply_context_menu_action(
             state.request_remove_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::Agent { ws_idx, .. }, Some(item)) if is_land_menu_item(item) => {
-            state.request_land_worktree = Some(ws_idx);
+        (ContextMenuKind::Agent { pane_id, space, .. }, Some(item)) if is_land_menu_item(item) => {
+            let parent_branch = match space {
+                SpaceMenuKind::LinkedWorktree { parent_branch, .. } => parent_branch,
+                _ => None,
+            };
+            state.request_land_agent_prompt =
+                Some((pane_id, land_prompt_text(parent_branch.as_deref())));
             leave_modal(state);
         }
         (ContextMenuKind::Agent { ws_idx, .. }, Some("Open worktree...")) => {
@@ -1038,8 +1043,46 @@ mod tests {
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, land_idx);
 
         assert_eq!(state.request_land_worktree, None);
+        assert!(state.request_land_agent_prompt.is_none());
         assert!(state.context_menu.is_some());
         assert_eq!(state.mode, Mode::ContextMenu);
+    }
+
+    #[test]
+    fn land_menu_prompts_the_agent_instead_of_running_git() {
+        let mut state = state_with_workspaces(&["main"]);
+        state.mode = Mode::ContextMenu;
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::Agent {
+                ws_idx: 0,
+                pane_id,
+                can_promote: false,
+                space: SpaceMenuKind::LinkedWorktree {
+                    parent_branch: Some("main".into()),
+                    already_landed: false,
+                    in_worktree_directory: true,
+                },
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        let land_idx = menu
+            .items()
+            .iter()
+            .position(|item| is_land_menu_item(item))
+            .expect("land item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, land_idx);
+
+        assert_eq!(state.request_land_worktree, None);
+        assert_eq!(
+            state.request_land_agent_prompt,
+            Some((pane_id, land_prompt_text(Some("main"))))
+        );
+        assert_eq!(state.mode, Mode::Terminal);
     }
 
     #[test]

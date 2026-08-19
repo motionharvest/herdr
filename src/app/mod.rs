@@ -393,6 +393,7 @@ impl App {
             worktree_verify_command: config.worktrees.verify.clone(),
             worktree_auto_land: config.worktrees.auto_land,
             request_land_worktree: None,
+            request_land_agent_prompt: None,
             landing_worktrees: std::collections::HashSet::new(),
             landing_failures: std::collections::HashMap::new(),
             request_complete_onboarding: false,
@@ -745,6 +746,11 @@ impl App {
 
             if let Some(ws_idx) = self.state.request_land_worktree.take() {
                 self.start_worktree_land(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some((pane_id, text)) = self.state.request_land_agent_prompt.take() {
+                self.submit_land_prompt(pane_id, &text);
                 needs_render = true;
             }
 
