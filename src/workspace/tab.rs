@@ -436,12 +436,6 @@ impl Tab {
         Some((pane_id, pane))
     }
 
-    /// Detach a pane from this tab's layout and return its state.
-    /// Does not touch terminal runtimes.
-    pub fn take_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
-        self.detach_pane(pane_id)
-    }
-
     fn promoted_root_if_needed(&self, closing: PaneId) -> Option<PaneId> {
         if self.root_pane != closing {
             return None;

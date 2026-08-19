@@ -638,10 +638,6 @@ pub(super) fn apply_context_menu_action(
             state.request_open_existing_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::Agent { pane_id, .. }, Some("Move to new space")) => {
-            state.promote_pane_to_new_workspace(pane_id);
-            leave_modal(state);
-        }
         (ContextMenuKind::Agent { pane_id, .. }, Some("Rename agent"))
         | (ContextMenuKind::Pane { pane_id, .. }, Some("Rename pane")) => {
             open_rename_pane(state, pane_id);
@@ -1033,7 +1029,6 @@ mod tests {
             kind: ContextMenuKind::Agent {
                 ws_idx: 0,
                 pane_id: state.workspaces[0].tabs[0].root_pane,
-                can_promote: false,
                 space: SpaceMenuKind::LinkedWorktree {
                     parent_branch: Some("main".into()),
                     already_landed: true,
@@ -1084,7 +1079,6 @@ mod tests {
             kind: ContextMenuKind::Agent {
                 ws_idx: 0,
                 pane_id,
-                can_promote: false,
                 space: SpaceMenuKind::LinkedWorktree {
                     parent_branch: Some("main".into()),
                     already_landed: false,
@@ -1132,7 +1126,6 @@ mod tests {
             kind: ContextMenuKind::Agent {
                 ws_idx: 0,
                 pane_id,
-                can_promote: false,
                 space: SpaceMenuKind::Plain,
             },
             x: 0,
@@ -1164,7 +1157,6 @@ mod tests {
             kind: ContextMenuKind::Agent {
                 ws_idx: 0,
                 pane_id: state.workspaces[0].tabs[0].root_pane,
-                can_promote: false,
                 space: SpaceMenuKind::LinkedWorktree {
                     parent_branch: Some("main".into()),
                     already_landed: false,

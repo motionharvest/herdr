@@ -1220,9 +1220,6 @@ pub enum ContextMenuKind {
     Agent {
         ws_idx: usize,
         pane_id: PaneId,
-        /// Whether the agent's pane can be carried out into a space of its own,
-        /// which it cannot be when it is the only pane its space has.
-        can_promote: bool,
         /// What the space offers, which depends on whether it is a Git
         /// checkout and whether that checkout is a linked worktree.
         space: SpaceMenuKind,
@@ -1293,13 +1290,8 @@ impl ContextMenuState {
     pub fn items(&self) -> Vec<String> {
         match &self.kind {
             ContextMenuKind::DetachedAgent { .. } => vec!["Delete agent".into()],
-            ContextMenuKind::Agent {
-                can_promote, space, ..
-            } => {
+            ContextMenuKind::Agent { space, .. } => {
                 let mut items = vec!["Rename agent".into(), "Delete agent".into()];
-                if *can_promote {
-                    items.push("Move to new space".into());
-                }
                 match space {
                     SpaceMenuKind::Plain => {}
                     SpaceMenuKind::Repo => {
@@ -2057,15 +2049,10 @@ mod tests {
     }
 
     fn agent_menu(space: SpaceMenuKind) -> ContextMenuState {
-        agent_menu_with(space, false)
-    }
-
-    fn agent_menu_with(space: SpaceMenuKind, can_promote: bool) -> ContextMenuState {
         ContextMenuState {
             kind: ContextMenuKind::Agent {
                 ws_idx: 0,
                 pane_id: crate::layout::PaneId::alloc(),
-                can_promote,
                 space,
             },
             x: 0,
@@ -2135,26 +2122,6 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(!menu.item_enabled(worktree_delete_idx(&menu)));
-    }
-
-    #[test]
-    fn promoted_plain_agent_menu_grays_the_bottom_worktree_delete() {
-        let menu = agent_menu_with(SpaceMenuKind::Plain, true);
-        assert_eq!(
-            menu.items(),
-            vec![
-                "Rename agent",
-                "Delete agent",
-                "Move to new space",
-                "Delete agent / worktree...",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-        );
-        let idx = worktree_delete_idx(&menu);
-        assert_eq!(idx, menu.items().len() - 1);
-        assert!(!menu.item_enabled(idx));
     }
 
     #[test]

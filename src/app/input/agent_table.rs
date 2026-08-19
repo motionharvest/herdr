@@ -312,14 +312,9 @@ impl AppState {
                 }
             })
             .unwrap_or(SpaceMenuKind::Plain);
-        let can_promote = self
-            .workspaces
-            .get(ws_idx)
-            .is_some_and(|ws| ws.layout.pane_count() > 1);
         ContextMenuKind::Agent {
             ws_idx,
             pane_id,
-            can_promote,
             space,
         }
     }
@@ -497,6 +492,22 @@ mod tests {
         assert!(app.state.detached_agents.is_empty());
         assert!(!app.state.terminals.contains_key(&root_terminal));
         assert!(app.state.confirm_close_agent.is_none());
+    }
+
+    #[test]
+    fn agent_row_menu_does_not_offer_move_to_new_space() {
+        let (app, pane_id) = app_with_one_agent();
+        let mut state = app.state;
+        state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        let kind = state.agent_menu_kind(&app.terminal_runtimes, 0, pane_id);
+        let menu = crate::app::state::ContextMenuState {
+            kind,
+            x: 0,
+            y: 0,
+            list: crate::app::state::MenuListState::new(0),
+        };
+        assert_eq!(state.workspaces[0].layout.pane_count(), 2);
+        assert!(!menu.items().iter().any(|item| item == "Move to new space"));
     }
 
     #[test]
