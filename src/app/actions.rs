@@ -1681,58 +1681,76 @@ impl AppState {
         true
     }
 
-    /// Ends the agent occupying `pane_id`'s terminal while keeping the pane.
-    /// An agent running as a job under the pane's shell is signaled directly
-    /// and the shell keeps the terminal; an agent that is the terminal's own
-    /// child is signaled after arranging for a shell to respawn in its place.
-    /// Returns whether an agent was found to signal.
+    /// Ends the agent occupying `pane_id` and closes that pane. A set-down
+    /// agent has no pane left, so this drops it the same way its row menu
+    /// does. A docked agent is signaled, then the pane leaves the layout and
+    /// its terminal is shut down. Closing the last pane of a space closes
+    /// that space. Returns whether the agent was found.
     pub(crate) fn close_agent_in_pane(
         &mut self,
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
         pane_id: PaneId,
     ) -> bool {
-        let Some((ws_idx, terminal_id)) = self
+        if self
+            .detached_agents
+            .iter()
+            .any(|detached| detached.pane_id == pane_id)
+        {
+            self.close_detached_agent(pane_id);
+            return true;
+        }
+
+        let Some(ws_idx) = self
             .workspaces
             .iter()
-            .enumerate()
-            .find_map(|(ws_idx, ws)| ws.terminal_id(pane_id).map(|id| (ws_idx, id.clone())))
-        else {
-            return false;
-        };
-        let Some(child_pid) = self
-            .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
-            .map(|runtime| runtime.child_pid())
-            .filter(|pid| *pid != 0)
+            .position(|ws| ws.pane_state(pane_id).is_some())
         else {
             return false;
         };
 
-        // The PTY child is spawned as its own session leader, so its pid is
-        // also its process group. A foreground group that differs from it is
-        // a job the shell is running — the agent — and the shell survives
-        // losing it.
-        let foreground_job = crate::platform::foreground_job(child_pid)
-            .filter(|job| job.process_group_id != child_pid);
-        match foreground_job {
-            Some(job) => {
-                crate::pane::terminate_agent_processes(
-                    job.processes.iter().map(|process| process.pid).collect(),
-                );
-            }
-            None => {
-                // The terminal's child is the agent itself, so ending it ends
-                // the PTY session; mark the terminal to respawn a shell in
-                // the same pane when the exit lands.
-                if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
-                    terminal.respawn_shell_on_exit = true;
+        if let Some(child_pid) = self
+            .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+            .map(|runtime| runtime.child_pid())
+            .filter(|pid| *pid != 0)
+        {
+            let foreground_job = crate::platform::foreground_job(child_pid)
+                .filter(|job| job.process_group_id != child_pid);
+            match foreground_job {
+                Some(job) => {
+                    crate::pane::terminate_agent_processes(
+                        job.processes.iter().map(|process| process.pid).collect(),
+                    );
                 }
-                let mut pids = crate::platform::session_processes(child_pid);
-                if pids.is_empty() {
-                    pids.push(child_pid);
+                None => {
+                    let mut pids = crate::platform::session_processes(child_pid);
+                    if pids.is_empty() {
+                        pids.push(child_pid);
+                    }
+                    crate::pane::terminate_agent_processes(pids);
                 }
-                crate::pane::terminate_agent_processes(pids);
             }
         }
+
+        if self.close_pane_would_close_workspace(ws_idx, pane_id) {
+            self.selected = ws_idx;
+            self.delete_workspace_and_agents(ws_idx);
+            return true;
+        }
+
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.pane_id == pane_id)
+        {
+            self.selection = None;
+            self.selection_autoscroll = None;
+        }
+        self.mark_session_dirty();
+        let terminal_id = self.terminal_id_for_pane(ws_idx, pane_id);
+        if let Some(ws) = self.workspaces.get_mut(ws_idx) {
+            let _ = ws.close_pane(pane_id);
+        }
+        self.remove_unattached_terminal_ids(terminal_id);
         true
     }
 
@@ -4795,6 +4813,43 @@ mod tests {
 
         state.close_detached_agent(pane_id);
 
+        assert!(state.detached_agents.is_empty());
+        assert!(!state.terminals.contains_key(&terminal_id));
+        assert!(state.terminal_runtime_shutdowns.contains(&terminal_id));
+    }
+
+    #[test]
+    fn deleting_a_docked_agent_ends_it_and_closes_its_pane() {
+        let mut state = app_with_workspaces(&["test"]);
+        let sibling = state.workspaces[0].tabs[0].root_pane;
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, pane_id);
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+        let sibling_terminal = state.terminal_id_for_pane(0, sibling).unwrap();
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        assert!(state.close_agent_in_pane(&runtimes, pane_id));
+
+        assert!(state.workspaces[0].pane_state(pane_id).is_none());
+        assert!(state.workspaces[0].pane_state(sibling).is_some());
+        assert!(state.detached_agents.is_empty());
+        assert!(!state.terminals.contains_key(&terminal_id));
+        assert!(state.terminal_runtime_shutdowns.contains(&terminal_id));
+        assert!(state.terminals.contains_key(&sibling_terminal));
+    }
+
+    #[test]
+    fn deleting_the_last_docked_agent_closes_its_workspace() {
+        let mut state = app_with_workspaces(&["keep", "drop"]);
+        let pane_id = state.workspaces[1].tabs[0].root_pane;
+        mark_agent(&mut state, 1, 0, pane_id);
+        let terminal_id = state.terminal_id_for_pane(1, pane_id).unwrap();
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        assert!(state.close_agent_in_pane(&runtimes, pane_id));
+
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "keep");
         assert!(state.detached_agents.is_empty());
         assert!(!state.terminals.contains_key(&terminal_id));
         assert!(state.terminal_runtime_shutdowns.contains(&terminal_id));

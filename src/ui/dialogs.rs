@@ -893,7 +893,7 @@ pub(super) fn render_confirm_close_agent_overlay(app: &AppState, frame: &mut Fra
             ),
             Span::styled(
                 if pending.docked {
-                    " — ends the agent, keeps the pane"
+                    " — ends the agent and closes the pane"
                 } else {
                     " — ends the set-down agent"
                 },

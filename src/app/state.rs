@@ -1440,8 +1440,9 @@ pub struct AppState {
         std::collections::HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
     /// Agents running with no pane showing them. Closing a pane sets its agent
     /// down here instead of killing it; the agent keeps its table row, and a
-    /// drag from that row docks it into a pane again. Only "Delete agent" takes
-    /// an agent out of this list by ending it.
+    /// drag from that row docks it into a pane again. Only "Delete agent" ends
+    /// one: a docked agent loses its pane with it, and a set-down agent leaves
+    /// this list.
     pub detached_agents: Vec<DetachedAgent>,
     /// The branch and worktree state of each set-down agent's directory. A
     /// docked pane inherits this from the space holding it; an agent no space

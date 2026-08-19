@@ -66,8 +66,9 @@ pub(crate) fn open_confirm_close_agent(state: &mut AppState, focus: AgentTableFo
     true
 }
 
-/// Removes the agent the question named: a docked agent is ended in its pane,
-/// the way its menu ends it, and a set-down agent is dropped outright.
+/// Removes the agent the question named: a docked agent is ended and its pane
+/// is closed, the way its menu ends it, and a set-down agent is dropped
+/// outright.
 pub(crate) fn confirm_close_agent_accept(
     state: &mut AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -477,6 +478,24 @@ mod tests {
         confirm_close_agent_accept(&mut app.state, &app.terminal_runtimes);
 
         assert!(app.state.detached_agents.is_empty());
+        assert!(app.state.confirm_close_agent.is_none());
+    }
+
+    #[test]
+    fn confirming_delete_on_a_docked_row_closes_the_agent_pane() {
+        let (mut app, pane_id) = app_with_one_agent();
+        let split_pane = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let root_terminal = app.state.terminal_id_for_pane(0, pane_id).unwrap();
+        click_first_row(&mut app);
+        agent_table_delete_intercept(&mut app.state, key(KeyCode::Delete));
+
+        confirm_close_agent_accept(&mut app.state, &app.terminal_runtimes);
+
+        assert!(app.state.workspaces[0].pane_state(pane_id).is_none());
+        assert!(app.state.workspaces[0].pane_state(split_pane).is_some());
+        assert!(app.state.detached_agents.is_empty());
+        assert!(!app.state.terminals.contains_key(&root_terminal));
         assert!(app.state.confirm_close_agent.is_none());
     }
 

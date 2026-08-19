@@ -1086,6 +1086,50 @@ mod tests {
     }
 
     #[test]
+    fn delete_agent_from_the_row_menu_closes_the_pane() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.mode = Mode::ContextMenu;
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let sibling = state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        state.ensure_test_terminals();
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("agent terminal")
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::Agent {
+                ws_idx: 0,
+                pane_id,
+                can_promote: false,
+                space: SpaceMenuKind::Plain,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        let delete_idx = menu
+            .items()
+            .iter()
+            .position(|item| item == "Delete agent")
+            .expect("delete agent item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, delete_idx);
+
+        assert!(state.workspaces[0].pane_state(pane_id).is_none());
+        assert!(state.workspaces[0].pane_state(sibling).is_some());
+        assert!(state.detached_agents.is_empty());
+        assert!(!state.terminals.contains_key(&terminal_id));
+        assert!(state.terminal_runtime_shutdowns.contains(&terminal_id));
+        assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
     fn worktree_delete_outside_a_worktree_directory_does_not_start_removal() {
         let mut state = state_with_workspaces(&["main"]);
         state.mode = Mode::ContextMenu;
