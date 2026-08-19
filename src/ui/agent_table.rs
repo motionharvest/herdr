@@ -53,6 +53,8 @@ const COL_NAME: usize = 0;
 const COL_SUMMARY: usize = 1;
 const COL_DIRECTORY: usize = 2;
 const COL_AGENT: usize = 3;
+const COL_RUN: usize = 4;
+const COL_IDLE: usize = 5;
 const COL_GIT: usize = 6;
 /// The air after a column's widest cell, before the next column starts.
 const COLUMN_GAP: usize = 3;
@@ -217,6 +219,19 @@ impl AgentTableLayout {
     pub fn row_at(&self, x: u16, y: u16) -> Option<&AgentTableRow> {
         self.rows.iter().find(|row| {
             x >= row.rect.x && x < row.rect.x.saturating_add(row.rect.width) && y == row.rect.y
+        })
+    }
+
+    /// The heading cell under a point, if the point sits on the heading row.
+    pub fn heading_column_at(&self, x: u16, y: u16) -> Option<usize> {
+        if self.area.width == 0 || y != self.area.y {
+            return None;
+        }
+        self.groups.iter().find_map(|group| {
+            group
+                .columns
+                .iter()
+                .position(|column| x >= column.x && x < column.x.saturating_add(column.width))
         })
     }
 
@@ -601,6 +616,35 @@ pub(crate) fn sync_agent_order(app: &mut AppState) {
         if !app.agent_order.contains(&terminal_id) {
             app.agent_order.push(terminal_id);
         }
+    }
+}
+
+/// Rewrite the table's durable order from one column. Text columns go
+/// A–Z, empty last. Run and Idle go longest first, missing last.
+pub(crate) fn sort_agent_table_by_column(app: &mut AppState, column: usize) {
+    if column >= COLUMNS {
+        return;
+    }
+    let mut entries = agent_panel_entries(app);
+    match column {
+        COL_RUN => entries.sort_by_key(|entry| duration_sort_key(entry.run_duration)),
+        COL_IDLE => entries.sort_by_key(|entry| duration_sort_key(entry.idle_duration)),
+        _ => entries.sort_by_cached_key(|entry| {
+            let text = cell_texts(app, entry)[column].to_lowercase();
+            (text.is_empty(), text)
+        }),
+    }
+    let order: Vec<_> = entries.into_iter().map(|entry| entry.terminal_id).collect();
+    if order != app.agent_order {
+        app.agent_order = order;
+        app.mark_session_dirty();
+    }
+}
+
+fn duration_sort_key(duration: Option<std::time::Duration>) -> (u8, std::cmp::Reverse<u128>) {
+    match duration {
+        Some(duration) => (0, std::cmp::Reverse(duration.as_nanos())),
+        None => (1, std::cmp::Reverse(0)),
     }
 }
 
@@ -1295,6 +1339,21 @@ mod tests {
         assert_eq!(texts[COL_GIT], "feat/space-done !");
         assert!(!texts[COL_DIRECTORY].contains('/'));
         assert!(!texts[COL_DIRECTORY].contains('('));
+    }
+
+    #[test]
+    fn a_click_on_a_heading_names_the_column() {
+        let mut state = state_with_agents(2);
+        let (layout, _) = split_agent_table(&mut state, Rect::new(0, 0, 200, 20));
+        let directory = layout.groups[0].columns[COL_DIRECTORY];
+        assert_eq!(
+            layout.heading_column_at(directory.x, layout.area.y),
+            Some(COL_DIRECTORY)
+        );
+        assert_eq!(
+            layout.heading_column_at(directory.x, layout.area.y + 1),
+            None
+        );
     }
 
     #[test]

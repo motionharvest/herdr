@@ -23,7 +23,7 @@ mod widgets;
 use self::agent_table::render_global_launcher;
 pub(crate) use self::agent_table::{
     agent_panel_entries, agent_panel_entries_from, compute_agent_locations, render_agent_table,
-    split_agent_table, AgentLocation, AgentTableLayout, AgentTableRow,
+    sort_agent_table_by_column, split_agent_table, AgentLocation, AgentTableLayout, AgentTableRow,
 };
 pub(crate) use self::composer::ComposerLayout;
 use self::composer::{render_composer, render_composer_dropdown};

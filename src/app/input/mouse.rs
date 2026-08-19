@@ -526,6 +526,14 @@ impl AppState {
                 }
 
                 if in_table {
+                    if let Some(column) = self
+                        .view
+                        .agent_table
+                        .heading_column_at(mouse.column, mouse.row)
+                    {
+                        self.sort_agent_table_by_column(column);
+                        return None;
+                    }
                     // The done marker is a button before it is part of a row:
                     // clicking it takes the marker off and nothing else, so the
                     // click that acknowledges an agent is not also the click
@@ -3644,6 +3652,51 @@ mod tests {
             app.state.workspaces[0].natural_pane_order(),
             pane_layout_before
         );
+    }
+
+    #[test]
+    fn clicking_the_directory_heading_sorts_rows_alphabetically() {
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("space");
+        let zebra = workspace.tabs[0].root_pane;
+        let apple = workspace.test_split(Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        for (pane_id, folder) in [(zebra, "zebra"), (apple, "apple")] {
+            let terminal_id = app.state.workspaces[0]
+                .pane_state(pane_id)
+                .expect("agent pane")
+                .attached_terminal_id
+                .clone();
+            let terminal = app
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("agent terminal");
+            terminal.set_agent_name("codex".into());
+            terminal.cwd = format!("/tmp/{folder}").into();
+        }
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let heading = app.state.view.agent_table.area.y;
+        let directory = app.state.view.agent_table.groups[0].columns[2];
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            directory.x,
+            heading,
+        ));
+
+        assert_eq!(
+            crate::ui::agent_panel_entries(&app.state)
+                .iter()
+                .map(|entry| entry.pane_id)
+                .collect::<Vec<_>>(),
+            vec![apple, zebra]
+        );
+        assert!(app.state.agent_press.is_none());
+        assert!(app.state.agent_table_focus.is_none());
     }
 
     #[test]

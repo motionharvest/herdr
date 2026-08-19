@@ -1022,6 +1022,10 @@ impl AppState {
         true
     }
 
+    pub fn sort_agent_table_by_column(&mut self, column: usize) {
+        crate::ui::sort_agent_table_by_column(self, column);
+    }
+
     pub fn next_agent(&mut self) {
         self.cycle_agent_entry(true);
     }
@@ -3585,6 +3589,138 @@ mod tests {
             vec![second, first, third]
         );
     }
+
+    fn three_table_agents() -> (AppState, [PaneId; 3]) {
+        let mut state = app_with_workspaces(&["test"]);
+        let first = state.workspaces[0].tabs[0].root_pane;
+        let second = state.workspaces[0].test_split(Direction::Horizontal);
+        let third = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, first);
+        mark_agent(&mut state, 0, 0, second);
+        mark_agent(&mut state, 0, 0, third);
+        (state, [first, second, third])
+    }
+
+    fn pane_table_order(state: &AppState) -> Vec<PaneId> {
+        crate::ui::agent_panel_entries(state)
+            .iter()
+            .map(|entry| entry.pane_id)
+            .collect()
+    }
+
+    fn terminal_for(state: &mut AppState, pane_id: PaneId) -> &mut crate::terminal::TerminalState {
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+        state.terminals.get_mut(&terminal_id).unwrap()
+    }
+
+    #[test]
+    fn sorting_name_orders_agents_alphabetically() {
+        let (mut state, [zed, amy, nia]) = three_table_agents();
+        terminal_for(&mut state, zed).set_manual_label("Zed".into());
+        terminal_for(&mut state, amy).set_manual_label("Amy".into());
+        terminal_for(&mut state, nia).set_manual_label("Nia".into());
+
+        state.sort_agent_table_by_column(0);
+
+        assert_eq!(pane_table_order(&state), vec![amy, nia, zed]);
+    }
+
+    #[test]
+    fn sorting_directory_orders_folders_alphabetically() {
+        let (mut state, [zebra, apple, mango]) = three_table_agents();
+        terminal_for(&mut state, zebra).cwd = "/tmp/Zebra".into();
+        terminal_for(&mut state, apple).cwd = "/tmp/apple".into();
+        terminal_for(&mut state, mango).cwd = "/tmp/mango".into();
+        state.view.agent_locations.insert(
+            zebra,
+            crate::ui::AgentLocation {
+                path: "/tmp/Zebra".into(),
+                git: None,
+            },
+        );
+        state.view.agent_locations.insert(
+            apple,
+            crate::ui::AgentLocation {
+                path: "/tmp/apple".into(),
+                git: None,
+            },
+        );
+        state.view.agent_locations.insert(
+            mango,
+            crate::ui::AgentLocation {
+                path: "/tmp/mango".into(),
+                git: None,
+            },
+        );
+
+        state.sort_agent_table_by_column(2);
+
+        assert_eq!(pane_table_order(&state), vec![apple, mango, zebra]);
+    }
+
+    #[test]
+    fn sorting_agent_orders_by_kind() {
+        let (mut state, [grok, claude, amp]) = three_table_agents();
+        terminal_for(&mut state, grok).set_detected_state(Some(Agent::Grok), AgentState::Idle);
+        terminal_for(&mut state, claude).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        terminal_for(&mut state, amp).set_detected_state(Some(Agent::Amp), AgentState::Idle);
+
+        state.sort_agent_table_by_column(3);
+
+        assert_eq!(pane_table_order(&state), vec![amp, claude, grok]);
+    }
+
+    #[test]
+    fn sorting_summary_orders_titles_alphabetically() {
+        let (mut state, [later, first, middle]) = three_table_agents();
+        terminal_for(&mut state, later).session_title = Some("Write tests".into());
+        terminal_for(&mut state, first).session_title = Some("Add docs".into());
+        terminal_for(&mut state, middle).session_title = Some("Fix parser".into());
+
+        state.sort_agent_table_by_column(1);
+
+        assert_eq!(pane_table_order(&state), vec![first, middle, later]);
+    }
+
+    #[test]
+    fn sorting_run_orders_longest_first() {
+        let (mut state, [short, long, none]) = three_table_agents();
+        terminal_for(&mut state, short).restore_agent_timing(
+            None,
+            None,
+            Some(std::time::Duration::from_secs(20)),
+        );
+        terminal_for(&mut state, long).restore_agent_timing(
+            None,
+            None,
+            Some(std::time::Duration::from_secs(90)),
+        );
+
+        state.sort_agent_table_by_column(4);
+
+        assert_eq!(pane_table_order(&state), vec![long, short, none]);
+    }
+
+    #[test]
+    fn sorting_idle_orders_longest_first() {
+        let (mut state, [fresh, stale, none]) = three_table_agents();
+        let now = std::time::SystemTime::now();
+        terminal_for(&mut state, fresh).restore_agent_timing(
+            None,
+            now.checked_sub(std::time::Duration::from_secs(15)),
+            None,
+        );
+        terminal_for(&mut state, stale).restore_agent_timing(
+            None,
+            now.checked_sub(std::time::Duration::from_secs(180)),
+            None,
+        );
+
+        state.sort_agent_table_by_column(5);
+
+        assert_eq!(pane_table_order(&state), vec![stale, fresh, none]);
+    }
+
     #[test]
     fn next_agent_crosses_into_the_next_space() {
         let mut first = Workspace::test_new("one");

@@ -102,7 +102,7 @@ Do not use GitHub closing keywords like `fixes #<issue-number>`, `closes #<issue
 
 - Rust: no `unwrap()` in production code. Use `tracing` for logging. Use `#[allow]` only with a comment explaining why.
 - Don't add dependencies without a reason. Check whether existing dependencies cover the need first.
-- Agent-table order is session-wide presentation state keyed by stable `TerminalId`s in `AppState` and `SessionSnapshot`. Never derive it from workspace, tab, or pane layout order; newly observed agents append at the bottom.
+- Agent-table order is session-wide presentation state keyed by stable `TerminalId`s in `AppState` and `SessionSnapshot`. Never derive it from workspace, tab, or pane layout order; newly observed agents append at the bottom. Heading clicks rewrite that same order: text columns A–Z, Run and Idle longest first.
 - Integration asset versions (`HERDR_INTEGRATION_VERSION` markers and matching `*_INTEGRATION_VERSION` constants) are migration versions relative to the latest released tag, not per-commit counters on `master`. If an integration asset changes multiple times between releases, bump it once from the version in the latest release.
 - When changing the server/client wire protocol, compare `src/protocol/wire.rs::PROTOCOL_VERSION` against the latest released tag. Bump it only if the current source protocol is not already greater than the latest released protocol. Update hardcoded protocol expectations and manual protocol fixtures in tests.
 
