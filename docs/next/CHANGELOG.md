@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.10.0] - 2026-08-19
+
 ### Added
 - Grok panes now resume their native conversation after a Herdr server restart. Herdr already restored the pane and relaunched `grok`, which starts a new conversation; Claude Code resumed because an official hook reported a session id. `herdr integration install grok` writes a SessionStart hook that reports that id, and restore then runs `grok --resume <id>`. A pane that never reported an id still restarts from its original launch command.
 - Agents started from the composer work in Herdr-managed linked worktrees when the Worktree box next to Task is checked, regardless of harness. The box starts checked. Clearing it starts the agent in the chosen directory. Herdr creates the checkout itself instead of passing Claude Code's `-w`, so Codex and every other editing harness receive the same isolation and the resulting work has one lifecycle. `herdr agent start <name> --worktree [branch] -- <argv...>` exposes the same fast path to scripts. A folder outside a repository still starts in place. If the start directory is already a linked worktree, composer start and `agent start --worktree` reuse that checkout instead of creating another, and an already-open workspace for it is reused too. `Auto` remains a router rather than creating an empty checkout for itself.
