@@ -288,9 +288,21 @@ impl AppState {
                         .is_some_and(|(checkout, parent)| {
                             crate::worktree::worktree_already_landed(checkout, parent)
                         });
+                    let pane_cwd = ws
+                        .find_tab_index_for_pane(pane_id)
+                        .and_then(|idx| ws.tabs.get(idx))
+                        .and_then(|tab| {
+                            tab.cwd_for_pane(pane_id, &self.terminals, terminal_runtimes)
+                        });
+                    let in_worktree_directory = match pane_cwd.as_deref() {
+                        Some(cwd) => crate::workspace::git_space_metadata(cwd)
+                            .is_some_and(|space| space.is_linked_worktree),
+                        None => true,
+                    };
                     SpaceMenuKind::LinkedWorktree {
                         parent_branch,
                         already_landed,
+                        in_worktree_directory,
                     }
                 } else if ws.worktree_space().is_some() || git_space.is_some() {
                     SpaceMenuKind::Repo
@@ -510,6 +522,7 @@ mod tests {
                     SpaceMenuKind::LinkedWorktree {
                         parent_branch,
                         already_landed,
+                        ..
                     },
                 ..
             } => {
@@ -587,5 +600,69 @@ mod tests {
             .args(["worktree", "remove", "--force", checkout.to_str().unwrap()])
             .status();
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn agent_menu_grays_worktree_delete_when_pane_cwd_is_not_a_worktree() {
+        let cwd = std::env::temp_dir().join(format!(
+            "herdr-plain-cwd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let (app, pane_id) = app_with_one_agent();
+        let mut state = app.state;
+        state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: cwd.join("parent"),
+            checkout_path: cwd.join("worktree"),
+            is_linked_worktree: true,
+        });
+        let terminal_id = state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("agent pane")
+            .attached_terminal_id
+            .clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("agent terminal")
+            .cwd = cwd.clone();
+
+        let kind = state.agent_menu_kind(&app.terminal_runtimes, 0, pane_id);
+        let menu = crate::app::state::ContextMenuState {
+            kind,
+            x: 0,
+            y: 0,
+            list: crate::app::state::MenuListState::new(0),
+        };
+        match &menu.kind {
+            ContextMenuKind::Agent {
+                space:
+                    SpaceMenuKind::LinkedWorktree {
+                        in_worktree_directory,
+                        ..
+                    },
+                ..
+            } => assert!(
+                !*in_worktree_directory,
+                "a pane whose cwd is not a checkout is not in a worktree directory"
+            ),
+            other => panic!("unexpected menu kind: {other:?}"),
+        }
+        let delete_idx = menu
+            .items()
+            .iter()
+            .position(|item| item == "Delete agent / worktree...")
+            .expect("delete worktree item");
+        assert_eq!(delete_idx, menu.items().len() - 1);
+        assert!(!menu.item_enabled(delete_idx));
+
+        let _ = std::fs::remove_dir_all(cwd);
     }
 }
