@@ -256,6 +256,23 @@ impl AppState {
             .workspaces
             .get(ws_idx)
             .map(|ws| {
+                let pane_cwd = ws
+                    .find_tab_index_for_pane(pane_id)
+                    .and_then(|idx| ws.tabs.get(idx))
+                    .and_then(|tab| tab.cwd_for_pane(pane_id, &self.terminals, terminal_runtimes));
+                if let Some((parent_path, checkout_path)) = pane_cwd
+                    .as_deref()
+                    .and_then(crate::workspace::linked_land_paths)
+                {
+                    let parent_branch = crate::workspace::git_branch(&parent_path);
+                    let already_landed =
+                        crate::worktree::worktree_already_landed(&checkout_path, &parent_path);
+                    return SpaceMenuKind::LinkedWorktree {
+                        parent_branch,
+                        already_landed,
+                        in_worktree_directory: true,
+                    };
+                }
                 let git_space = ws.git_space().cloned().or_else(|| {
                     ws.resolved_identity_cwd_from(&self.terminals, terminal_runtimes)
                         .as_deref()
@@ -289,21 +306,10 @@ impl AppState {
                         .is_some_and(|(checkout, parent)| {
                             crate::worktree::worktree_already_landed(checkout, parent)
                         });
-                    let pane_cwd = ws
-                        .find_tab_index_for_pane(pane_id)
-                        .and_then(|idx| ws.tabs.get(idx))
-                        .and_then(|tab| {
-                            tab.cwd_for_pane(pane_id, &self.terminals, terminal_runtimes)
-                        });
-                    let in_worktree_directory = match pane_cwd.as_deref() {
-                        Some(cwd) => crate::workspace::git_space_metadata(cwd)
-                            .is_some_and(|space| space.is_linked_worktree),
-                        None => true,
-                    };
                     SpaceMenuKind::LinkedWorktree {
                         parent_branch,
                         already_landed,
-                        in_worktree_directory,
+                        in_worktree_directory: false,
                     }
                 } else if ws.worktree_space().is_some() || git_space.is_some() {
                     SpaceMenuKind::Repo
@@ -511,37 +517,71 @@ mod tests {
     }
 
     #[test]
-    fn agent_menu_names_the_parent_checkout_branch() {
+    fn agent_menu_names_the_parent_of_the_agent_folder() {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let repo =
             std::env::temp_dir().join(format!("herdr-land-menu-{}-{}", std::process::id(), nanos));
+        let decoy = std::env::temp_dir().join(format!(
+            "herdr-land-menu-decoy-{}-{}",
+            std::process::id(),
+            nanos
+        ));
         std::fs::create_dir_all(&repo).unwrap();
-        let run = |args: &[&str]| {
+        std::fs::create_dir_all(&decoy).unwrap();
+        let run = |cwd: &std::path::Path, args: &[&str]| {
             let status = std::process::Command::new("git")
                 .arg("-C")
-                .arg(&repo)
+                .arg(cwd)
                 .args(args)
                 .status()
                 .unwrap();
             assert!(status.success(), "git {args:?}");
         };
-        run(&["init", "--quiet", "-b", "release"]);
-        run(&["config", "user.email", "herdr@example.invalid"]);
-        run(&["config", "user.name", "Herdr Test"]);
+        run(&repo, &["init", "--quiet", "-b", "release"]);
+        run(&repo, &["config", "user.email", "herdr@example.invalid"]);
+        run(&repo, &["config", "user.name", "Herdr Test"]);
         std::fs::write(repo.join("README.md"), "test\n").unwrap();
-        run(&["add", "README.md"]);
-        run(&["commit", "--quiet", "-m", "initial"]);
+        run(&repo, &["add", "README.md"]);
+        run(&repo, &["commit", "--quiet", "-m", "initial"]);
+        let checkout = repo.join("worktree");
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/land-menu",
+                checkout.to_str().unwrap(),
+            ],
+        );
+        run(&decoy, &["init", "--quiet", "-b", "aaron-vibe"]);
+        run(&decoy, &["config", "user.email", "herdr@example.invalid"]);
+        run(&decoy, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(decoy.join("README.md"), "decoy\n").unwrap();
+        run(&decoy, &["add", "README.md"]);
+        run(&decoy, &["commit", "--quiet", "-m", "initial"]);
 
         let (app, pane_id) = app_with_one_agent();
         let mut state = app.state;
+        let terminal_id = state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("agent pane")
+            .attached_terminal_id
+            .clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("agent terminal")
+            .cwd = checkout.clone();
         state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: repo.clone(),
-            checkout_path: repo.join("worktree"),
+            key: "decoy-key".into(),
+            label: "fifthseason".into(),
+            repo_root: decoy.clone(),
+            checkout_path: decoy.join("worktree"),
             is_linked_worktree: true,
         });
 
@@ -552,17 +592,24 @@ mod tests {
                     SpaceMenuKind::LinkedWorktree {
                         parent_branch,
                         already_landed,
-                        ..
+                        in_worktree_directory,
                     },
                 ..
             } => {
                 assert_eq!(parent_branch.as_deref(), Some("release"));
-                assert!(!already_landed);
+                assert!(already_landed);
+                assert!(in_worktree_directory);
             }
             other => panic!("unexpected menu kind: {other:?}"),
         }
 
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force", checkout.to_str().unwrap()])
+            .status();
         let _ = std::fs::remove_dir_all(repo);
+        let _ = std::fs::remove_dir_all(decoy);
     }
 
     #[test]
@@ -607,6 +654,16 @@ mod tests {
 
         let (app, pane_id) = app_with_one_agent();
         let mut state = app.state;
+        let terminal_id = state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("agent pane")
+            .attached_terminal_id
+            .clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("agent terminal")
+            .cwd = checkout.clone();
         state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
             key: "repo-key".into(),
             label: "herdr".into(),

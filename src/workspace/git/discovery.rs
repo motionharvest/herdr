@@ -76,6 +76,23 @@ pub fn composer_folder_path(cwd: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Parent checkout and linked checkout for landing the worktree at `cwd`.
+///
+/// Land follows the folder the agent is in. A saved space membership is not
+/// consulted here, because an agent can sit in a space that belongs to another
+/// repository.
+pub fn linked_land_paths(cwd: &Path) -> Option<(PathBuf, PathBuf)> {
+    let space = git_space_metadata(cwd)?;
+    if !space.is_linked_worktree {
+        return None;
+    }
+    let parent = composer_folder_path(cwd)?;
+    if canonicalize_best_effort_path(&parent) == canonicalize_best_effort_path(&space.repo_root) {
+        return None;
+    }
+    Some((parent, space.repo_root))
+}
+
 pub fn git_space_metadata(cwd: &Path) -> Option<GitSpaceMetadata> {
     git_repo_root(cwd)?;
 
@@ -357,6 +374,65 @@ mod tests {
         assert_eq!(git_branch(&root).as_deref(), Some("main"));
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linked_land_paths_uses_the_folder_not_a_saved_membership() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-linked-land-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |cwd: &std::path::Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        run(&repo, &["init", "--quiet", "-b", "main"]);
+        run(&repo, &["config", "user.email", "herdr@example.invalid"]);
+        run(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("README.md"), "test\n").unwrap();
+        run(&repo, &["add", "README.md"]);
+        run(&repo, &["commit", "--quiet", "-m", "initial"]);
+        let checkout = repo.join("worktree");
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/linked-land",
+                checkout.to_str().unwrap(),
+            ],
+        );
+
+        let (parent, landed) = linked_land_paths(&checkout).expect("linked checkout");
+        assert_eq!(
+            canonicalize_best_effort_path(&parent),
+            canonicalize_best_effort_path(&repo)
+        );
+        assert_eq!(
+            canonicalize_best_effort_path(&landed),
+            canonicalize_best_effort_path(&checkout)
+        );
+        assert!(linked_land_paths(&repo).is_none());
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force", checkout.to_str().unwrap()])
+            .status();
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]

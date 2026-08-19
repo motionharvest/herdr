@@ -1,6 +1,7 @@
 use crate::api::schema::{
     AgentPromptParams, AgentReadParams, AgentRenameParams, AgentSendParams, AgentStartParams,
-    AgentStatus, AgentTarget, EmptyParams, Method, ReadFormat, ReadSource, Request, Subscription,
+    AgentStatus, AgentTarget, AgentWorktreeLandParams, EmptyParams, Method, ReadFormat, ReadSource,
+    Request, Subscription,
 };
 
 pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
@@ -21,6 +22,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "wait" => agent_wait(&args[1..]),
         "attach" => agent_attach(&args[1..]),
         "start" => agent_start(&args[1..]),
+        "worktree" => agent_worktree(&args[1..]),
         "help" | "--help" | "-h" => {
             print_agent_help();
             Ok(0)
@@ -127,6 +129,43 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
             focus,
             argv: args[separator + 1..].to_vec(),
         }),
+    })?)
+}
+
+fn agent_worktree(args: &[String]) -> std::io::Result<i32> {
+    match args.first().map(|arg| arg.as_str()) {
+        Some("land") => agent_worktree_land(&args[1..]),
+        _ => {
+            eprintln!("usage: herdr agent worktree land [target] [--json]");
+            Ok(2)
+        }
+    }
+}
+
+fn agent_worktree_land(args: &[String]) -> std::io::Result<i32> {
+    let mut target = None;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => {}
+            option if option.starts_with('-') => {
+                eprintln!("unknown option: {option}");
+                return Ok(2);
+            }
+            value if target.is_none() => target = Some(value.to_string()),
+            _ => {
+                eprintln!("usage: herdr agent worktree land [target] [--json]");
+                return Ok(2);
+            }
+        }
+    }
+    let cwd = if target.is_none() {
+        Some(std::env::current_dir()?.display().to_string())
+    } else {
+        None
+    };
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:worktree:land".into(),
+        method: Method::AgentWorktreeLand(AgentWorktreeLandParams { target, cwd }),
     })?)
 }
 
@@ -537,6 +576,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent wait <target> --status <idle|working|blocked|unknown> [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!("  herdr agent start <name> [--cwd PATH] [--worktree [BRANCH]] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>");
+    eprintln!("  herdr agent worktree land [target] [--json]");
     eprintln!("  targets accept terminal ids, pane names, unique agent names, detected/reported agent labels, and legacy pane ids");
     eprintln!(
         "  agent send writes literal text without submitting; agent prompt pastes the text and presses Enter"

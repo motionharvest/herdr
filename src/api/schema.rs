@@ -42,6 +42,8 @@ pub enum Method {
     WorktreeRemove(WorktreeRemoveParams),
     #[serde(rename = "worktree.land")]
     WorktreeLand(WorktreeLandParams),
+    #[serde(rename = "agent.worktree_land")]
+    AgentWorktreeLand(AgentWorktreeLandParams),
     #[serde(rename = "tab.create")]
     TabCreate(TabCreateParams),
     #[serde(rename = "tab.list")]
@@ -202,6 +204,14 @@ pub struct WorktreeLandParams {
     pub target: Option<String>,
     #[serde(default)]
     pub all: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentWorktreeLandParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

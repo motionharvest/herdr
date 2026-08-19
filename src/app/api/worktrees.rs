@@ -2,13 +2,13 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, ResponseResult, WorktreeCreateParams, WorktreeInfo,
-    WorktreeLandInfo, WorktreeLandParams, WorktreeListParams, WorktreeOpenParams,
-    WorktreeRemoveParams, WorktreeSourceInfo,
+    AgentWorktreeLandParams, EventData, EventEnvelope, EventKind, ResponseResult,
+    WorktreeCreateParams, WorktreeInfo, WorktreeLandInfo, WorktreeLandParams, WorktreeListParams,
+    WorktreeOpenParams, WorktreeRemoveParams, WorktreeSourceInfo,
 };
 use crate::app::App;
 
-use super::responses::{encode_error, encode_success};
+use super::responses::{encode_error, encode_error_body, encode_success};
 
 struct ApiFailure {
     code: &'static str,
@@ -64,11 +64,19 @@ impl App {
                 .collect::<Vec<_>>()
         } else {
             let ws_idx = match params.target.as_deref().filter(|target| !target.is_empty()) {
-                Some(target) => self.parse_workspace_id(target).or_else(|| {
-                    self.resolve_terminal_target(target)
-                        .ok()
-                        .map(|resolved| resolved.ws_idx)
-                }),
+                Some(target) => {
+                    if let Some(ws_idx) = self.parse_workspace_id(target) {
+                        Some(ws_idx)
+                    } else {
+                        return self.handle_agent_worktree_land(
+                            id,
+                            AgentWorktreeLandParams {
+                                target: Some(target.to_string()),
+                                cwd: None,
+                            },
+                        );
+                    }
+                }
                 None => self.state.active.or_else(|| {
                     self.state
                         .workspaces
@@ -124,6 +132,101 @@ impl App {
         }
         self.mark_git_status_refresh_due(std::time::Instant::now());
         encode_success(id, ResponseResult::WorktreesLanded { landings })
+    }
+
+    pub(super) fn handle_agent_worktree_land(
+        &mut self,
+        id: String,
+        params: AgentWorktreeLandParams,
+    ) -> String {
+        let (cwd, workspace_id) =
+            if let Some(target) = params.target.filter(|target| !target.is_empty()) {
+                match self.agent_land_cwd(&target) {
+                    Ok(found) => found,
+                    Err(error) => return encode_error_body(id, error),
+                }
+            } else if let Some(cwd) = params.cwd.filter(|cwd| !cwd.is_empty()) {
+                let path = PathBuf::from(cwd);
+                let workspace_id = self
+                    .open_workspace_idx_for_checkout(&path)
+                    .map(|idx| self.public_workspace_id(idx))
+                    .unwrap_or_default();
+                (path, workspace_id)
+            } else {
+                return encode_error(
+                    id,
+                    "invalid_request",
+                    "agent worktree land needs a target or a cwd",
+                );
+            };
+
+        match self.land_linked_cwd(&cwd, workspace_id) {
+            Ok(info) => {
+                self.mark_git_status_refresh_due(std::time::Instant::now());
+                encode_success(
+                    id,
+                    ResponseResult::WorktreesLanded {
+                        landings: vec![info],
+                    },
+                )
+            }
+            Err((code, message)) => encode_error(id, code, message),
+        }
+    }
+
+    fn agent_land_cwd(
+        &self,
+        target: &str,
+    ) -> Result<(PathBuf, String), crate::api::schema::ErrorBody> {
+        let resolved = self
+            .resolve_terminal_target(target)
+            .map_err(|err| self.agent_target_error_body(err))?;
+        let cwd = self
+            .state
+            .workspaces
+            .get(resolved.ws_idx)
+            .and_then(|ws| ws.tabs.get(resolved.tab_idx))
+            .and_then(|tab| {
+                tab.cwd_for_pane(
+                    resolved.pane_id,
+                    &self.state.terminals,
+                    &self.terminal_runtimes,
+                )
+            })
+            .ok_or_else(|| crate::api::schema::ErrorBody {
+                code: "agent_cwd_missing".into(),
+                message: format!("could not read a directory for {target}"),
+            })?;
+        Ok((cwd, self.public_workspace_id(resolved.ws_idx)))
+    }
+
+    fn land_linked_cwd(
+        &self,
+        cwd: &Path,
+        workspace_id: String,
+    ) -> Result<WorktreeLandInfo, (&'static str, String)> {
+        let Some((parent, checkout)) = crate::workspace::linked_land_paths(cwd) else {
+            return Err((
+                "not_linked_worktree",
+                format!("{} is not a linked worktree", cwd.display()),
+            ));
+        };
+        match crate::worktree::land_worktree(
+            &parent,
+            &checkout,
+            &self.state.worktree_verify_command,
+        ) {
+            Ok(outcome) => Ok(WorktreeLandInfo {
+                workspace_id,
+                path: checkout.display().to_string(),
+                branch: outcome.branch,
+                base_branch: outcome.base_branch,
+                commit: outcome.commit,
+                already_landed: outcome.already_landed,
+                committed: outcome.committed,
+            }),
+            Err(err) => Err(("worktree_land_failed", err)),
+        }
     }
 
     pub(super) fn handle_worktree_list(
@@ -1639,6 +1742,73 @@ mod tests {
             )
         }));
 
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn agent_worktree_land_follows_the_folder_not_space_membership() {
+        let repo = create_committed_repo("api-agent-land-repo");
+        run_git(&repo, &["branch", "-M", "main"]);
+        let checkout = unique_temp_path("api-agent-land-checkout");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/api-agent-land",
+                checkout.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(checkout.join("agent.txt"), "land me\n").unwrap();
+        run_git(&checkout, &["add", "agent.txt"]);
+        run_git(&checkout, &["commit", "--quiet", "-m", "agent work"]);
+
+        let mut app = app_with_parent(&repo);
+        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "decoy".into(),
+            label: "fifthseason".into(),
+            repo_root: repo.join("missing-parent"),
+            checkout_path: repo.join("missing-checkout"),
+            is_linked_worktree: true,
+        });
+
+        let response = app.handle_api_request(Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::AgentWorktreeLand(
+                crate::api::schema::AgentWorktreeLandParams {
+                    target: None,
+                    cwd: Some(checkout.display().to_string()),
+                },
+            ),
+        });
+        let success: SuccessResponse = serde_json::from_str(&response)
+            .unwrap_or_else(|err| panic!("expected worktrees_landed: {err}: {response}"));
+        let ResponseResult::WorktreesLanded { landings } = success.result else {
+            panic!("expected worktrees_landed: {response}");
+        };
+        assert_eq!(landings.len(), 1);
+        assert_eq!(landings[0].path, checkout.display().to_string());
+        assert_eq!(landings[0].base_branch, "main");
+        assert!(!landings[0].already_landed);
+        let parent_head = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&parent_head.stdout).trim(),
+            landings[0].commit
+        );
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force", checkout.to_str().unwrap()])
+            .status();
+        let _ = std::fs::remove_dir_all(checkout);
         let _ = std::fs::remove_dir_all(repo);
     }
 }

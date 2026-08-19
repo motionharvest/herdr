@@ -38,7 +38,7 @@ pub fn display_path_with_home(path: &std::path::Path) -> String {
 pub use self::{
     git::{
         composer_folder_path, derive_label_from_cwd, git_branch, git_space_metadata,
-        git_status_cache_key, GitSpaceMetadata, GitStatusCacheEntry,
+        git_status_cache_key, linked_land_paths, GitSpaceMetadata, GitStatusCacheEntry,
     },
     tab::Tab,
 };
