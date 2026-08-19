@@ -19,7 +19,7 @@ This is the strongest persistence path because the original processes never stop
 
 ## Snapshot restore
 
-If the Herdr server stops and starts again, the original pane processes are gone. Herdr restores the saved session shape: workspaces, tabs, panes, cwd, layout, and focus.
+If the Herdr server stops and starts again, the original pane processes are gone. Herdr restores the saved session shape: workspaces, tabs, panes, cwd, layout, focus, and each agent's done marker.
 
 Snapshot restore does not preserve running shells, servers, tests, or arbitrary processes. Panes that cannot use a stronger restore path come back as new shells in their saved directories.
 
@@ -62,13 +62,14 @@ Native session restore requires these Herdr integration versions or newer:
 | Droid | `1` | `droid --resume <id>` |
 | OpenCode | `4` | `opencode --session <id>` |
 | Hermes Agent | `2` | `hermes --resume <id>` |
+| Grok | `1` | `grok --resume <id>` |
 
 OMP integration version `2` reports agent state, but does not report native session references for restore.
 Qoder CLI integration version `1` reports agent state, but does not report native session references for restore.
 
 Run `herdr integration status` to check installed integration versions. Reinstall outdated integrations with `herdr integration install <agent>`.
 
-Unsupported, missing, invalid, duplicated, or stale session references restore as normal shells in the saved pane directory.
+Unsupported, invalid, duplicated, or stale session references restore as normal shells in the saved pane directory. An agent launched by Herdr with no reported session reference restarts from its original launch command so it remains available in the agent table, whether it was set down or open in a pane when the server stopped.
 
 If native agent session restore applies to a pane, Herdr resumes the agent session instead of replaying saved pane history for that pane.
 
@@ -94,6 +95,6 @@ Plain `herdr update` and plain `herdr --remote workbox` use the normal restart/s
 | Case | Processes keep running | Layout returns | Recent screen returns | Agent conversation resumes |
 | --- | --- | --- | --- | --- |
 | Detach and reattach | Yes | Yes | Yes, from the live terminal | Yes, because the process never stopped |
-| Server restart | No | Yes | Only with pane screen history | Only with native agent session restore |
-| Update without `--handoff` | Compatible servers keep running; restart-required servers may need stop/restart | Yes after restart | Only with pane screen history | Only with native agent session restore |
+| Server restart | No | Yes | Only with pane screen history | With native agent session restore, or from the original command for agents launched by Herdr |
+| Update without `--handoff` | Compatible servers keep running; restart-required servers may need stop/restart | Yes after restart | Only with pane screen history | With native agent session restore, or from the original command for agents launched by Herdr |
 | Update with `--handoff` | Best effort for supported running servers | Yes | Yes, from the live terminal if handoff succeeds | Yes, because the process keeps running if handoff succeeds |

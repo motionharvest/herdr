@@ -39,7 +39,7 @@ Herdr combines three signals:
 2. terminal output heuristics
 3. integration session identity or state reports
 
-Process detection tells Herdr which pane owns an agent. Heuristics infer native agent state from terminal screen snapshots. Claude Code, Codex, Droid, and OpenCode integrations provide session identity for restore; Pi, OMP, GitHub Copilot CLI, Kimi Code CLI, Hermes Agent, Qoder CLI, and custom socket integrations can report state when they define state outside the native terminal UI.
+Process detection tells Herdr which pane owns an agent. Heuristics infer native agent state from terminal screen snapshots. Claude Code, Codex, Droid, OpenCode, and Grok integrations provide session identity for restore; Pi, OMP, GitHub Copilot CLI, Kimi Code CLI, Hermes Agent, Qoder CLI, and custom socket integrations can report state when they define state outside the native terminal UI.
 
 Herdr can run inside tmux as the outer terminal environment. Agent detection does not inspect tmux sessions launched inside a Herdr pane. If a shell framework auto-enters tmux inside Herdr, Herdr sees `tmux` as the pane process instead of the agent behind it.
 
@@ -66,6 +66,7 @@ herdr integration install kimi
 herdr integration install opencode
 herdr integration install hermes
 herdr integration install qodercli
+herdr integration install grok
 ```
 
 Check installed integration versions:
@@ -114,6 +115,22 @@ Spawn an agent into Herdr from a script:
 ```bash
 herdr agent start reviewer --cwd ~/project --split right -- pi
 ```
+
+Give any harness its own Herdr-managed worktree without adding a harness-specific worktree flag:
+
+```bash
+herdr agent start reviewer --cwd ~/project --worktree -- codex
+```
+
+If the start directory is already a linked worktree, Herdr starts the agent there and does not create another checkout.
+
+The agent name is also the quickest landing target:
+
+```bash
+herdr agent worktree land reviewer
+```
+
+The agent table shows the current run duration while the agent is working. When it becomes idle, that duration freezes and idle age starts counting. Click a heading to sort the rows: name, summary, directory, kind, and git status go A–Z; Run and Idle go longest first. The sort is the same session-wide order a drag writes, so new agents still append at the bottom. A row that is not a linked worktree offers `Delete agent`, which ends the agent and closes the pane it was in. `Delete agent / worktree...` stays at the bottom of the same menu and is grayed out unless that agent's directory is a linked worktree. In a linked worktree, the menu also offers land onto the parent checkout's current branch. Choosing it prompts that agent to commit outstanding work, then run `herdr agent worktree land`. Land is grayed out when the worktree already shares the parent branch's commit and has nothing left to land, or when the agent is not in a linked worktree directory. `herdr agent worktree land` lands the folder that agent is in. The `!` in Git Status means that checkout has uncommitted files. Deletion warns before discarding uncommitted or unlanded work. Composer-launched editing agents use the same managed-worktree path when the Worktree box next to Task is checked and their chosen directory is a repository. Clear the box to start in that directory.
 
 You can place that agent in a specific workspace or tab:
 

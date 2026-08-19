@@ -105,20 +105,24 @@ The snippet only activates inside Herdr panes, where `HERDR_ENV=1` is forwarded 
 
 ## Worktrees
 
-Set the root directory Herdr uses for Git worktree checkouts created from the sidebar:
+Set the root directory Herdr uses for managed Git worktree checkouts:
 
 ```toml
 [worktrees]
-directory = "~/.herdr/worktrees"
+directory = ".herdr/worktrees"
+verify = ["just", "check"]
+auto_land = false
 ```
 
-Herdr creates checkouts under `<directory>/<repo>/<branch-slug>`. For sibling-style checkouts, set this to a directory such as `~/Projects/herdr-worktrees`. Relative values are resolved to an absolute path when the app applies the config.
+The default is relative to the source repository: Herdr creates checkouts under `<repo>/.herdr/worktrees/<branch-slug>` and adds that relative directory to the repo's `.git/info/exclude` so the parent checkout stays clean. An absolute or `~/` value keeps the previous global layout, `<directory>/<repo>/<branch-slug>`. For sibling-style checkouts outside the repo, set this to a directory such as `~/Projects/herdr-worktrees`.
 
-Worktree actions are available from Git workspace rows. `New worktree` creates a branch and checkout, opens it as a new Herdr workspace, and groups it under the source workspace. `Open worktree...` lists existing Git worktree checkouts for that repo; choosing an already-open checkout focuses it, and choosing a closed checkout opens it in the same group.
+`verify` is an optional program-and-arguments array. The land action runs it in the agent worktree after rebasing and before the parent checkout advances. An empty array skips verification. `auto_land` queues the same landing whenever an agent in a linked worktree becomes idle; it defaults to `false`, so landing stays explicit until you have seen the verification command work for that repository.
 
-Grouped worktrees still behave like normal Herdr workspaces: they can be focused, renamed, closed, and contain their own tabs and panes. The parent row is the original workspace. Closing the parent row closes the whole Herdr group, but it does not delete checkout folders or branches.
+Worktree actions are available from agent-table rows. `New worktree` creates a branch and checkout and opens it as a new Herdr space. `Open worktree...` lists existing Git worktree checkouts for that repository. Composer-launched editing agents use managed worktrees when the Worktree box next to Task is checked and their selected directory is a repository, and stay in that checkout when it is already a linked worktree. Clear the box to start in the selected directory.
 
-Deleting a worktree checkout is explicit. Use `Delete worktree checkout...` on a grouped child workspace to run `git worktree remove`. Herdr first asks Git to remove safely. If Git refuses because the checkout has modified or untracked files, Herdr asks again before running the forced remove. Branches are not deleted.
+The land item on a linked worktree row is named for the branch currently checked out in the parent of that agent's folder, such as `Land on main`. Choosing it prompts that agent to commit outstanding work, then run `herdr agent worktree land`. The item stays visible but is grayed out when the worktree already shares that parent commit and has nothing left to land, or when the agent is not in a linked worktree directory. `herdr agent worktree land` rebases onto the parent branch, runs `verify`, and fast-forwards the parent checkout. A parent checkout's row still says `Delete agent`, which ends the agent and leaves the directory alone. `Delete agent / worktree...` stays at the bottom of the menu on every agent row and is grayed out unless that agent's directory is a linked worktree. The `!` next to a directory means that checkout has uncommitted files; a dirty parent checkout blocks the fast-forward. A conflict stays in the agent worktree. Herdr serializes CLI landings for one repository so agents cannot race to move the same parent branch.
+
+Deleting an agent worktree is explicit. Use `Delete agent / worktree...` on its agent-table row. Herdr refuses the first deletion when the checkout has uncommitted files or commits that have not landed, then shows the destructive confirmation. Confirming ends the worktree's agents and removes both the checkout and its local branch; closing a space still removes neither.
 
 ## Remote attach
 
@@ -157,6 +161,7 @@ The default keymap is prefix-first and avoids direct shortcuts that can steal in
 detach = "prefix+q"
 workspace_picker = "prefix+w"
 goto = "prefix+g"
+composer = "prefix+/"
 new_workspace = "prefix+shift+n"
 new_worktree = "prefix+shift+g"
 rename_workspace = "prefix+shift+w"
@@ -461,7 +466,7 @@ Herdr can restart supported agent panes in their native conversation sessions af
 resume_agents_on_restore = true
 ```
 
-This is enabled by default. Herdr only resumes panes that reported a native session reference through an official Herdr integration. Supported resume targets are Claude Code, Codex, GitHub Copilot CLI, Droid, Pi, Hermes Agent, and OpenCode. Unsupported, missing, invalid, duplicated, or stale session references restore as a normal shell in the saved pane directory.
+This is enabled by default. Herdr only resumes panes that reported a native session reference through an official Herdr integration. Supported resume targets are Claude Code, Codex, GitHub Copilot CLI, Droid, Pi, Hermes Agent, OpenCode, and Grok. Unsupported, invalid, duplicated, or stale session references restore as a normal shell in the saved pane directory. A set-down agent with no reported session reference restarts from its original launch command so it remains available in the agent table.
 
 Session references are stored in the local Herdr session snapshot. They are not shown in normal pane, agent, status, or event output.
 

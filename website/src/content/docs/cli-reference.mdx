@@ -78,11 +78,14 @@ herdr worktree list [--workspace ID | --cwd PATH] [--json]
 herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json]
 herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]
 herdr worktree remove --workspace ID [--force] [--json]
+herdr worktree land [target | --all] [--json]
 ```
 
-Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree create` creates a Git worktree checkout, opens it as a workspace, and groups it with the parent repo workspace. Without `--path`, Herdr creates the checkout under `<worktrees.directory>/<repo>/<branch-slug>`.
+Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree create` creates a Git worktree checkout, opens it as a workspace, and groups it with the parent repo workspace. Without `--path`, a relative `[worktrees].directory` creates the checkout under `<repo>/<directory>/<branch-slug>`. An absolute or `~/` directory still creates `<directory>/<repo>/<branch-slug>`.
 
-`workspace close` closes Herdr state only. `worktree remove` is the explicit checkout deletion path; it runs `git worktree remove`, never deletes the branch, and requires `--force` when Git refuses a dirty checkout.
+`worktree land` accepts a workspace ID, pane name, or unique agent name. A workspace ID or `--all` lands from that space's saved worktree membership. A pane or agent name lands the linked worktree of that agent's current folder. It rebases onto the parent checkout's current branch, runs `[worktrees].verify`, and fast-forwards the parent. `--all` serializes every open linked worktree through the same operation.
+
+`workspace close` closes Herdr state only. `worktree remove` is the explicit destructive path: without `--force`, uncommitted files or commits absent from the parent branch stop it. A successful removal deletes both the checkout and its local branch.
 
 ## Tabs
 
@@ -174,12 +177,17 @@ herdr agent rename <target> <name>|--clear
 herdr agent focus <target>
 herdr agent wait <target> --status <idle|working|blocked|unknown> [--timeout MS]
 herdr agent attach <target> [--takeover]
-herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>
+herdr agent start <name> [--cwd PATH] [--worktree [BRANCH]] [--workspace ID] [--tab ID] [--split right|down] [--focus|--no-focus] -- <argv...>
+herdr agent worktree land [target] [--json]
 ```
 
 Agent targets can be terminal IDs, pane names, unique agent names, detected or reported agent labels, or legacy pane IDs. Names and labels are agent identities. Terminal IDs and legacy pane IDs are low-level escape hatches.
 
 `agent status` prints one plain-text line per agent — name, status, and the reported session title when the agent has reported one — instead of JSON. `agent read` reads the resolved terminal stream. `agent send` writes literal text to that stream without submitting; `agent prompt` pastes the text and presses Enter, so the message arrives and submits as one. `agent get`, `agent focus`, `agent wait`, and `agent attach` require the resolved terminal to have agent identity. `agent rename` can assign that identity.
+
+`agent worktree land` lands the linked worktree of the named agent's current folder. With no target it uses the process cwd, which is the folder the agent is running in. It does not use the space the row sits in.
+
+`agent start --worktree` starts the agent in a linked worktree and leaves the harness argv unchanged. If `--cwd` is already a linked worktree, that checkout is reused and no new branch is created; an already-open workspace for that checkout is reused too. Otherwise Herdr creates a linked checkout under `[worktrees].directory` and launches the agent as that checkout's workspace. Omit `BRANCH` for a generated `worktree/...` branch. Because it owns placement, `--worktree` cannot be combined with `--workspace`, `--tab`, or `--split`.
 
 Use `pane send-text`, `pane send-keys`, `pane run`, and `terminal attach` for ordinary terminals, servers, tests, shells, or low-level terminal control. Use `pane run` when you want to submit a command with Enter.
 
@@ -220,6 +228,7 @@ herdr integration install kimi
 herdr integration install opencode
 herdr integration install hermes
 herdr integration install qodercli
+herdr integration install grok
 herdr integration uninstall pi
 herdr integration uninstall omp
 herdr integration uninstall claude
@@ -230,6 +239,7 @@ herdr integration uninstall kimi
 herdr integration uninstall opencode
 herdr integration uninstall hermes
 herdr integration uninstall qodercli
+herdr integration uninstall grok
 herdr integration status [--outdated-only]
 ```
 
