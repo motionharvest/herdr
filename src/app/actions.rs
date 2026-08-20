@@ -3697,6 +3697,7 @@ mod tests {
             crate::ui::AgentLocation {
                 path: "/tmp/Zebra".into(),
                 git: None,
+                worktree_state: crate::workspace::GitWorktreeState::Clean,
             },
         );
         state.view.agent_locations.insert(
@@ -3704,6 +3705,7 @@ mod tests {
             crate::ui::AgentLocation {
                 path: "/tmp/apple".into(),
                 git: None,
+                worktree_state: crate::workspace::GitWorktreeState::Clean,
             },
         );
         state.view.agent_locations.insert(
@@ -3711,6 +3713,7 @@ mod tests {
             crate::ui::AgentLocation {
                 path: "/tmp/mango".into(),
                 git: None,
+                worktree_state: crate::workspace::GitWorktreeState::Clean,
             },
         );
 

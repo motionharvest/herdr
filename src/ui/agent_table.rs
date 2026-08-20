@@ -150,6 +150,7 @@ pub(crate) struct AgentLocation {
     pub path: String,
     /// `feat/space-done !` — branch and worktree marker, absent outside a repo.
     pub git: Option<String>,
+    pub worktree_state: crate::workspace::GitWorktreeState,
 }
 
 impl AgentLocation {
@@ -669,6 +670,7 @@ fn agent_location(
     Some(AgentLocation {
         path: super::panes::display_location_path(&cwd, &git_status),
         git,
+        worktree_state: git_status.worktree_state,
     })
 }
 
@@ -682,24 +684,25 @@ fn detached_agent_location(
 ) -> Option<AgentLocation> {
     let cwd =
         crate::app::state::detached_agent_cwd(&detached.pane, &app.terminals, terminal_runtimes)?;
-    let git = app
-        .detached_git_statuses
-        .get(&detached.pane_id)
-        .and_then(|status| {
-            let branch = super::panes::git_branch_label(status)?;
-            Some(format!(
-                "{branch} {}",
-                super::panes::worktree_state_marker(status.worktree_state)
-            ))
-        });
-    let path = app
-        .detached_git_statuses
-        .get(&detached.pane_id)
-        .map_or_else(
-            || super::panes::display_path_with_home(&cwd),
-            |status| super::panes::display_location_path(&cwd, status),
-        );
-    Some(AgentLocation { path, git })
+    let status = app.detached_git_statuses.get(&detached.pane_id);
+    let git = status.and_then(|status| {
+        let branch = super::panes::git_branch_label(status)?;
+        Some(format!(
+            "{branch} {}",
+            super::panes::worktree_state_marker(status.worktree_state)
+        ))
+    });
+    let path = status.map_or_else(
+        || super::panes::display_path_with_home(&cwd),
+        |status| super::panes::display_location_path(&cwd, status),
+    );
+    Some(AgentLocation {
+        path,
+        git,
+        worktree_state: status
+            .map(|status| status.worktree_state)
+            .unwrap_or_default(),
+    })
 }
 
 /// Where every listed pane is working, computed once per frame from the live
@@ -1018,11 +1021,28 @@ fn cell_line<'a>(
             }),
         ),
         COL_DIRECTORY => folder_line(app, entry, width, folders),
-        COL_GIT => Line::styled(
-            pad(text, width),
-            Style::default().fg(mute_when_host_unfocused(app, app.palette.mauve)),
-        ),
+        COL_GIT => {
+            let color = entry
+                .location
+                .as_ref()
+                .filter(|location| location.git.is_some())
+                .map(|location| git_status_color(&app.palette, location.worktree_state))
+                .unwrap_or(app.palette.overlay0);
+            Line::styled(
+                pad(text, width),
+                Style::default().fg(mute_when_host_unfocused(app, color)),
+            )
+        }
         _ => Line::styled(pad(text, width), Style::default().fg(detail_fg(app, entry))),
+    }
+}
+
+fn git_status_color(palette: &Palette, state: crate::workspace::GitWorktreeState) -> Color {
+    match state {
+        crate::workspace::GitWorktreeState::Clean => palette.green,
+        crate::workspace::GitWorktreeState::Staged
+        | crate::workspace::GitWorktreeState::Unstaged
+        | crate::workspace::GitWorktreeState::Mixed => palette.yellow,
     }
 }
 
@@ -1198,6 +1218,7 @@ mod tests {
             location: Some(AgentLocation {
                 path: path.to_string(),
                 git: None,
+                worktree_state: crate::workspace::GitWorktreeState::Clean,
             }),
             state: AgentState::Idle,
             seen: true,
@@ -1361,6 +1382,7 @@ mod tests {
         row.location = Some(AgentLocation {
             path: "~/lab/herdr".into(),
             git: Some("feat/space-done !".into()),
+            worktree_state: crate::workspace::GitWorktreeState::Unstaged,
         });
         let texts = cell_texts(&state, &row);
         assert_eq!(texts[COL_NAME], "Olivia");
@@ -1407,6 +1429,7 @@ mod tests {
             AgentLocation {
                 path: path.into(),
                 git: Some(git.into()),
+                worktree_state: crate::workspace::GitWorktreeState::Unstaged,
             },
         );
         let id = state.terminals.keys().next().cloned().expect("a terminal");
@@ -1538,5 +1561,71 @@ mod tests {
                 "slot {slot} fell outside the terminal palette: {color:?}"
             );
         }
+    }
+
+    fn painted_git_status_fg(worktree_state: crate::workspace::GitWorktreeState) -> Color {
+        let mut state = state_with_agents(1);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        state.workspaces[0].pane_git_statuses.insert(
+            pane_id,
+            crate::workspace::WorkspaceGitStatusSnapshot {
+                branch: Some("main".into()),
+                ahead_behind: None,
+                space: None,
+                worktree_state,
+            },
+        );
+        let area = Rect::new(0, 0, 200, 20);
+        let (layout, _) = split_agent_table(&mut state, area);
+        let entries = agent_panel_entries(&state);
+        let git = entries[0]
+            .location
+            .as_ref()
+            .and_then(|location| location.git.as_deref())
+            .expect("git status text");
+        assert!(
+            git.starts_with("main "),
+            "git column should carry the branch so the color has something to paint: {git}"
+        );
+        let backend = ratatui::backend::TestBackend::new(area.width, area.height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_agent_table(&state, frame, &layout, &entries))
+            .unwrap();
+        let git_col = layout.groups[0].columns[COL_GIT];
+        let row = layout.rows[0].rect.y;
+        terminal
+            .backend()
+            .buffer()
+            .cell((git_col.x, row))
+            .expect("the git status cell")
+            .style()
+            .fg
+            .expect("a foreground color")
+    }
+
+    #[test]
+    fn git_status_is_green_when_the_checkout_is_clean() {
+        assert_eq!(
+            painted_git_status_fg(crate::workspace::GitWorktreeState::Clean),
+            Palette::catppuccin().green
+        );
+    }
+
+    #[test]
+    fn git_status_is_yellow_when_the_checkout_is_dirty() {
+        let yellow = Palette::catppuccin().yellow;
+        assert_eq!(
+            painted_git_status_fg(crate::workspace::GitWorktreeState::Unstaged),
+            yellow
+        );
+        assert_eq!(
+            painted_git_status_fg(crate::workspace::GitWorktreeState::Staged),
+            yellow
+        );
+        assert_eq!(
+            painted_git_status_fg(crate::workspace::GitWorktreeState::Mixed),
+            yellow
+        );
     }
 }

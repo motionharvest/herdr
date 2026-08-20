@@ -877,6 +877,7 @@ mod tests {
             Some(AgentLocation {
                 path: "~/lab/herdr".into(),
                 git: Some("main ✓".into()),
+                worktree_state: crate::workspace::GitWorktreeState::Clean,
             }),
             Some("pi"),
         );
