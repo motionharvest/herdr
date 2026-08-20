@@ -3,16 +3,19 @@
 //! A pane full of agents is hard to scan when every row reads "Pane 1" or
 //! repeats the harness name. Shells and untitled agents get a stable first
 //! name derived from the terminal id. Once an agent has a session title, the
-//! name is derived from that title: a content verb becomes an `-er`/`-or`
-//! agentive, a content noun with no verb becomes `-man` or `-ist`, and
-//! anything else falls back to the first three words as a slug. That name is
-//! frozen on the terminal so a later title refresh does not move the CLI
-//! target. Collisions among live terminals are disambiguated with a numeric
-//! suffix assigned in stable id order, so an existing pane never loses its
-//! name when a new one appears.
+//! name is derived from that title. A headline that ends in a past verb uses
+//! that verb as an `-er`/`-or` agentive and the last two content nouns before
+//! it as the head compound (`Clever Agent Naming Convention Explained` →
+//! `naming-convention-explainer`). An imperative title uses the first content
+//! verb and its first object noun (`Commit work and land herdr worktree` →
+//! `work-committer`). A title with no content verb uses `-man` on a
+//! one-syllable noun or `-ist` on a longer one. Anything else falls back to
+//! the first three words as a slug. That name is frozen on the terminal so a
+//! later title refresh does not move the CLI target. Collisions among live
+//! terminals are disambiguated with a numeric suffix assigned in stable id
+//! order, so an existing pane never loses its name when a new one appears.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use crate::terminal::{TerminalId, TerminalState};
 
@@ -85,14 +88,15 @@ fn name_from_heads(verb: Option<&str>, nouns: &[String]) -> Option<String> {
         if verber.is_empty() {
             return None;
         }
-        if let Some(noun) = nouns
+        let noun_parts: Vec<String> = nouns
             .iter()
             .map(|noun| kebab(noun))
-            .find(|noun| !noun.is_empty())
-        {
-            return Some(format!("{noun}-{verber}"));
+            .filter(|noun| !noun.is_empty())
+            .collect();
+        if noun_parts.is_empty() {
+            return Some(verber);
         }
-        return Some(verber);
+        return Some(format!("{}-{verber}", noun_parts.join("-")));
     }
 
     let cleaned: Vec<String> = nouns
@@ -199,38 +203,40 @@ fn syllable_count(word: &str) -> usize {
 }
 
 fn extract_heads(title: &str) -> Option<(Option<String>, Vec<String>)> {
-    let tokenizer = tokenizer()?;
-    let mut verb = None;
-    let mut nouns = Vec::new();
-    for sentence in tokenizer.pipe(title) {
-        for token in sentence.tokens() {
-            let word = token.word();
-            let mut lemma = kebab(word.as_str());
-            let mut is_verb = false;
-            let mut is_common_noun = false;
-            for tag in word.tags() {
-                let pos = tag.pos().as_str();
-                let tag_lemma = kebab(tag.lemma().as_str());
-                if !tag_lemma.is_empty() {
-                    lemma = tag_lemma;
-                }
-                if pos.starts_with("VB") {
-                    is_verb = true;
-                }
-                if pos.starts_with("NN") && !pos.starts_with("NNP") {
-                    is_common_noun = true;
-                }
-            }
-            if lemma.is_empty() {
-                continue;
-            }
-            if is_verb && !is_auxiliary(&lemma) && verb.is_none() {
-                verb = Some(lemma.clone());
-            }
-            if is_common_noun && verb.as_deref() != Some(lemma.as_str()) {
-                nouns.push(lemma);
+    let tokens = title_tokens(title);
+    if tokens.is_empty() {
+        return None;
+    }
+
+    if let Some(last) = tokens.last() {
+        if let Some(lemma) = past_verb_lemma(last) {
+            if !is_auxiliary(&lemma) {
+                let nouns = head_compound(&tokens[..tokens.len() - 1]);
+                return Some((Some(lemma), nouns));
             }
         }
+    }
+
+    let mut verb = None;
+    let mut nouns = Vec::new();
+    for token in tokens {
+        if is_function_word(&token) {
+            continue;
+        }
+        if is_auxiliary(&token) {
+            continue;
+        }
+        if verb.is_none() && is_base_verb(&token) {
+            verb = Some(token);
+            continue;
+        }
+        if is_adjective(&token) {
+            continue;
+        }
+        nouns.push(token);
+    }
+    if verb.is_some() && nouns.len() > 1 {
+        nouns.truncate(1);
     }
     if verb.is_none() && nouns.is_empty() {
         None
@@ -239,23 +245,365 @@ fn extract_heads(title: &str) -> Option<(Option<String>, Vec<String>)> {
     }
 }
 
+fn title_tokens(title: &str) -> Vec<String> {
+    title
+        .split_whitespace()
+        .filter_map(|raw| {
+            let cleaned = kebab(raw);
+            if cleaned.is_empty() {
+                None
+            } else {
+                Some(cleaned)
+            }
+        })
+        .collect()
+}
+
+fn head_compound(tokens: &[String]) -> Vec<String> {
+    let nouns: Vec<String> = tokens
+        .iter()
+        .filter(|token| !is_function_word(token) && !is_adjective(token) && !is_auxiliary(token))
+        .cloned()
+        .collect();
+    match nouns.len() {
+        0 => nouns,
+        1 => nouns,
+        n => nouns[n - 2..].to_vec(),
+    }
+}
+
+fn is_function_word(word: &str) -> bool {
+    matches!(
+        word,
+        "a" | "an"
+            | "the"
+            | "and"
+            | "or"
+            | "but"
+            | "nor"
+            | "of"
+            | "to"
+            | "for"
+            | "in"
+            | "on"
+            | "at"
+            | "by"
+            | "with"
+            | "from"
+            | "as"
+            | "into"
+            | "onto"
+            | "over"
+            | "under"
+            | "than"
+            | "then"
+            | "vs"
+            | "versus"
+            | "via"
+            | "per"
+            | "plus"
+            | "not"
+            | "no"
+            | "if"
+            | "when"
+            | "while"
+            | "that"
+            | "this"
+            | "these"
+            | "those"
+            | "it"
+            | "its"
+    )
+}
+
+fn is_adjective(word: &str) -> bool {
+    matches!(
+        word,
+        "clever"
+            | "new"
+            | "old"
+            | "true"
+            | "false"
+            | "empty"
+            | "full"
+            | "simple"
+            | "easy"
+            | "hard"
+            | "quick"
+            | "slow"
+            | "high"
+            | "low"
+            | "big"
+            | "small"
+            | "large"
+            | "short"
+            | "long"
+            | "good"
+            | "bad"
+            | "clean"
+            | "dirty"
+            | "hidden"
+            | "visible"
+            | "public"
+            | "private"
+            | "common"
+            | "open"
+            | "closed"
+            | "ready"
+            | "wrong"
+            | "right"
+            | "first"
+            | "last"
+            | "next"
+            | "current"
+            | "latest"
+            | "extra"
+            | "other"
+            | "same"
+            | "real"
+            | "safe"
+            | "local"
+            | "remote"
+            | "main"
+            | "core"
+            | "raw"
+            | "early"
+            | "late"
+    ) || word.ends_with("ous")
+        || word.ends_with("ful")
+        || word.ends_with("less")
+        || word.ends_with("ish")
+        || word.ends_with("ive")
+        || word.ends_with("able")
+        || word.ends_with("ible")
+        || word.ends_with("ical")
+        || word.ends_with("ary")
+        || word.ends_with("ory")
+}
+
+fn is_base_verb(word: &str) -> bool {
+    BASE_VERBS.binary_search(&word).is_ok()
+}
+
+fn past_verb_lemma(word: &str) -> Option<String> {
+    for (form, lemma) in IRREGULAR_PAST {
+        if *form == word {
+            return Some((*lemma).to_string());
+        }
+    }
+    strip_ed(word)
+}
+
+fn strip_ed(word: &str) -> Option<String> {
+    if word.len() < 5 || !word.ends_with("ed") {
+        return None;
+    }
+    let minus_ed = &word[..word.len() - 2];
+    let minus_d = &word[..word.len() - 1];
+    if minus_ed.ends_with('i') && minus_ed.len() > 1 {
+        let mut lemma = minus_ed[..minus_ed.len() - 1].to_string();
+        lemma.push('y');
+        return Some(lemma);
+    }
+    let chars: Vec<char> = minus_ed.chars().collect();
+    if chars.len() >= 3 {
+        let n = chars.len();
+        if chars[n - 1] == chars[n - 2] && is_consonant(chars[n - 1]) && is_vowel(chars[n - 3]) {
+            return Some(minus_ed[..minus_ed.len() - 1].to_string());
+        }
+    }
+    if minus_d.ends_with("ate")
+        || minus_d.ends_with("ise")
+        || minus_d.ends_with("ize")
+        || minus_d.ends_with("ure")
+        || minus_d.ends_with("ive")
+        || minus_d.ends_with("ose")
+        || minus_d.ends_with("use")
+        || minus_d.ends_with("ide")
+        || minus_d.ends_with("ade")
+        || minus_d.ends_with("ite")
+        || minus_d.ends_with("ute")
+        || minus_d.ends_with("ete")
+        || minus_d.ends_with("age")
+        || minus_d.ends_with("ace")
+        || minus_d.ends_with("ice")
+        || minus_d.ends_with("ame")
+        || minus_d.ends_with("ike")
+    {
+        return Some(minus_d.to_string());
+    }
+    if minus_ed.len() < 3 {
+        return None;
+    }
+    Some(minus_ed.to_string())
+}
+
 fn is_auxiliary(lemma: &str) -> bool {
     AUXILIARY_LEMMAS.contains(&lemma)
 }
 
-fn tokenizer() -> Option<&'static nlprule::Tokenizer> {
-    static TOKENIZER: OnceLock<Option<nlprule::Tokenizer>> = OnceLock::new();
-    TOKENIZER
-        .get_or_init(|| {
-            let mut bytes: &[u8] = include_bytes!(concat!(
-                env!("OUT_DIR"),
-                "/",
-                nlprule::tokenizer_filename!("en")
-            ));
-            nlprule::Tokenizer::from_reader(&mut bytes).ok()
-        })
-        .as_ref()
-}
+const IRREGULAR_PAST: &[(&str, &str)] = &[
+    ("been", "be"),
+    ("broken", "break"),
+    ("brought", "bring"),
+    ("built", "build"),
+    ("caught", "catch"),
+    ("chosen", "choose"),
+    ("come", "come"),
+    ("cut", "cut"),
+    ("done", "do"),
+    ("drawn", "draw"),
+    ("driven", "drive"),
+    ("eaten", "eat"),
+    ("fallen", "fall"),
+    ("felt", "feel"),
+    ("found", "find"),
+    ("forgotten", "forget"),
+    ("given", "give"),
+    ("gone", "go"),
+    ("got", "get"),
+    ("gotten", "get"),
+    ("had", "have"),
+    ("held", "hold"),
+    ("hidden", "hide"),
+    ("kept", "keep"),
+    ("known", "know"),
+    ("left", "leave"),
+    ("lost", "lose"),
+    ("made", "make"),
+    ("meant", "mean"),
+    ("met", "meet"),
+    ("paid", "pay"),
+    ("put", "put"),
+    ("read", "read"),
+    ("said", "say"),
+    ("seen", "see"),
+    ("sent", "send"),
+    ("set", "set"),
+    ("shown", "show"),
+    ("sold", "sell"),
+    ("spent", "spend"),
+    ("split", "split"),
+    ("spoken", "speak"),
+    ("stood", "stand"),
+    ("taken", "take"),
+    ("taught", "teach"),
+    ("told", "tell"),
+    ("thought", "think"),
+    ("thrown", "throw"),
+    ("understood", "understand"),
+    ("won", "win"),
+    ("worn", "wear"),
+    ("written", "write"),
+];
+
+const BASE_VERBS: &[&str] = &[
+    "act",
+    "add",
+    "allow",
+    "apply",
+    "ask",
+    "avoid",
+    "build",
+    "bump",
+    "catch",
+    "change",
+    "check",
+    "clean",
+    "clear",
+    "close",
+    "commit",
+    "compare",
+    "convert",
+    "copy",
+    "create",
+    "debug",
+    "delete",
+    "detect",
+    "disable",
+    "display",
+    "drop",
+    "enable",
+    "expand",
+    "export",
+    "extract",
+    "fetch",
+    "fill",
+    "find",
+    "finish",
+    "fix",
+    "fold",
+    "follow",
+    "format",
+    "freeze",
+    "generate",
+    "handle",
+    "hide",
+    "ignore",
+    "implement",
+    "import",
+    "improve",
+    "include",
+    "install",
+    "keep",
+    "land",
+    "launch",
+    "list",
+    "load",
+    "make",
+    "match",
+    "merge",
+    "move",
+    "open",
+    "parse",
+    "patch",
+    "peek",
+    "pick",
+    "prevent",
+    "prompt",
+    "protect",
+    "read",
+    "reduce",
+    "remove",
+    "rename",
+    "render",
+    "replace",
+    "report",
+    "reset",
+    "restore",
+    "retry",
+    "return",
+    "revert",
+    "rewrite",
+    "run",
+    "save",
+    "scan",
+    "search",
+    "send",
+    "set",
+    "show",
+    "skip",
+    "sort",
+    "split",
+    "start",
+    "stop",
+    "store",
+    "strip",
+    "switch",
+    "sync",
+    "test",
+    "trim",
+    "undo",
+    "update",
+    "upgrade",
+    "use",
+    "validate",
+    "verify",
+    "wait",
+    "watch",
+    "wrap",
+    "write",
+];
 
 /// Assign every terminal a unique display name. Terminals whose base names
 /// collide are numbered in stable id order ("Olivia", "Olivia-2", …), so
@@ -461,6 +809,10 @@ mod tests {
             Some("lander")
         );
         assert_eq!(
+            name_from_heads(Some("explain"), &["naming".into(), "convention".into()]).as_deref(),
+            Some("naming-convention-explainer")
+        );
+        assert_eq!(
             name_from_heads(None, &["pane".into(), "title".into()]).as_deref(),
             Some("pane-titlist")
         );
@@ -482,5 +834,41 @@ mod tests {
         );
         assert_eq!(summary_name("!!! +++ ---"), None);
         assert!(summary_name("Herdr pane title is Grok generated_title").is_some());
+    }
+
+    #[test]
+    fn a_headline_title_uses_the_final_verb_and_head_compound() {
+        assert_eq!(
+            summary_name("Clever Agent Naming Convention Explained").as_deref(),
+            Some("naming-convention-explainer")
+        );
+    }
+
+    #[test]
+    fn an_imperative_title_still_uses_the_first_verb_and_object() {
+        assert_eq!(
+            summary_name("Hide agent panes; peek instead of replacing").as_deref(),
+            Some("agent-hider")
+        );
+        assert_eq!(
+            summary_name("Fix the parser").as_deref(),
+            Some("parser-fixer")
+        );
+    }
+
+    #[test]
+    fn past_verb_lemma_strips_regular_and_irregular_forms() {
+        assert_eq!(past_verb_lemma("explained").as_deref(), Some("explain"));
+        assert_eq!(past_verb_lemma("created").as_deref(), Some("create"));
+        assert_eq!(past_verb_lemma("committed").as_deref(), Some("commit"));
+        assert_eq!(past_verb_lemma("shown").as_deref(), Some("show"));
+        assert_eq!(past_verb_lemma("naming"), None);
+    }
+
+    #[test]
+    fn base_verbs_are_sorted_for_binary_search() {
+        let mut sorted = BASE_VERBS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(BASE_VERBS, sorted.as_slice());
     }
 }

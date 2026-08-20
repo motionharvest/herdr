@@ -32,7 +32,3 @@ toml = "0.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 unicode-width = "0.2"
-nlprule = { version = "0.6.4", default-features = false, features = ["regex-fancy"] }
-
-[build-dependencies]
-nlprule-build = "0.6.4"
