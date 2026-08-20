@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- Clicking a hidden agent paints that row with the same selected band as a visible agent. The row used to stay muted with no background, which made a hidden agent look disabled rather than merely not on screen. Unselected hidden rows stay muted.
 - A composer start with Worktree checked creates the checkout and peeks that agent over the current layout. The agent is hidden, so the splits underneath do not change and the row is muted. Starting used to open a space of its own for that checkout. Clearing Worktree still cuts the agent in beside the pane that had focus.
 
 ### Fixed
