@@ -59,23 +59,7 @@ impl App {
         space: &crate::workspace::GitSpaceMetadata,
         checkout: &std::path::Path,
     ) {
-        if let Some(parent) = self.state.workspaces.iter_mut().find(|workspace| {
-            workspace
-                .resolved_identity_cwd()
-                .as_deref()
-                .and_then(crate::workspace::git_space_metadata)
-                .is_some_and(|candidate| {
-                    candidate.key == space.key && !candidate.is_linked_worktree
-                })
-        }) {
-            parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-                key: space.key.clone(),
-                label: space.label.clone(),
-                repo_root: space.repo_root.clone(),
-                checkout_path: space.repo_root.clone(),
-                is_linked_worktree: false,
-            });
-        }
+        self.mark_parent_repo_worktree_space(space);
         if let Some(workspace) = self.state.workspaces.get_mut(ws_idx) {
             workspace.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
                 key: space.key.clone(),
@@ -94,34 +78,41 @@ impl App {
         agent: crate::detect::Agent,
     ) -> Result<(crate::layout::PaneId, PathBuf), AgentStartError> {
         let managed = self.create_managed_worktree(cwd, "")?;
-        let (rows, cols) = self.state.estimate_pane_size();
-        let placement = self.spawn_agent_workspace(managed.1.clone(), rows, cols, argv, false);
-        let (ws_idx, _, pane_id) = match placement {
-            Ok(placement) => placement,
+        let pane_id = match self.start_hidden_agent(managed.1.clone(), argv, Some(agent)) {
+            Ok(pane_id) => pane_id,
             Err(err) => {
-                let _ = crate::worktree::remove_worktree_and_branch(
-                    &managed.0.repo_root,
-                    &managed.1,
-                    true,
-                );
+                if !managed.0.is_linked_worktree {
+                    let _ = crate::worktree::remove_worktree_and_branch(
+                        &managed.0.repo_root,
+                        &managed.1,
+                        true,
+                    );
+                }
                 return Err(err);
             }
         };
-        self.mark_managed_worktree_workspace(ws_idx, &managed.0, &managed.1);
-        if let Some(terminal_id) = self.state.workspaces[ws_idx].terminal_id(pane_id).cloned() {
-            if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
-                let _ = terminal.set_detected_state_with_screen_signals_at(
-                    Some(agent),
-                    crate::detect::AgentState::Idle,
-                    false,
-                    false,
-                    false,
-                    false,
-                    std::time::Instant::now(),
-                );
-            }
-        }
+        self.mark_parent_repo_worktree_space(&managed.0);
         Ok((pane_id, managed.1))
+    }
+
+    fn mark_parent_repo_worktree_space(&mut self, space: &crate::workspace::GitSpaceMetadata) {
+        if let Some(parent) = self.state.workspaces.iter_mut().find(|workspace| {
+            workspace
+                .resolved_identity_cwd()
+                .as_deref()
+                .and_then(crate::workspace::git_space_metadata)
+                .is_some_and(|candidate| {
+                    candidate.key == space.key && !candidate.is_linked_worktree
+                })
+        }) {
+            parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+                key: space.key.clone(),
+                label: space.label.clone(),
+                repo_root: space.repo_root.clone(),
+                checkout_path: space.repo_root.clone(),
+                is_linked_worktree: false,
+            });
+        }
     }
 
     pub(super) fn collect_agent_infos(&self) -> Vec<crate::api::schema::AgentInfo> {
@@ -1224,11 +1215,7 @@ mod tests {
             .iter()
             .filter(|worktree| crate::worktree::canonical_or_original(&worktree.path) != parent)
             .collect();
-        let started_cwd = app.state.workspaces.iter().rev().find_map(|workspace| {
-            workspace
-                .resolved_identity_cwd()
-                .map(|cwd| crate::worktree::canonical_or_original(&cwd))
-        });
+        let started_cwd = started_agent_cwd(&app);
 
         shutdown_started_runtimes(&mut app);
         for worktree in &created {
@@ -1245,9 +1232,12 @@ mod tests {
     }
 
     fn started_agent_cwd(app: &App) -> Option<std::path::PathBuf> {
-        let focused = focused_pane_id(app);
-        app.find_pane(focused)
-            .and_then(|(_, pane)| app.state.terminals.get(&pane.attached_terminal_id))
+        let pane_id = app.state.agent_peek.or_else(|| {
+            let ws_idx = app.state.active?;
+            app.state.workspaces.get(ws_idx)?.focused_pane_id()
+        })?;
+        app.state
+            .terminal_state_for_pane(pane_id)
             .map(|terminal| crate::worktree::canonical_or_original(&terminal.cwd))
     }
 
@@ -1259,12 +1249,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn composer_start_with_worktree_focuses_the_new_agent_pane() {
+    async fn composer_start_with_worktree_peeks_the_hidden_agent() {
         let repo = create_committed_repo("composer-focus-worktree-repo");
         let mut app = test_app();
         app.state.mode = crate::app::Mode::Composer;
         let original_workspace = app.state.workspaces[0].id.clone();
         let original_pane = focused_pane_id(&app);
+        let original_pane_count = app.state.workspaces[0].layout.pane_count();
+        let workspaces_before = app.state.workspaces.len();
 
         app.submit_composer(crate::composer::Pending {
             cwd: repo.clone(),
@@ -1279,16 +1271,23 @@ mod tests {
             .iter()
             .filter(|worktree| crate::worktree::canonical_or_original(&worktree.path) != parent)
             .collect();
-        let focused = focused_pane_id(&app);
-        let active_workspace = app
+        let peeked = app.state.agent_peek;
+        let layout_pane = focused_pane_id(&app);
+        let still_hidden = peeked.is_some_and(|pane_id| {
+            app.state
+                .detached_agents
+                .iter()
+                .any(|agent| agent.pane_id == pane_id)
+        });
+        let started_cwd = started_agent_cwd(&app);
+        let mode = app.state.mode;
+        let workspace_id = app
             .state
             .active
-            .and_then(|idx| app.state.workspaces.get(idx));
-        let focused_in_layout = active_workspace
-            .and_then(|workspace| workspace.pane_state(focused))
-            .is_some();
-        let mode = app.state.mode;
-        let workspace_id = active_workspace.map(|workspace| workspace.id.clone());
+            .and_then(|idx| app.state.workspaces.get(idx))
+            .map(|workspace| workspace.id.clone());
+        let pane_count = app.state.workspaces[0].layout.pane_count();
+        let workspace_count = app.state.workspaces.len();
 
         shutdown_started_runtimes(&mut app);
         for worktree in &created {
@@ -1297,13 +1296,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
 
         assert_eq!(mode, crate::app::Mode::Terminal);
-        assert_ne!(workspace_id.as_deref(), Some(original_workspace.as_str()));
-        assert_ne!(focused, original_pane);
-        assert!(focused_in_layout);
-        assert!(
-            created.len() == 1,
-            "the focused start still creates one worktree"
+        assert_eq!(workspace_id.as_deref(), Some(original_workspace.as_str()));
+        assert_eq!(layout_pane, original_pane);
+        assert_eq!(pane_count, original_pane_count);
+        assert_eq!(workspace_count, workspaces_before);
+        assert!(still_hidden);
+        assert!(peeked.is_some());
+        assert_eq!(
+            started_cwd.as_ref(),
+            created
+                .first()
+                .map(|worktree| crate::worktree::canonical_or_original(&worktree.path))
+                .as_ref()
         );
+        assert_eq!(created.len(), 1);
     }
 
     #[tokio::test]

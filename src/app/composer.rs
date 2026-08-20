@@ -7,8 +7,9 @@
 //!
 //! The agent is shown as soon as it starts. The band is for sending work, and
 //! the next thing to do with that work is look at it, so the new pane takes
-//! the keyboard. A managed worktree already has a space of its own; anything
-//! that started set down is cut in next to the pane that had focus.
+//! the keyboard. A managed worktree stays hidden and opens in peek over the
+//! current layout. Anything else that started set down is cut in next to the
+//! pane that had focus.
 
 use std::path::PathBuf;
 
@@ -46,7 +47,7 @@ impl App {
             Ok((pane_id, started_cwd)) => {
                 self.state.composer.task.clear();
                 self.state.composer.add_folder(pending.cwd.clone());
-                self.focus_composer_started_agent(pane_id);
+                self.focus_composer_started_agent(pane_id, pending.worktree);
                 let where_it_went = crate::workspace::display_path_with_home(&started_cwd);
                 self.show_composer_toast(
                     ToastKind::Finished,
@@ -68,13 +69,16 @@ impl App {
 
     /// Put the keyboard on the agent the band just started.
     ///
-    /// A worktree start already has a pane in a space, so that space is
-    /// focused. A set-down start is cut in against the pane that had the
-    /// keyboard, rather than taking that pane over: replacing would end a
-    /// shell that was being looked at. If the pane is too small to cut, the
-    /// new agent takes it the same way clicking its row would.
-    fn focus_composer_started_agent(&mut self, pane_id: crate::layout::PaneId) {
-        if let Some((ws_idx, _)) = self.find_pane(pane_id) {
+    /// A worktree start stays hidden and peeks over the layout that was
+    /// already on screen. A set-down start without a worktree is cut in
+    /// against the pane that had the keyboard, rather than taking that pane
+    /// over: replacing would end a shell that was being looked at. If the pane
+    /// is too small to cut, the new agent takes it the same way clicking its
+    /// row would.
+    fn focus_composer_started_agent(&mut self, pane_id: crate::layout::PaneId, peek: bool) {
+        if peek && self.find_pane(pane_id).is_none() {
+            self.state.peek_agent(pane_id);
+        } else if let Some((ws_idx, _)) = self.find_pane(pane_id) {
             self.state.focus_pane_in_workspace(ws_idx, pane_id);
         } else if let Some(target) = self
             .state

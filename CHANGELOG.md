@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- A composer start with Worktree checked creates the checkout and peeks that agent over the current layout. The agent is hidden, so the splits underneath do not change and the row is muted. Starting used to open a space of its own for that checkout. Clearing Worktree still cuts the agent in beside the pane that had focus.
+
 ### Fixed
 - `Delete agent + worktree` now follows that agent's folder, the same way `Land on <branch>` already does. The click used to require saved worktree membership on the space holding the row, so an agent Herdr had started in a linked checkout could raise `This workspace is not a Herdr-managed worktree checkout.` after a rebuild, a hide, or a dock into another space. The confirmation removes that agent's checkout and ends that agent. A space that still holds another agent is left in place.
 
