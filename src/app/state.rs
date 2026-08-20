@@ -1296,7 +1296,7 @@ impl ContextMenuState {
                         items.push(land_menu_label(parent_branch.as_deref()));
                     }
                 }
-                items.push("Delete agent / worktree...".into());
+                items.push("Delete agent + worktree".into());
                 items
             }
             ContextMenuKind::Pane {
@@ -1348,7 +1348,7 @@ impl ContextMenuState {
                             ..
                         }
                     )
-                } else if item == "Delete agent / worktree..." {
+                } else if item == "Delete agent + worktree" {
                     matches!(
                         space,
                         SpaceMenuKind::LinkedWorktree {
@@ -2059,7 +2059,7 @@ mod tests {
     fn worktree_delete_idx(menu: &ContextMenuState) -> usize {
         menu.items()
             .iter()
-            .position(|item| item == "Delete agent / worktree...")
+            .position(|item| item == "Delete agent + worktree")
             .expect("delete worktree item")
     }
 
@@ -2076,7 +2076,7 @@ mod tests {
                 "Rename agent",
                 "Delete agent",
                 "Land on main",
-                "Delete agent / worktree...",
+                "Delete agent + worktree",
             ]
             .into_iter()
             .map(str::to_string)
@@ -2096,7 +2096,7 @@ mod tests {
                 "Delete agent",
                 "New worktree",
                 "Open worktree...",
-                "Delete agent / worktree...",
+                "Delete agent + worktree",
             ]
             .into_iter()
             .map(str::to_string)
@@ -2111,7 +2111,7 @@ mod tests {
         let menu = agent_menu(SpaceMenuKind::Plain);
         assert_eq!(
             menu.items(),
-            vec!["Rename agent", "Delete agent", "Delete agent / worktree...",]
+            vec!["Rename agent", "Delete agent", "Delete agent + worktree",]
                 .into_iter()
                 .map(str::to_string)
                 .collect::<Vec<_>>()
@@ -2127,7 +2127,7 @@ mod tests {
             in_worktree_directory: false,
         });
         let items = menu.items();
-        assert_eq!(items[items.len() - 1], "Delete agent / worktree...");
+        assert_eq!(items[items.len() - 1], "Delete agent + worktree");
         assert!(!menu.item_enabled(worktree_delete_idx(&menu)));
         let land_idx = items
             .iter()
@@ -2165,7 +2165,7 @@ mod tests {
         assert!(!menu.item_enabled(land_idx));
         let delete_idx = items
             .iter()
-            .position(|item| item == "Delete agent / worktree...")
+            .position(|item| item == "Delete agent + worktree")
             .expect("delete worktree item");
         assert!(menu.item_enabled(delete_idx));
     }
@@ -2178,7 +2178,7 @@ mod tests {
         assert_eq!(land_menu_label(Some("")), "Land on parent");
         assert!(is_land_menu_item("Land on release"));
         assert!(is_land_menu_item("Land on parent"));
-        assert!(!is_land_menu_item("Delete agent / worktree..."));
+        assert!(!is_land_menu_item("Delete agent + worktree"));
     }
 
     #[test]

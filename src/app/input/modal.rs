@@ -619,7 +619,7 @@ pub(super) fn apply_context_menu_action(
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::Agent { ws_idx, .. }, Some("Delete agent / worktree...")) => {
+        (ContextMenuKind::Agent { ws_idx, .. }, Some("Delete agent + worktree")) => {
             state.request_remove_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
@@ -1164,7 +1164,7 @@ mod tests {
         let delete_idx = menu
             .items()
             .iter()
-            .position(|item| item == "Delete agent / worktree...")
+            .position(|item| item == "Delete agent + worktree")
             .expect("delete worktree item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 

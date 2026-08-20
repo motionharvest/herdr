@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- The agent-table row menu now says `Delete agent + worktree` instead of `Delete agent / worktree...`.
+
 ## [0.10.0] - 2026-08-19
 
 ### Added

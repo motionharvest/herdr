@@ -745,7 +745,7 @@ mod tests {
         let delete_idx = menu
             .items()
             .iter()
-            .position(|item| item == "Delete agent / worktree...")
+            .position(|item| item == "Delete agent + worktree")
             .expect("delete worktree item");
         assert_eq!(delete_idx, menu.items().len() - 1);
         assert!(!menu.item_enabled(delete_idx));
