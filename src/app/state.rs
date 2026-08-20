@@ -1271,7 +1271,7 @@ pub fn is_land_menu_item(item: &str) -> bool {
 }
 
 pub fn land_prompt_text() -> String {
-    "Commit outstanding work, then run `herdr agent worktree land`.".to_string()
+    "Land this clean branch by running `herdr agent worktree land`".to_string()
 }
 
 /// Right-click context menu state.
@@ -2190,10 +2190,10 @@ mod tests {
     }
 
     #[test]
-    fn land_prompt_tells_the_agent_to_commit_then_run_herdr_agent_worktree_land() {
+    fn land_prompt_tells_the_agent_to_land_the_clean_branch() {
         assert_eq!(
             land_prompt_text(),
-            "Commit outstanding work, then run `herdr agent worktree land`."
+            "Land this clean branch by running `herdr agent worktree land`"
         );
     }
     #[test]
