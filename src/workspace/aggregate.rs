@@ -44,7 +44,13 @@ impl Tab {
                 let fallback_agent_label = terminal
                     .agent_name
                     .as_deref()
-                    .or_else(|| terminal.effective_agent_label())?
+                    .or_else(|| terminal.effective_agent_label())
+                    .or_else(|| {
+                        terminal
+                            .persisted_agent_session
+                            .as_ref()
+                            .map(|session| session.agent.as_str())
+                    })?
                     .to_string();
                 let agent_label = terminal
                     .effective_display_agent()

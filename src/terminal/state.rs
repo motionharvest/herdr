@@ -794,6 +794,7 @@ impl TerminalState {
         self.agent_name.is_some()
             || self.effective_agent_label().is_some()
             || self.launch_argv.is_some()
+            || self.persisted_agent_session.is_some()
     }
 
     pub fn agent_run_duration(&self, now: SystemTime) -> Option<Duration> {

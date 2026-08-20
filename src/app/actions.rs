@@ -4760,6 +4760,60 @@ mod tests {
     }
 
     #[test]
+    fn closing_the_last_agent_pane_keeps_the_agent_on_the_table() {
+        let mut state = app_with_workspaces(&["keep", "agent"]);
+        let pane_id = state.workspaces[1].tabs[0].root_pane;
+        mark_agent(&mut state, 1, 0, pane_id);
+        let terminal_id = state.terminal_id_for_pane(1, pane_id).unwrap();
+        state.active = Some(1);
+        state.selected = 1;
+
+        state.close_pane();
+
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "keep");
+        assert!(state.terminals.contains_key(&terminal_id));
+        assert!(!state.terminal_runtime_shutdowns.contains(&terminal_id));
+        assert_eq!(state.detached_agents.len(), 1);
+        assert_eq!(state.detached_agents[0].pane_id, pane_id);
+        let detached = crate::ui::agent_panel_entries(&state)
+            .into_iter()
+            .find(|entry| entry.pane_id == pane_id)
+            .expect("hidden agent row");
+        assert!(!detached.docked);
+    }
+
+    #[test]
+    fn closing_a_session_bearing_pane_sets_the_agent_down() {
+        let mut state = app_with_workspaces(&["test"]);
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        let terminal_id = state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
+            terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:grok".into(),
+                agent: "grok".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("session-1").unwrap(),
+            });
+        }
+        state.workspaces[0].tabs[0].layout.focus_pane(pane_id);
+
+        state.close_pane();
+
+        assert!(state.workspaces[0].pane_state(pane_id).is_none());
+        assert!(state.terminals.contains_key(&terminal_id));
+        assert!(!state.terminal_runtime_shutdowns.contains(&terminal_id));
+        assert_eq!(state.detached_agents.len(), 1);
+        let detached = crate::ui::agent_panel_entries(&state)
+            .into_iter()
+            .find(|entry| entry.pane_id == pane_id)
+            .expect("hidden agent row");
+        assert!(!detached.docked);
+    }
+
+    #[test]
     fn closing_an_agent_pane_sets_the_agent_down_instead_of_ending_it() {
         let mut state = app_with_workspaces(&["test"]);
         let pane_id = state.workspaces[0].test_split(Direction::Horizontal);

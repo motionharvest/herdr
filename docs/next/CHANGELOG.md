@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- The pane chrome on an agent pane now says `HIDE` instead of `✕`. Clicking it still takes the pane out of the layout and leaves the agent running in the table, so you can open it again from its row. A shell pane still says `✕` and still closes. Closing used to drop the agent from the table when Herdr no longer counted the pane as an agent at that moment, even though a reported session or a named row still meant there was an agent to keep.
 - The agent-table row menu now says `Delete agent + worktree` instead of `Delete agent / worktree...`.
 
 ## [0.10.0] - 2026-08-19

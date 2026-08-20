@@ -19,8 +19,6 @@ use crate::workspace::Workspace;
 use unicode_width::UnicodeWidthStr;
 
 const PANE_BORDER_SET: ratatui::symbols::border::Set = ratatui::symbols::border::ROUNDED;
-const FULL_PANE_CONTROLS_WIDTH: u16 = 12;
-const COMPACT_PANE_CONTROLS_WIDTH: u16 = 5;
 const PANE_CLOSE_CONTROL_SUFFIX: &str = " ✕ ";
 const PANE_INNER_PADDING: u16 = 0;
 
@@ -34,8 +32,9 @@ fn pane_title_chrome_layout(
     title_width: u16,
     title: &PaneChromeTitle,
     maximized: bool,
+    hide: bool,
 ) -> PaneTitleChromeLayout {
-    let (_, controls_width) = pane_controls_text(title_width, maximized);
+    let (_, controls_width) = pane_controls_text(title_width, maximized, hide);
     let title_prefix_width = "╭─ ".chars().count();
     let text_available = title_width
         .saturating_sub(title_prefix_width as u16)
@@ -53,20 +52,31 @@ fn pane_title_chrome_layout(
     }
 }
 
-fn pane_controls_text(title_width: u16, maximized: bool) -> (&'static str, u16) {
-    if title_width >= 24 {
-        (
-            if maximized {
-                " ◱ BACK  ✕ "
-            } else {
-                " ⛶ FOCUS ✕ "
-            },
-            FULL_PANE_CONTROLS_WIDTH,
-        )
+fn pane_controls_text(title_width: u16, maximized: bool, hide: bool) -> (&'static str, u16) {
+    let text = if title_width >= 24 {
+        match (maximized, hide) {
+            (true, true) => " ◱ BACK  HIDE ",
+            (true, false) => " ◱ BACK  ✕ ",
+            (false, true) => " ⛶ FOCUS HIDE ",
+            (false, false) => " ⛶ FOCUS ✕ ",
+        }
     } else if title_width >= 12 {
-        (" ⛶ ✕ ", COMPACT_PANE_CONTROLS_WIDTH)
+        if hide {
+            " ⛶ HIDE "
+        } else {
+            " ⛶ ✕ "
+        }
     } else {
-        ("", 0)
+        ""
+    };
+    (text, text.width() as u16)
+}
+
+fn pane_close_suffix(controls_text: &str) -> &str {
+    if controls_text.ends_with("HIDE ") {
+        " HIDE "
+    } else {
+        PANE_CLOSE_CONTROL_SUFFIX
     }
 }
 
@@ -75,7 +85,7 @@ fn pane_chrome_controls_x(area: Rect, controls_width: u16) -> u16 {
 }
 
 fn pane_close_control_rect(area: Rect, controls_x: u16, controls_text: &str) -> Rect {
-    let suffix_width = PANE_CLOSE_CONTROL_SUFFIX.width() as u16;
+    let suffix_width = pane_close_suffix(controls_text).width() as u16;
     let controls_display_width = controls_text.width() as u16;
     let start = controls_x + controls_display_width.saturating_sub(suffix_width);
     let end = area.x + area.width.saturating_sub(1);
@@ -333,17 +343,32 @@ fn compute_hidden_right_edge_ranges(
     hidden
 }
 
-fn pane_title_hit_area(area: Rect, title: &PaneChromeTitle, maximized: bool) -> Option<Rect> {
+fn pane_title_hit_area(
+    area: Rect,
+    title: &PaneChromeTitle,
+    maximized: bool,
+    hide: bool,
+) -> Option<Rect> {
     if area.width < 4 || area.height == 0 {
         return None;
     }
-    let layout = pane_title_chrome_layout(area.width, title, maximized);
+    let layout = pane_title_chrome_layout(area.width, title, maximized, hide);
     Some(Rect::new(
         area.x,
         area.y,
         layout.details_width.min(area.width).max(1),
         1,
     ))
+}
+
+fn pane_hides_instead_of_closing(
+    app: &AppState,
+    ws: &Workspace,
+    pane_id: crate::layout::PaneId,
+) -> bool {
+    ws.pane_state(pane_id)
+        .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
+        .is_some_and(crate::terminal::TerminalState::is_agent_terminal)
 }
 
 fn pane_chrome_title_for_pane(
@@ -498,6 +523,7 @@ fn render_code_ui_pane_chrome(
     focused: bool,
     highlighted: bool,
     maximized: bool,
+    hide: bool,
     exposed: ExposedSides,
     hidden_right_edge_y: Option<(u16, u16)>,
 ) -> Vec<PaneChromeControl> {
@@ -550,8 +576,8 @@ fn render_code_ui_pane_chrome(
     }
 
     let title_width = area.width;
-    let layout = pane_title_chrome_layout(title_width, &title, maximized);
-    let (controls_text, controls_width) = pane_controls_text(title_width, maximized);
+    let layout = pane_title_chrome_layout(title_width, &title, maximized, hide);
+    let (controls_text, controls_width) = pane_controls_text(title_width, maximized, hide);
 
     let rule_glyph = '─';
     let unfocused_style = Style::default().fg(app.palette.overlay0).bg(Color::Reset);
@@ -910,6 +936,7 @@ pub(super) fn render_panes(
                     info.is_focused,
                     is_swap_preview,
                     ws.zoomed,
+                    pane_hides_instead_of_closing(app, ws, info.id),
                     info.exposed,
                     hidden_right_edges.get(&info.id).copied(),
                 );
@@ -986,7 +1013,8 @@ pub(super) fn compute_pane_chrome_controls(app: &AppState) -> Vec<PaneChromeCont
         .pane_infos
         .iter()
         .flat_map(|info| {
-            let (controls_text, controls_width) = pane_controls_text(info.rect.width, zoomed);
+            let hide = pane_hides_instead_of_closing(app, ws, info.id);
+            let (controls_text, controls_width) = pane_controls_text(info.rect.width, zoomed, hide);
             if controls_width == 0 || info.rect.height == 0 {
                 return Vec::new();
             }
@@ -1016,7 +1044,8 @@ pub(super) fn compute_pane_title_hit_areas(app: &AppState) -> Vec<PaneTitleHitAr
         .iter()
         .filter_map(|info| {
             let title = pane_chrome_title_for_pane(app, ws, info.id);
-            pane_title_hit_area(info.rect, &title, zoomed).map(|rect| PaneTitleHitArea {
+            let hide = pane_hides_instead_of_closing(app, ws, info.id);
+            pane_title_hit_area(info.rect, &title, zoomed, hide).map(|rect| PaneTitleHitArea {
                 pane_id: info.id,
                 rect,
             })
@@ -1434,9 +1463,39 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_pane_says_hide_instead_of_close() {
+        let (full, _) = pane_controls_text(40, false, true);
+        assert!(full.contains("HIDE"), "{full:?}");
+        assert!(!full.contains('✕'), "{full:?}");
+
+        let (compact, _) = pane_controls_text(12, false, true);
+        assert!(compact.contains("HIDE"), "{compact:?}");
+        assert!(!compact.contains('✕'), "{compact:?}");
+
+        let (shell, _) = pane_controls_text(40, false, false);
+        assert!(shell.contains('✕'), "{shell:?}");
+        assert!(!shell.contains("HIDE"), "{shell:?}");
+    }
+
+    #[test]
+    fn pane_close_control_rect_covers_hide_word_on_an_agent_pane() {
+        let area = Rect::new(10, 2, 40, 5);
+        let (controls_text, controls_width) = pane_controls_text(area.width, false, true);
+        let controls_x = pane_chrome_controls_x(area, controls_width);
+        let close = pane_close_control_rect(area, controls_x, controls_text);
+        let suffix = pane_close_suffix(controls_text);
+        let suffix_start = controls_x + controls_text.width() as u16 - suffix.width() as u16;
+
+        assert_eq!(suffix, " HIDE ");
+        assert!(rect_contains(close, suffix_start, area.y));
+        assert!(rect_contains(close, suffix_start + 1, area.y));
+        assert!(rect_contains(close, area.x + area.width - 2, area.y));
+    }
+
+    #[test]
     fn pane_close_control_rect_covers_close_suffix_and_padding() {
         let area = Rect::new(10, 2, 24, 5);
-        let (controls_text, controls_width) = pane_controls_text(area.width, false);
+        let (controls_text, controls_width) = pane_controls_text(area.width, false, false);
         let controls_x = pane_chrome_controls_x(area, controls_width);
         let close = pane_close_control_rect(area, controls_x, controls_text);
         let suffix_start =
@@ -1457,8 +1516,8 @@ mod tests {
         let title = PaneChromeTitle {
             folder_name: Some("Agent Work".to_string()),
         };
-        let layout = pane_title_chrome_layout(area.width, &title, false);
-        let hit = pane_title_hit_area(area, &title, false).expect("title hit area");
+        let layout = pane_title_chrome_layout(area.width, &title, false, false);
+        let hit = pane_title_hit_area(area, &title, false, false).expect("title hit area");
 
         assert!(layout.rule_width > 0, "expected decorative rule glyphs");
         assert_eq!(hit.width, layout.details_width);
@@ -1467,6 +1526,50 @@ mod tests {
         assert!(
             !rect_contains(hit, rule_col, area.y),
             "rule glyph column should not be part of swap hit area"
+        );
+    }
+
+    #[test]
+    fn rendered_hide_control_covers_hide_word() {
+        let app = AppState::test_new();
+        let area = Rect::new(0, 0, 40, 5);
+        let backend = ratatui::backend::TestBackend::new(40, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_code_ui_pane_chrome(
+                    &app,
+                    frame,
+                    area,
+                    PaneChromeTitle {
+                        folder_name: Some("panel".to_string()),
+                    },
+                    PaneId::from_raw(1),
+                    true,
+                    false,
+                    false,
+                    true,
+                    ExposedSides::all(),
+                    None,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let top_row: String = (0..area.width).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(top_row.contains("HIDE"), "{top_row:?}");
+        assert!(!top_row.contains('✕'), "{top_row:?}");
+
+        let hide_col = (0..area.width)
+            .find(|x| buffer[(*x, 0)].symbol() == "H")
+            .expect("HIDE should render in pane chrome");
+        let (controls_text, controls_width) = pane_controls_text(area.width, false, true);
+        let controls_x = pane_chrome_controls_x(area, controls_width);
+        let close = pane_close_control_rect(area, controls_x, controls_text);
+        assert!(
+            rect_contains(close, hide_col, area.y),
+            "hide rect {close:?} should cover rendered HIDE at column {hide_col}"
         );
     }
 
@@ -1490,6 +1593,7 @@ mod tests {
                     true,
                     false,
                     false,
+                    false,
                     ExposedSides::all(),
                     None,
                 );
@@ -1500,7 +1604,7 @@ mod tests {
         let cross_col = (0..area.width)
             .find(|x| buffer[(*x, 0)].symbol() == "✕")
             .expect("cross glyph should render in pane chrome");
-        let (controls_text, controls_width) = pane_controls_text(area.width, false);
+        let (controls_text, controls_width) = pane_controls_text(area.width, false, false);
         let controls_x = pane_chrome_controls_x(area, controls_width);
         let close = pane_close_control_rect(area, controls_x, controls_text);
 
@@ -1625,6 +1729,7 @@ mod tests {
                         true,
                         false,
                         false,
+                        false,
                         ExposedSides::all(),
                         None,
                     );
@@ -1660,6 +1765,7 @@ mod tests {
                     },
                     PaneId::from_raw(1),
                     true,
+                    false,
                     false,
                     false,
                     ExposedSides::all(),
@@ -1797,6 +1903,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    false,
                     exposed,
                     None,
                 );
@@ -1849,6 +1956,7 @@ mod tests {
                     },
                     PaneId::from_raw(2),
                     true,
+                    false,
                     false,
                     false,
                     exposed,
@@ -2002,6 +2110,7 @@ mod tests {
                     true,
                     false,
                     false,
+                    false,
                     ExposedSides::all(),
                     None,
                 );
@@ -2035,6 +2144,7 @@ mod tests {
                     PaneId::from_raw(1),
                     false, // unfocused
                     false, // not highlighted
+                    false,
                     false,
                     ExposedSides::all(),
                     None,
