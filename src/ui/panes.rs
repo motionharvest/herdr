@@ -636,6 +636,7 @@ fn pane_name_label(
 ) -> Option<String> {
     terminal
         .and_then(|terminal| terminal.manual_label.clone())
+        .or_else(|| terminal.and_then(|terminal| terminal.agent_name.clone()))
         .or(assigned_name)
         .or_else(|| pane_number.map(|number| format!("Pane {number}")))
 }
@@ -2223,6 +2224,11 @@ mod tests {
         assert_eq!(
             pane_name_label(Some(&terminal), Some("Olivia".into()), Some(2)).as_deref(),
             Some("Olivia")
+        );
+        terminal.set_agent_name("reviewer".into());
+        assert_eq!(
+            pane_name_label(Some(&terminal), Some("Olivia".into()), Some(2)).as_deref(),
+            Some("reviewer")
         );
     }
 

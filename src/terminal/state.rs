@@ -74,6 +74,9 @@ pub struct TerminalState {
     /// announces one. It stands in only when no reported title exists, so a
     /// harness that names its own sessions always wins.
     pub session_title: Option<String>,
+    /// Assigned-name slug taken from the first session title this terminal
+    /// received. Later title refreshes do not overwrite it.
+    pub title_name: Option<String>,
     hook_report_sequences: HashMap<String, u64>,
     metadata_report_sequences: HashMap<String, u64>,
     pub state: AgentState,
@@ -112,6 +115,7 @@ impl TerminalState {
             agent_name: None,
             model_info: None,
             session_title: None,
+            title_name: None,
             hook_report_sequences: HashMap::new(),
             metadata_report_sequences: HashMap::new(),
             state: AgentState::Unknown,
@@ -770,6 +774,24 @@ impl TerminalState {
         self.agent_name = None;
     }
 
+    pub fn freeze_title_name(&mut self) {
+        if self.title_name.is_some() {
+            return;
+        }
+        let Some(title) = self
+            .effective_title()
+            .or_else(|| self.session_title.clone())
+        else {
+            return;
+        };
+        self.title_name = crate::pane_names::summary_name(&title);
+    }
+
+    pub fn set_session_title(&mut self, title: Option<String>) {
+        self.session_title = title.filter(|title| !title.trim().is_empty());
+        self.freeze_title_name();
+    }
+
     pub fn clear_agent_runtime_identity_after_respawn(&mut self) {
         self.detected_agent = None;
         self.fallback_state = AgentState::Unknown;
@@ -782,6 +804,7 @@ impl TerminalState {
         self.persisted_agent_session = None;
         self.model_info = None;
         self.session_title = None;
+        self.title_name = None;
         self.agent_metadata.clear();
         self.state = AgentState::Unknown;
         self.launch_argv = None;
@@ -971,6 +994,28 @@ mod tests {
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())
+    }
+
+    #[test]
+    fn freeze_title_name_takes_the_first_session_title() {
+        let mut terminal = test_terminal();
+        terminal.set_session_title(Some("Commit work and land herdr worktree".into()));
+        assert_eq!(terminal.title_name.as_deref(), Some("work-committer"));
+        terminal.set_session_title(Some("Something else entirely now".into()));
+        assert_eq!(terminal.title_name.as_deref(), Some("work-committer"));
+        assert_eq!(
+            terminal.session_title.as_deref(),
+            Some("Something else entirely now")
+        );
+    }
+
+    #[test]
+    fn freeze_title_name_ignores_unusable_titles() {
+        let mut terminal = test_terminal();
+        terminal.set_session_title(Some("!!!".into()));
+        assert_eq!(terminal.title_name, None);
+        terminal.set_session_title(Some("Fix the parser".into()));
+        assert_eq!(terminal.title_name.as_deref(), Some("parser-fixer"));
     }
 
     #[test]

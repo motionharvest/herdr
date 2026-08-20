@@ -86,4 +86,11 @@ fn main() {
     } else {
         println!("cargo:rustc-link-lib=static=ghostty-vt");
     }
+
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR");
+    nlprule_build::BinaryBuilder::new(&["en"], out_dir)
+        .build()
+        .expect("failed to build nlprule English tokenizer")
+        .validate()
+        .expect("nlprule English tokenizer is invalid");
 }

@@ -510,7 +510,12 @@ fn agent_panel_entries_with_runtimes(
             let name = app
                 .terminals
                 .get(&detail.terminal_id)
-                .and_then(|terminal| terminal.manual_label.clone())
+                .and_then(|terminal| {
+                    terminal
+                        .manual_label
+                        .clone()
+                        .or_else(|| terminal.agent_name.clone())
+                })
                 .or_else(|| names.get(&detail.terminal_id).cloned())
                 .unwrap_or_else(|| detail.agent_label.clone());
             let Some(terminal_id) = ws

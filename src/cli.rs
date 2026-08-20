@@ -861,7 +861,7 @@ fn print_wait_help() {
         "  herdr wait agent-status <pane_id> --status <idle|working|blocked|done|unknown> [--timeout MS]"
     );
     eprintln!();
-    eprintln!("<pane_id> accepts a pane id from `herdr pane list` or a pane name (e.g. Olivia, case-insensitive).");
+    eprintln!("<pane_id> accepts a pane id from `herdr pane list` or a pane name (e.g. herdr-pane-title or Olivia, case-insensitive).");
 }
 
 fn print_session_help() {

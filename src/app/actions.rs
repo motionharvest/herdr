@@ -2508,21 +2508,24 @@ impl AppState {
                 ttl,
             } => self
                 .update_terminal_state(pane_id, |terminal| {
-                    terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
-                        source,
-                        agent_label,
-                        applies_to_source,
-                        title,
-                        display_agent,
-                        custom_status,
-                        state_labels,
-                        clear_title,
-                        clear_display_agent,
-                        clear_custom_status,
-                        clear_state_labels,
-                        ttl,
-                        seq,
-                    })
+                    let mutation =
+                        terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
+                            source,
+                            agent_label,
+                            applies_to_source,
+                            title,
+                            display_agent,
+                            custom_status,
+                            state_labels,
+                            clear_title,
+                            clear_display_agent,
+                            clear_custom_status,
+                            clear_state_labels,
+                            ttl,
+                            seq,
+                        });
+                    terminal.freeze_title_name();
+                    mutation
                 })
                 .into_iter()
                 .collect(),

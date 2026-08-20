@@ -1,13 +1,18 @@
 //! Human names for panes.
 //!
 //! A pane full of agents is hard to scan when every row reads "Pane 1" or
-//! repeats the harness name. Each terminal gets a stable human first name
-//! derived from its id: the same terminal keeps the same name across renders
-//! and session restores, with no state to persist. Collisions among live
-//! terminals are disambiguated with a numeric suffix assigned in stable id
-//! order, so an existing pane never loses its name when a new one appears.
+//! repeats the harness name. Shells and untitled agents get a stable first
+//! name derived from the terminal id. Once an agent has a session title, the
+//! name is derived from that title: a content verb becomes an `-er`/`-or`
+//! agentive, a content noun with no verb becomes `-man` or `-ist`, and
+//! anything else falls back to the first three words as a slug. That name is
+//! frozen on the terminal so a later title refresh does not move the CLI
+//! target. Collisions among live terminals are disambiguated with a numeric
+//! suffix assigned in stable id order, so an existing pane never loses its
+//! name when a new one appears.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::terminal::{TerminalId, TerminalState};
 
@@ -38,23 +43,246 @@ pub fn base_name_for(seed: &str) -> &'static str {
     NAMES[(fnv1a(seed) % NAMES.len() as u64) as usize]
 }
 
+/// First three words of a session title as a CLI name: lowercase, punctuation
+/// dropped, spaces as dashes. `None` when nothing usable remains.
+pub fn title_slug(title: &str) -> Option<String> {
+    let mut words = Vec::new();
+    for raw in title.split_whitespace() {
+        let cleaned: String = raw
+            .chars()
+            .flat_map(char::to_lowercase)
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect();
+        if cleaned.is_empty() {
+            continue;
+        }
+        words.push(cleaned);
+        if words.len() == 3 {
+            break;
+        }
+    }
+    if words.is_empty() {
+        None
+    } else {
+        Some(words.join("-"))
+    }
+}
+
+const AUXILIARY_LEMMAS: &[&str] = &["be", "have", "do"];
+
+pub fn summary_name(title: &str) -> Option<String> {
+    nlp_name(title).or_else(|| title_slug(title))
+}
+
+fn nlp_name(title: &str) -> Option<String> {
+    let (verb, nouns) = extract_heads(title)?;
+    name_from_heads(verb.as_deref(), &nouns)
+}
+
+fn name_from_heads(verb: Option<&str>, nouns: &[String]) -> Option<String> {
+    if let Some(verb) = verb {
+        let verber = kebab(&verber_from_lemma(verb)?);
+        if verber.is_empty() {
+            return None;
+        }
+        if let Some(noun) = nouns
+            .iter()
+            .map(|noun| kebab(noun))
+            .find(|noun| !noun.is_empty())
+        {
+            return Some(format!("{noun}-{verber}"));
+        }
+        return Some(verber);
+    }
+
+    let cleaned: Vec<String> = nouns
+        .iter()
+        .map(|noun| kebab(noun))
+        .filter(|noun| !noun.is_empty())
+        .collect();
+    let head = cleaned.last()?;
+    let person = kebab(&person_from_noun(head)?);
+    if person.is_empty() {
+        return None;
+    }
+    if cleaned.len() >= 2 {
+        let prefix = &cleaned[cleaned.len() - 2];
+        if prefix != head && prefix != &person {
+            return Some(format!("{prefix}-{person}"));
+        }
+    }
+    Some(person)
+}
+
+fn verber_from_lemma(lemma: &str) -> Option<String> {
+    let stem = kebab(lemma);
+    if stem.is_empty() {
+        return None;
+    }
+    if stem.ends_with("ate") || stem.ends_with("ise") {
+        return Some(format!("{}or", &stem[..stem.len() - 1]));
+    }
+    if stem.ends_with("ct") {
+        return Some(format!("{stem}or"));
+    }
+    if stem.ends_with('e') {
+        return Some(format!("{stem}r"));
+    }
+    if doubles_before_er(&stem) {
+        let last = stem.chars().last()?;
+        return Some(format!("{stem}{last}er"));
+    }
+    Some(format!("{stem}er"))
+}
+
+fn person_from_noun(noun: &str) -> Option<String> {
+    let stem = kebab(noun);
+    if stem.is_empty() {
+        return None;
+    }
+    if syllable_count(&stem) <= 1 {
+        return Some(format!("{stem}man"));
+    }
+    let ist_stem = if stem.ends_with('e') || stem.ends_with('y') {
+        stem[..stem.len() - 1].to_string()
+    } else {
+        stem
+    };
+    if ist_stem.is_empty() {
+        return None;
+    }
+    Some(format!("{ist_stem}ist"))
+}
+
+fn kebab(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn doubles_before_er(stem: &str) -> bool {
+    let chars: Vec<char> = stem.chars().collect();
+    if chars.len() < 3 {
+        return false;
+    }
+    let n = chars.len();
+    is_consonant(chars[n - 3])
+        && is_vowel(chars[n - 2])
+        && is_consonant(chars[n - 1])
+        && !matches!(chars[n - 1], 'w' | 'x' | 'y')
+}
+
+fn is_vowel(ch: char) -> bool {
+    matches!(ch, 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+}
+
+fn is_consonant(ch: char) -> bool {
+    ch.is_ascii_alphabetic() && !is_vowel(ch)
+}
+
+fn syllable_count(word: &str) -> usize {
+    let chars: Vec<char> = word.chars().collect();
+    let mut count = 0;
+    let mut prev_vowel = false;
+    for &ch in &chars {
+        let vowel = is_vowel(ch);
+        if vowel && !prev_vowel {
+            count += 1;
+        }
+        prev_vowel = vowel;
+    }
+    if count > 1 && word.ends_with('e') && !word.ends_with("le") {
+        count -= 1;
+    }
+    count.max(1)
+}
+
+fn extract_heads(title: &str) -> Option<(Option<String>, Vec<String>)> {
+    let tokenizer = tokenizer()?;
+    let mut verb = None;
+    let mut nouns = Vec::new();
+    for sentence in tokenizer.pipe(title) {
+        for token in sentence.tokens() {
+            let word = token.word();
+            let mut lemma = kebab(word.as_str());
+            let mut is_verb = false;
+            let mut is_common_noun = false;
+            for tag in word.tags() {
+                let pos = tag.pos().as_str();
+                let tag_lemma = kebab(tag.lemma().as_str());
+                if !tag_lemma.is_empty() {
+                    lemma = tag_lemma;
+                }
+                if pos.starts_with("VB") {
+                    is_verb = true;
+                }
+                if pos.starts_with("NN") && !pos.starts_with("NNP") {
+                    is_common_noun = true;
+                }
+            }
+            if lemma.is_empty() {
+                continue;
+            }
+            if is_verb && !is_auxiliary(&lemma) && verb.is_none() {
+                verb = Some(lemma.clone());
+            }
+            if is_common_noun && verb.as_deref() != Some(lemma.as_str()) {
+                nouns.push(lemma);
+            }
+        }
+    }
+    if verb.is_none() && nouns.is_empty() {
+        None
+    } else {
+        Some((verb, nouns))
+    }
+}
+
+fn is_auxiliary(lemma: &str) -> bool {
+    AUXILIARY_LEMMAS.contains(&lemma)
+}
+
+fn tokenizer() -> Option<&'static nlprule::Tokenizer> {
+    static TOKENIZER: OnceLock<Option<nlprule::Tokenizer>> = OnceLock::new();
+    TOKENIZER
+        .get_or_init(|| {
+            let mut bytes: &[u8] = include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/",
+                nlprule::tokenizer_filename!("en")
+            ));
+            nlprule::Tokenizer::from_reader(&mut bytes).ok()
+        })
+        .as_ref()
+}
+
 /// Assign every terminal a unique display name. Terminals whose base names
 /// collide are numbered in stable id order ("Olivia", "Olivia-2", …), so
-/// earlier terminals keep their bare name when new ones appear.
+/// earlier terminals keep their bare name when new ones appear. Collision
+/// counting is case-insensitive so a word-list `Ada` and a slug `ada` cannot
+/// both occupy the same target.
 pub fn assigned_names(
     terminals: &HashMap<TerminalId, TerminalState>,
 ) -> HashMap<TerminalId, String> {
     let mut ids: Vec<&TerminalId> = terminals.keys().collect();
     ids.sort_by_key(|id| id.to_string());
 
-    let mut uses: HashMap<&'static str, usize> = HashMap::new();
+    let mut uses: HashMap<String, usize> = HashMap::new();
     let mut names = HashMap::new();
     for id in ids {
-        let base = base_name_for(&id.to_string());
-        let count = uses.entry(base).or_insert(0);
+        let Some(terminal) = terminals.get(id) else {
+            continue;
+        };
+        let base = terminal
+            .title_name
+            .clone()
+            .unwrap_or_else(|| base_name_for(&id.to_string()).to_string());
+        let key = base.to_ascii_lowercase();
+        let count = uses.entry(key).or_insert(0);
         *count += 1;
         let name = if *count == 1 {
-            base.to_string()
+            base
         } else {
             format!("{base}-{count}")
         };
@@ -130,5 +358,129 @@ mod tests {
                 assert_eq!(after.get(id), Some(name));
             }
         }
+    }
+
+    #[test]
+    fn title_slug_takes_the_first_three_words() {
+        assert_eq!(
+            title_slug("Herdr pane title is Grok generated_title").as_deref(),
+            Some("herdr-pane-title")
+        );
+    }
+
+    #[test]
+    fn title_slug_strips_punctuation_and_skips_empty_tokens() {
+        assert_eq!(
+            title_slug("Hide agent panes; peek instead of replacing").as_deref(),
+            Some("hide-agent-panes")
+        );
+        assert_eq!(
+            title_slug("Fix Delete agent + worktree false warning").as_deref(),
+            Some("fix-delete-agent")
+        );
+    }
+
+    #[test]
+    fn title_slug_is_none_when_nothing_usable_remains() {
+        assert_eq!(title_slug("!!! +++ ---"), None);
+        assert_eq!(title_slug("   "), None);
+    }
+
+    #[test]
+    fn a_frozen_title_name_replaces_the_word_list_name() {
+        let mut terminal = TerminalState::new(TerminalId::alloc(), "/tmp".into());
+        let word_list = base_name_for(&terminal.id.to_string()).to_string();
+        terminal.title_name = Some("herdr-pane-title".into());
+        let mut terminals = HashMap::new();
+        terminals.insert(terminal.id.clone(), terminal);
+        let names = assigned_names(&terminals);
+        let name = names.values().next().unwrap();
+        assert_eq!(name, "herdr-pane-title");
+        assert_ne!(name, &word_list);
+    }
+
+    #[test]
+    fn a_later_title_does_not_move_a_frozen_name() {
+        let mut terminal = TerminalState::new(TerminalId::alloc(), "/tmp".into());
+        terminal.title_name = Some("herdr-pane-title".into());
+        terminal.session_title = Some("Something else entirely now".into());
+        let mut terminals = HashMap::new();
+        terminals.insert(terminal.id.clone(), terminal);
+        let names = assigned_names(&terminals);
+        assert_eq!(names.values().next().unwrap(), "herdr-pane-title");
+    }
+
+    #[test]
+    fn colliding_title_names_get_stable_numeric_suffixes() {
+        let mut first = TerminalState::new(TerminalId::alloc(), "/tmp".into());
+        let mut second = TerminalState::new(TerminalId::alloc(), "/tmp".into());
+        first.title_name = Some("fix-the-parser".into());
+        second.title_name = Some("fix-the-parser".into());
+        let mut terminals = HashMap::new();
+        let first_id = first.id.clone();
+        let second_id = second.id.clone();
+        terminals.insert(first_id.clone(), first);
+        terminals.insert(second_id.clone(), second);
+        let names = assigned_names(&terminals);
+        let mut values: Vec<_> = names.values().cloned().collect();
+        values.sort();
+        assert_eq!(values, vec!["fix-the-parser", "fix-the-parser-2"]);
+        assert_eq!(names, assigned_names(&terminals));
+        assert_ne!(names.get(&first_id), names.get(&second_id));
+    }
+
+    #[test]
+    fn verber_uses_er_or_and_doubling() {
+        assert_eq!(verber_from_lemma("hide").as_deref(), Some("hider"));
+        assert_eq!(verber_from_lemma("commit").as_deref(), Some("committer"));
+        assert_eq!(verber_from_lemma("create").as_deref(), Some("creator"));
+        assert_eq!(verber_from_lemma("act").as_deref(), Some("actor"));
+    }
+
+    #[test]
+    fn person_from_noun_uses_man_or_ist() {
+        assert_eq!(person_from_noun("work").as_deref(), Some("workman"));
+        assert_eq!(person_from_noun("craft").as_deref(), Some("craftman"));
+        assert_eq!(person_from_noun("machine").as_deref(), Some("machinist"));
+        assert_eq!(person_from_noun("art").as_deref(), Some("artman"));
+        assert_eq!(person_from_noun("theory").as_deref(), Some("theorist"));
+    }
+
+    #[test]
+    fn name_from_heads_pairs_noun_and_verber() {
+        assert_eq!(
+            name_from_heads(Some("commit"), &["work".into()]).as_deref(),
+            Some("work-committer")
+        );
+        assert_eq!(
+            name_from_heads(Some("hide"), &["agent".into()]).as_deref(),
+            Some("agent-hider")
+        );
+        assert_eq!(
+            name_from_heads(Some("land"), &[]).as_deref(),
+            Some("lander")
+        );
+        assert_eq!(
+            name_from_heads(None, &["pane".into(), "title".into()]).as_deref(),
+            Some("pane-titlist")
+        );
+        assert_eq!(
+            name_from_heads(None, &["work".into()]).as_deref(),
+            Some("workman")
+        );
+        assert_eq!(
+            name_from_heads(None, &["machine".into()]).as_deref(),
+            Some("machinist")
+        );
+    }
+
+    #[test]
+    fn summary_name_uses_nlp_then_slug() {
+        assert_eq!(
+            summary_name("Commit work and land herdr worktree").as_deref(),
+            Some("work-committer")
+        );
+        assert_eq!(summary_name("!!! +++ ---"), None);
+        assert!(summary_name("Herdr pane title is Grok generated_title").is_some());
     }
 }

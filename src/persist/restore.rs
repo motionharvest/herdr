@@ -632,6 +632,7 @@ fn restore_pane(
         .unwrap_or_else(TerminalId::alloc);
     let saved_label = saved_pane.and_then(|p| p.label.clone());
     let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
+    let saved_title_name = saved_pane.and_then(|p| p.title_name.clone());
     let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
     let saved_agent_timing = saved_pane.and_then(|p| p.agent_timing.as_ref());
     let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
@@ -673,6 +674,9 @@ fn restore_pane(
         }
         if let Some(agent_name) = saved_agent_name {
             terminal.set_agent_name(agent_name);
+        }
+        if let Some(title_name) = saved_title_name {
+            terminal.title_name = Some(title_name);
         }
         if let Some(timing) = saved_agent_timing {
             timing.restore_into(&mut terminal);
@@ -775,6 +779,9 @@ fn restore_pane(
             }
             if let Some(agent_name) = saved_agent_name {
                 terminal.set_agent_name(agent_name);
+            }
+            if let Some(title_name) = saved_title_name {
+                terminal.title_name = Some(title_name);
             }
             if let Some(timing) = saved_agent_timing {
                 timing.restore_into(&mut terminal);
@@ -1291,6 +1298,7 @@ mod tests {
                     seen: true,
                     completed: false,
                     agent_timing: None,
+                    title_name: None,
                 },
                 seen: false,
                 completed: true,
@@ -1352,6 +1360,7 @@ mod tests {
                     seen: true,
                     completed: false,
                     agent_timing: None,
+                    title_name: None,
                 },
                 seen: true,
                 completed: false,
@@ -1414,6 +1423,7 @@ mod tests {
                             seen: true,
                             completed: false,
                             agent_timing: None,
+                            title_name: None,
                         },
                     )]),
                     zoomed: false,
@@ -1479,6 +1489,7 @@ mod tests {
                 seen,
                 completed,
                 agent_timing: None,
+                title_name: None,
             }
         };
         let snapshot = SessionSnapshot {
@@ -1606,6 +1617,7 @@ mod tests {
                             seen: true,
                             completed: false,
                             agent_timing: None,
+                            title_name: None,
                         },
                     )]),
                     zoomed: false,
@@ -1685,6 +1697,7 @@ mod tests {
                             seen: true,
                             completed: false,
                             agent_timing: None,
+                            title_name: None,
                         },
                     )]),
                     zoomed: false,
@@ -1851,6 +1864,7 @@ mod tests {
                 seen: true,
                 completed: false,
                 agent_timing: None,
+                title_name: None,
             },
         );
         let history = SessionHistorySnapshot {
@@ -1909,6 +1923,7 @@ mod tests {
             seen: true,
             completed: false,
             agent_timing: None,
+            title_name: None,
         };
         SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1976,6 +1991,25 @@ mod tests {
         let names = crate::pane_names::assigned_names(&terminals);
         let first_name = names.get(&first).expect("restored terminal keeps a name");
         assert!(first_name.starts_with(crate::pane_names::base_name_for(&first.to_string())));
+    }
+
+    #[tokio::test]
+    async fn restore_preserves_title_name() {
+        let cwd = std::env::current_dir().unwrap();
+        let first = TerminalId::alloc();
+        let mut snapshot = snapshot_with_pane_terminal_ids(cwd, Some(first.clone()), None);
+        snapshot.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&0)
+            .unwrap()
+            .title_name = Some("herdr-pane-title".into());
+
+        let terminals = restore_terminals(&snapshot);
+        let names = crate::pane_names::assigned_names(&terminals);
+        assert_eq!(
+            names.get(&first).map(String::as_str),
+            Some("herdr-pane-title")
+        );
     }
 
     #[tokio::test]
