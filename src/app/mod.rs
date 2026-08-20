@@ -130,7 +130,6 @@ pub struct App {
         HashMap<crate::terminal::TerminalId, crate::agent_model::AgentModelCacheEntry>,
     pub(crate) last_pane_click: Option<PaneClickState>,
     pub(crate) last_agent_name_click: Option<AgentNameClickState>,
-    pub(crate) last_agent_row_click: Option<AgentNameClickState>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_animation_tick: Option<Instant>,
     pub(crate) next_auto_update_check: Option<Instant>,
@@ -544,7 +543,6 @@ impl App {
             agent_model_cache: HashMap::new(),
             last_pane_click: None,
             last_agent_name_click: None,
-            last_agent_row_click: None,
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
             next_animation_tick: None,
             next_auto_update_check: auto_updates_enabled(no_session)

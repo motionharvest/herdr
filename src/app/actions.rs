@@ -1759,14 +1759,10 @@ impl AppState {
         })
     }
 
-    /// Show `pane_id` over the current layout, or leave that overlay if it is
-    /// already showing. The splits underneath do not change.
+    /// Show `pane_id` over the current layout. The splits underneath do not
+    /// change. Calling this again for the same pane leaves the overlay in place.
     pub(crate) fn peek_agent(&mut self, pane_id: PaneId) {
-        if self.agent_peek == Some(pane_id) {
-            self.agent_peek = None;
-        } else {
-            self.agent_peek = Some(pane_id);
-        }
+        self.agent_peek = Some(pane_id);
         self.mode = Mode::Terminal;
     }
 
@@ -4844,7 +4840,7 @@ mod tests {
         assert!(state.terminals.contains_key(&terminal_id));
 
         state.peek_agent(pane_id);
-        assert_eq!(state.agent_peek, None);
+        assert_eq!(state.agent_peek, Some(pane_id));
         assert_eq!(state.detached_agents.len(), 1);
         assert_eq!(state.workspaces[0].focused_pane_id(), Some(target));
     }
