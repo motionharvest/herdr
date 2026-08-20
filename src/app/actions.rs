@@ -1244,6 +1244,9 @@ impl AppState {
     /// End a set-down agent. This is the one thing that ends an agent with no
     /// pane: it leaves the table and its process is shut down.
     pub fn close_detached_agent(&mut self, pane_id: PaneId) {
+        if self.agent_peek == Some(pane_id) {
+            self.agent_peek = None;
+        }
         let Some(position) = self
             .detached_agents
             .iter()
@@ -1285,6 +1288,9 @@ impl AppState {
         else {
             return false;
         };
+        if self.agent_peek == Some(pane_id) {
+            self.agent_peek = None;
+        }
         let detached = self.detached_agents.remove(position);
         let entry = (detached.pane_id, detached.pane);
         match zone {

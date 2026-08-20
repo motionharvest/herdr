@@ -477,17 +477,25 @@ impl AppState {
                         return None;
                     }
 
-                    if let Some(hit) = self
-                        .pane_title_hit_at(mouse.column, mouse.row)
-                        .filter(|_| self.pane_swap_enabled())
-                    {
-                        self.focus_pane(hit.pane_id);
-                        self.pane_press = Some(PanePressState {
-                            pane_id: hit.pane_id,
-                            start_col: mouse.column,
-                            start_row: mouse.row,
-                        });
-                        return None;
+                    if let Some(hit) = self.pane_title_hit_at(mouse.column, mouse.row) {
+                        if self.agent_peek == Some(hit.pane_id) {
+                            self.agent_press = Some(AgentPressState {
+                                docked: false,
+                                pane_id: hit.pane_id,
+                                start_col: mouse.column,
+                                start_row: mouse.row,
+                            });
+                            return None;
+                        }
+                        if self.pane_swap_enabled() {
+                            self.focus_pane(hit.pane_id);
+                            self.pane_press = Some(PanePressState {
+                                pane_id: hit.pane_id,
+                                start_col: mouse.column,
+                                start_row: mouse.row,
+                            });
+                            return None;
+                        }
                     }
 
                     if let Some(border) = self.find_border_at(mouse.column, mouse.row) {
@@ -569,8 +577,6 @@ impl AppState {
                             }
                             self.focus_pane_in_workspace(hit.ws_idx, hit.pane_id);
                             self.mode = Mode::Terminal;
-                        } else {
-                            self.peek_agent(hit.pane_id);
                         }
                     }
                     return None;
@@ -686,6 +692,7 @@ impl AppState {
                             Some(DragTarget::AgentReorder { .. })
                         )
                     {
+                        self.lift_peek_for_dock(terminal_runtimes);
                         self.drag = Some(DragState {
                             target: DragTarget::AgentDock {
                                 pane_id,
@@ -833,7 +840,7 @@ impl AppState {
                 }
 
                 let pane_press = self.pane_press.take();
-                self.agent_press.take();
+                let agent_press = self.agent_press.take();
                 let drag = self.drag.take();
                 match drag {
                     Some(DragState {
@@ -875,6 +882,10 @@ impl AppState {
                     }
                     Some(_) => {}
                     None => {
+                        if let Some(press) = agent_press.filter(|press| !press.docked) {
+                            self.peek_agent(press.pane_id);
+                            return None;
+                        }
                         if let Some(press) = pane_press {
                             self.focus_pane(press.pane_id);
                             self.mode = Mode::Terminal;
@@ -929,9 +940,7 @@ impl AppState {
                         self.focus_pane_in_workspace(hit.ws_idx, hit.pane_id);
                         self.agent_menu_kind(terminal_runtimes, hit.ws_idx, hit.pane_id)
                     } else {
-                        ContextMenuKind::DetachedAgent {
-                            pane_id: hit.pane_id,
-                        }
+                        self.agent_menu_kind_for_pane(terminal_runtimes, hit.pane_id)
                     };
                     self.context_menu = Some(ContextMenuState {
                         kind,
@@ -1196,6 +1205,16 @@ impl AppState {
     /// never to whatever pane sits under the cursor.
     fn chrome_press_active(&self) -> bool {
         self.pane_press.is_some() || self.agent_press.is_some()
+    }
+
+    fn lift_peek_for_dock(&mut self, terminal_runtimes: &TerminalRuntimeRegistry) {
+        if self.agent_peek.take().is_some() {
+            crate::ui::compute_view_without_resizing_panes(
+                self,
+                terminal_runtimes,
+                self.screen_rect(),
+            );
+        }
     }
 
     fn pane_swap_enabled(&self) -> bool {
@@ -3662,6 +3681,209 @@ mod tests {
         assert_eq!(app.state.agent_peek, Some(pane_id));
         assert_eq!(app.state.detached_agents.len(), 1);
         assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(target));
+    }
+
+    fn app_with_hidden_agent() -> (
+        crate::app::App,
+        crate::layout::PaneId,
+        crate::layout::PaneId,
+    ) {
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("space");
+        let remaining = workspace.tabs[0].root_pane;
+        let hidden = workspace.test_split(Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        for pane_id in [remaining, hidden] {
+            let terminal_id = app.state.workspaces[0]
+                .pane_state(pane_id)
+                .expect("agent pane")
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("agent terminal")
+                .set_agent_name("codex".into());
+        }
+        app.state.workspaces[0].layout.focus_pane(hidden);
+        app.state.close_pane();
+        app.state.workspaces[0].layout.focus_pane(remaining);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        (app, hidden, remaining)
+    }
+
+    fn hidden_agent_row(
+        app: &crate::app::App,
+        pane_id: crate::layout::PaneId,
+    ) -> crate::ui::AgentTableRow {
+        app.state
+            .view
+            .agent_table
+            .rows
+            .iter()
+            .find(|row| row.pane_id == pane_id)
+            .expect("hidden agent row")
+            .clone()
+    }
+
+    #[test]
+    fn pressing_a_hidden_agent_does_not_peek_until_release() {
+        let (mut app, pane_id, remaining) = app_with_hidden_agent();
+        let row = hidden_agent_row(&app, pane_id);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.rect.x + 1,
+            row.rect.y,
+        ));
+
+        assert_eq!(app.state.agent_peek, None);
+        assert_eq!(app.state.detached_agents.len(), 1);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(remaining));
+        assert!(app.state.agent_press.is_some());
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            row.rect.x + 1,
+            row.rect.y,
+        ));
+
+        assert_eq!(app.state.agent_peek, Some(pane_id));
+        assert_eq!(app.state.detached_agents.len(), 1);
+        assert!(app.state.workspaces[0].pane_state(pane_id).is_none());
+    }
+
+    #[test]
+    fn dragging_a_hidden_agent_docks_onto_the_layout_behind() {
+        let (mut app, pane_id, remaining) = app_with_hidden_agent();
+        let row = hidden_agent_row(&app, pane_id);
+        let target = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|pane| pane.id == remaining)
+            .expect("remaining pane")
+            .rect;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.rect.x + 1,
+            row.rect.y,
+        ));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            row.rect.x + 1 + PANE_DRAG_THRESHOLD,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            target.x + target.width / 2,
+            target.y + target.height / 2,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            target.x + target.width / 2,
+            target.y + target.height / 2,
+        ));
+
+        assert_eq!(app.state.agent_peek, None);
+        assert!(app.state.workspaces[0].pane_state(pane_id).is_some());
+        assert!(app
+            .state
+            .detached_agents
+            .iter()
+            .all(|detached| detached.pane_id != pane_id));
+    }
+
+    #[test]
+    fn right_clicking_a_hidden_agent_offers_land_and_delete_worktree() {
+        let (mut app, pane_id, _) = app_with_hidden_agent();
+        let row = hidden_agent_row(&app, pane_id);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            row.rect.x + 1,
+            row.rect.y,
+        ));
+
+        let menu = app.state.context_menu.as_ref().expect("agent row menu");
+        let items = menu.items();
+        assert!(items.iter().any(|item| item == "Delete agent"), "{items:?}");
+        assert!(
+            items.iter().any(|item| item == "Delete agent + worktree"),
+            "{items:?}"
+        );
+        assert!(items.iter().any(|item| item == "Rename agent"), "{items:?}");
+        match &menu.kind {
+            ContextMenuKind::Agent {
+                pane_id: menu_pane, ..
+            } => {
+                assert_eq!(*menu_pane, pane_id);
+            }
+            other => panic!("hidden row should open the agent menu, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn peeked_agent_title_is_a_drag_handle() {
+        let (mut app, pane_id, remaining) = app_with_hidden_agent();
+        let row = hidden_agent_row(&app, pane_id);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.rect.x + 1,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            row.rect.x + 1,
+            row.rect.y,
+        ));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let title = app
+            .state
+            .view
+            .pane_title_hit_areas
+            .iter()
+            .find(|hit| hit.pane_id == pane_id)
+            .copied()
+            .expect("peeked pane title should be draggable");
+        let target = app.state.view.terminal_area;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            title.rect.x + 1,
+            title.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            title.rect.x + 1 + PANE_DRAG_THRESHOLD,
+            title.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            target.x + target.width / 2,
+            target.y + target.height / 2,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            target.x + target.width / 2,
+            target.y + target.height / 2,
+        ));
+
+        assert_eq!(app.state.agent_peek, None);
+        assert!(app.state.workspaces[0].pane_state(pane_id).is_some());
+        assert!(app
+            .state
+            .detached_agents
+            .iter()
+            .all(|detached| detached.pane_id != pane_id));
+        assert!(app.state.workspaces[0].pane_state(remaining).is_none());
     }
 
     #[test]

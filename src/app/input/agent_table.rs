@@ -324,6 +324,52 @@ impl AppState {
             space,
         }
     }
+
+    /// The menu for a table row, whether that agent is in a pane or set down.
+    /// A set-down agent's folder still decides land and worktree deletion.
+    pub(super) fn agent_menu_kind_for_pane(
+        &self,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+        pane_id: crate::layout::PaneId,
+    ) -> ContextMenuKind {
+        if let Some(ws_idx) = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.pane_state(pane_id).is_some())
+        {
+            return self.agent_menu_kind(terminal_runtimes, ws_idx, pane_id);
+        }
+        let cwd = self
+            .detached_agents
+            .iter()
+            .find(|detached| detached.pane_id == pane_id)
+            .and_then(|detached| {
+                crate::app::state::detached_agent_cwd(
+                    &detached.pane,
+                    &self.terminals,
+                    terminal_runtimes,
+                )
+            });
+        let space = if let Some((parent_path, checkout_path)) =
+            cwd.as_deref().and_then(crate::workspace::linked_land_paths)
+        {
+            let parent_branch = crate::workspace::git_branch(&parent_path);
+            let already_landed =
+                crate::worktree::worktree_already_landed(&checkout_path, &parent_path);
+            SpaceMenuKind::LinkedWorktree {
+                parent_branch,
+                already_landed,
+                in_worktree_directory: true,
+            }
+        } else {
+            SpaceMenuKind::Plain
+        };
+        ContextMenuKind::Agent {
+            ws_idx: self.active.unwrap_or(0),
+            pane_id,
+            space,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -751,5 +797,122 @@ mod tests {
         assert!(!menu.item_enabled(delete_idx));
 
         let _ = std::fs::remove_dir_all(cwd);
+    }
+
+    #[test]
+    fn set_down_worktree_agent_menu_offers_land_from_its_folder() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-hidden-land-menu-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |cwd: &std::path::Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        run(&repo, &["init", "--quiet", "-b", "main"]);
+        run(&repo, &["config", "user.email", "herdr@example.invalid"]);
+        run(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("README.md"), "test\n").unwrap();
+        run(&repo, &["add", "README.md"]);
+        run(&repo, &["commit", "--quiet", "-m", "initial"]);
+        let checkout = repo.join("worktree");
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/hidden-land-menu",
+                checkout.to_str().unwrap(),
+            ],
+        );
+        run(
+            &checkout,
+            &["commit", "--quiet", "--allow-empty", "-m", "ahead"],
+        );
+
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("space");
+        let remaining = workspace.tabs[0].root_pane;
+        let pane_id = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("agent pane")
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("agent terminal")
+            .set_agent_name("codex".into());
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("agent terminal")
+            .cwd = checkout.clone();
+        app.state.workspaces[0].layout.focus_pane(pane_id);
+        app.state.close_pane();
+        app.state.workspaces[0].layout.focus_pane(remaining);
+
+        let kind = app
+            .state
+            .agent_menu_kind_for_pane(&app.terminal_runtimes, pane_id);
+        let menu = crate::app::state::ContextMenuState {
+            kind,
+            x: 0,
+            y: 0,
+            list: crate::app::state::MenuListState::new(0),
+        };
+        match &menu.kind {
+            ContextMenuKind::Agent {
+                space:
+                    SpaceMenuKind::LinkedWorktree {
+                        parent_branch,
+                        in_worktree_directory,
+                        already_landed,
+                    },
+                ..
+            } => {
+                assert_eq!(parent_branch.as_deref(), Some("main"));
+                assert!(in_worktree_directory);
+                assert!(!*already_landed);
+            }
+            other => panic!("unexpected menu kind: {other:?}"),
+        }
+        let land_idx = menu
+            .items()
+            .iter()
+            .position(|item| item == "Land on main")
+            .expect("land item");
+        assert!(menu.item_enabled(land_idx));
+        let delete_idx = menu
+            .items()
+            .iter()
+            .position(|item| item == "Delete agent + worktree")
+            .expect("delete worktree item");
+        assert!(menu.item_enabled(delete_idx));
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force", checkout.to_str().unwrap()])
+            .status();
+        let _ = std::fs::remove_dir_all(repo);
     }
 }

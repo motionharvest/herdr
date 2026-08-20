@@ -611,10 +611,6 @@ pub(super) fn apply_context_menu_action(
     let items = menu.items();
     let item = items.get(idx).map(String::as_str);
     match (menu.kind, item) {
-        (ContextMenuKind::DetachedAgent { pane_id }, Some("Delete agent" | "Close agent")) => {
-            state.close_detached_agent(pane_id);
-            leave_modal(state);
-        }
         (ContextMenuKind::Agent { ws_idx, .. }, Some("New worktree")) => {
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);

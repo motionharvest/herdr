@@ -375,9 +375,7 @@ fn pane_chrome_title_for_pane(
     ws: &Workspace,
     pane_id: crate::layout::PaneId,
 ) -> PaneChromeTitle {
-    let terminal = ws
-        .pane_state(pane_id)
-        .and_then(|pane| app.terminals.get(&pane.attached_terminal_id));
+    let terminal = app.terminal_state_for_pane(pane_id);
     let assigned_name = terminal.and_then(|terminal| {
         crate::pane_names::assigned_names(&app.terminals).remove(&terminal.id)
     });
@@ -1059,7 +1057,24 @@ pub(super) fn compute_pane_title_hit_areas(app: &AppState) -> Vec<PaneTitleHitAr
     let Some(ws) = app.workspaces.get(ws_idx) else {
         return Vec::new();
     };
-    if app.agent_peek.is_some() || ws.layout.pane_count() <= 1 {
+    if let Some(pane_id) = app.agent_peek {
+        return app
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == pane_id)
+            .and_then(|info| {
+                let title = pane_chrome_title_for_pane(app, ws, info.id);
+                let hide = pane_hides_instead_of_closing(app, ws, info.id);
+                pane_title_hit_area(info.rect, &title, true, hide).map(|rect| PaneTitleHitArea {
+                    pane_id: info.id,
+                    rect,
+                })
+            })
+            .into_iter()
+            .collect();
+    }
+    if ws.layout.pane_count() <= 1 {
         return Vec::new();
     }
 

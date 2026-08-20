@@ -1211,13 +1211,11 @@ pub(crate) struct AgentPressState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextMenuKind {
-    /// A set-down agent's table row. It has no pane and no space, so the only
-    /// things to offer are what can be done to the agent itself.
-    DetachedAgent { pane_id: PaneId },
     /// A row of the agent table. The row is the only handle on the space the
     /// agent works in as well as on the agent itself, so this menu carries
-    /// what can be done to the agent, then the worktree actions its space
-    /// allows.
+    /// what can be done to the agent, then the worktree actions its folder
+    /// allows. A set-down agent uses the same menu: land and worktree
+    /// deletion follow that agent's folder, not a space.
     Agent {
         ws_idx: usize,
         pane_id: PaneId,
@@ -1285,7 +1283,6 @@ pub struct ContextMenuState {
 impl ContextMenuState {
     pub fn items(&self) -> Vec<String> {
         match &self.kind {
-            ContextMenuKind::DetachedAgent { .. } => vec!["Delete agent".into()],
             ContextMenuKind::Agent { space, .. } => {
                 let mut items = vec!["Rename agent".into(), "Delete agent".into()];
                 match space {
@@ -2142,19 +2139,6 @@ mod tests {
             .position(|item| is_land_menu_item(item))
             .expect("land item");
         assert!(!menu.item_enabled(land_idx));
-    }
-
-    #[test]
-    fn detached_agent_menu_says_delete_agent() {
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::DetachedAgent {
-                pane_id: crate::layout::PaneId::alloc(),
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
-        assert_eq!(menu.items(), vec!["Delete agent".to_string()]);
     }
 
     #[test]

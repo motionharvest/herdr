@@ -105,7 +105,8 @@ impl App {
     // Staged for #00f with resolve_terminal_target.
     #[allow(dead_code)]
     fn terminal_targets(&self) -> Vec<TerminalTarget> {
-        self.state
+        let mut targets: Vec<TerminalTarget> = self
+            .state
             .workspaces
             .iter()
             .enumerate()
@@ -124,7 +125,17 @@ impl App {
                         })
                 })
             })
-            .collect()
+            .collect();
+        let ws_idx = self.state.active.unwrap_or(0);
+        for detached in &self.state.detached_agents {
+            targets.push(TerminalTarget {
+                ws_idx,
+                tab_idx: 0,
+                pane_id: detached.pane_id,
+                terminal_id: detached.pane.attached_terminal_id.to_string(),
+            });
+        }
+        targets
     }
 
     // Staged for #00f with resolve_terminal_target.

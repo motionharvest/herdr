@@ -133,12 +133,51 @@ impl App {
     }
 
     pub(crate) fn open_remove_linked_worktree_for_agent(&mut self, pane_id: crate::layout::PaneId) {
-        let Some((ws_idx, _)) = self.find_pane(pane_id) else {
+        if let Some((ws_idx, _)) = self.find_pane(pane_id) {
+            self.open_remove_linked_worktree(ws_idx, Some(pane_id));
+            return;
+        }
+        let Some(cwd) = self
+            .state
+            .detached_agents
+            .iter()
+            .find(|detached| detached.pane_id == pane_id)
+            .and_then(|detached| {
+                crate::app::state::detached_agent_cwd(
+                    &detached.pane,
+                    &self.state.terminals,
+                    &self.terminal_runtimes,
+                )
+            })
+        else {
             self.state.config_diagnostic =
                 Some("This workspace is not a Herdr-managed worktree checkout.".into());
             return;
         };
-        self.open_remove_linked_worktree(ws_idx, Some(pane_id));
+        let Some((parent, checkout)) = crate::workspace::linked_land_paths(&cwd) else {
+            self.state.config_diagnostic =
+                Some("This workspace is not a Herdr-managed worktree checkout.".into());
+            return;
+        };
+        let workspace_id = self
+            .state
+            .active
+            .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
+            .map(|ws| ws.id.clone())
+            .unwrap_or_default();
+        if let Some(ws_idx) = self.state.active {
+            self.state.selected = ws_idx;
+        }
+        self.state.worktree_remove = Some(WorktreeRemoveState {
+            workspace_id,
+            pane_id: Some(pane_id),
+            repo_root: parent,
+            path: checkout,
+            error: None,
+            removing: false,
+            force_confirmation: false,
+        });
+        self.state.mode = Mode::ConfirmRemoveWorktree;
     }
 
     fn open_remove_linked_worktree(
@@ -735,6 +774,10 @@ impl App {
                         self.state
                             .close_agent_in_pane(&self.terminal_runtimes, pane_id);
                     }
+                    self.shutdown_detached_terminal_runtimes();
+                } else if let Some(pane_id) = pane_id {
+                    self.state
+                        .close_agent_in_pane(&self.terminal_runtimes, pane_id);
                     self.shutdown_detached_terminal_runtimes();
                 }
                 self.state.mode = if self.state.active.is_some() {
@@ -1667,6 +1710,68 @@ mod tests {
 
         let remove_second = crate::worktree::build_worktree_remove_command(&repo, &second, true);
         crate::worktree::run_worktree_command(&remove_second).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn remove_confirmation_follows_a_set_down_agent_folder() {
+        let repo = create_committed_repo("app-worktree-remove-hidden-repo");
+        let checkout = unique_temp_path("app-worktree-remove-hidden-checkout");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "worktree/remove-hidden",
+                checkout.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+
+        let mut app = app_for_worktree_tests();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("parent")];
+        let remaining = app.state.workspaces[0].tabs[0].root_pane;
+        let pane_id = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_agent_name("codex".into());
+        app.state.terminals.get_mut(&terminal_id).unwrap().cwd = checkout.clone();
+        app.state.workspaces[0].identity_cwd = repo.clone();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.workspaces[0].layout.focus_pane(pane_id);
+        app.state.close_pane();
+        app.state.workspaces[0].layout.focus_pane(remaining);
+        assert_eq!(app.state.detached_agents.len(), 1);
+
+        app.open_remove_linked_worktree_for_agent(pane_id);
+
+        assert_eq!(app.state.config_diagnostic, None);
+        assert_eq!(app.state.mode, Mode::ConfirmRemoveWorktree);
+        let remove = app.state.worktree_remove.as_ref().unwrap();
+        assert_eq!(
+            crate::worktree::canonical_or_original(&remove.path),
+            crate::worktree::canonical_or_original(&checkout)
+        );
+        assert_eq!(
+            crate::worktree::canonical_or_original(&remove.repo_root),
+            crate::worktree::canonical_or_original(&repo)
+        );
+        assert_eq!(remove.pane_id, Some(pane_id));
+
+        let remove_checkout =
+            crate::worktree::build_worktree_remove_command(&repo, &checkout, true);
+        crate::worktree::run_worktree_command(&remove_checkout).unwrap();
         let _ = std::fs::remove_dir_all(repo);
     }
 
