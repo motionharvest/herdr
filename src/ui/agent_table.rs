@@ -154,9 +154,9 @@ pub(crate) struct AgentLocation {
 }
 
 impl AgentLocation {
-    /// The last folder of the path: `herdr` from `~/lab/herdr`.
-    pub(crate) fn folder(&self) -> &str {
-        last_folder(&self.path)
+    /// The parent folder and the current folder: `lab/herdr` from `~/lab/herdr`.
+    pub(crate) fn folder(&self) -> String {
+        parent_and_current(&self.path)
     }
 
     /// The whole thing at full length: `~/lab/herdr (feat/space-done !)`.
@@ -168,14 +168,24 @@ impl AgentLocation {
     }
 }
 
-/// The last folder in a path. A trailing slash is ignored, so `~/lab/herdr/`
-/// and `~/lab/herdr` name the same folder. A path with no slash is itself.
-fn last_folder(path: &str) -> &str {
-    path.trim_end_matches('/')
-        .rsplit('/')
+/// The last two folders in a path, joined as `parent/current`. A trailing slash
+/// is ignored, so `~/lab/herdr/` and `~/lab/herdr` name the same pair. A path
+/// with no parent is itself.
+fn parent_and_current(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return path.to_string();
+    }
+    let mut parts = trimmed.rsplit('/');
+    let current = parts
         .next()
         .filter(|part| !part.is_empty())
-        .unwrap_or(path)
+        .unwrap_or(trimmed);
+    match parts.next() {
+        Some("") => format!("/{current}"),
+        Some(parent) => format!("{parent}/{current}"),
+        None => current.to_string(),
+    }
 }
 
 /// One group of columns: its own headings, its own columns, and its own slice of
@@ -423,7 +433,7 @@ fn cell_texts(app: &AppState, entry: &AgentPanelEntry) -> [String; COLUMNS] {
         entry
             .location
             .as_ref()
-            .map(|location| location.folder().to_string())
+            .map(|location| location.folder())
             .unwrap_or_default(),
         entry
             .agent_label
@@ -1046,9 +1056,9 @@ fn git_status_color(palette: &Palette, state: crate::workspace::GitWorktreeState
     }
 }
 
-/// The last folder, in the color that folder is written in everywhere in the
-/// table. The branch lives in its own column, so this cell never shares the
-/// cell with git status.
+/// The parent and current folders, in the color that folder is written in
+/// everywhere in the table. The branch lives in its own column, so this cell
+/// never shares the cell with git status.
 fn folder_line<'a>(
     app: &AppState,
     entry: &AgentPanelEntry,
@@ -1063,7 +1073,7 @@ fn folder_line<'a>(
         .copied()
         .unwrap_or(app.palette.subtext0);
     Line::styled(
-        pad(location.folder(), width),
+        pad(&location.folder(), width),
         Style::default().fg(mute_when_host_unfocused(app, color)),
     )
 }
@@ -1374,7 +1384,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_is_the_last_folder_and_git_status_is_its_own_column() {
+    fn directory_is_parent_and_current_and_git_status_is_its_own_column() {
         let state = AppState::test_new();
         let mut row = entry("~/lab/herdr");
         row.name = "Olivia".into();
@@ -1386,10 +1396,9 @@ mod tests {
         });
         let texts = cell_texts(&state, &row);
         assert_eq!(texts[COL_NAME], "Olivia");
-        assert_eq!(texts[COL_DIRECTORY], "herdr");
+        assert_eq!(texts[COL_DIRECTORY], "lab/herdr");
         assert_eq!(texts[COL_AGENT], "Codex");
         assert_eq!(texts[COL_GIT], "feat/space-done !");
-        assert!(!texts[COL_DIRECTORY].contains('/'));
         assert!(!texts[COL_DIRECTORY].contains('('));
     }
 
@@ -1409,12 +1418,18 @@ mod tests {
     }
 
     #[test]
-    fn last_folder_drops_the_path_and_keeps_the_name() {
-        assert_eq!(last_folder("~/lab/herdr"), "herdr");
-        assert_eq!(last_folder("~/lab/herdr/"), "herdr");
-        assert_eq!(last_folder("herdr"), "herdr");
-        assert_eq!(last_folder("~"), "~");
-        assert_eq!(last_folder("/"), "/");
+    fn parent_and_current_keeps_the_last_two_folders() {
+        assert_eq!(parent_and_current("~/lab/herdr"), "lab/herdr");
+        assert_eq!(parent_and_current("~/lab/herdr/"), "lab/herdr");
+        assert_eq!(
+            parent_and_current("~/lab/herdr/.herdr/worktrees/worktree-quiet-stone-7875"),
+            "worktrees/worktree-quiet-stone-7875"
+        );
+        assert_eq!(parent_and_current("~/herdr"), "~/herdr");
+        assert_eq!(parent_and_current("herdr"), "herdr");
+        assert_eq!(parent_and_current("~"), "~");
+        assert_eq!(parent_and_current("/"), "/");
+        assert_eq!(parent_and_current("/tmp"), "/tmp");
     }
 
     #[test]
@@ -1440,7 +1455,7 @@ mod tests {
         let columns = &layout.groups[0].columns;
         let texts = cell_texts(&state, &row_of(&state, pane_id));
         assert_eq!(texts[COL_SUMMARY], summary);
-        assert_eq!(texts[COL_DIRECTORY], "kept");
+        assert_eq!(texts[COL_DIRECTORY], "if/kept");
         for window in columns.windows(2) {
             assert_eq!(
                 window[1].x,
