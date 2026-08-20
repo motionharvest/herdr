@@ -322,7 +322,11 @@ impl App {
         pane_id: crate::layout::PaneId,
     ) -> Option<&crate::terminal::TerminalRuntime> {
         self.state
-            .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+            .runtime_for_agent_pane(&self.terminal_runtimes, pane_id)
+            .or_else(|| {
+                self.state
+                    .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+            })
     }
 
     pub(super) fn workspace_info(&self, index: usize) -> crate::api::schema::WorkspaceInfo {

@@ -1508,6 +1508,10 @@ pub struct AppState {
     pub(crate) agent_press: Option<AgentPressState>,
     /// The row a click picked out, until the next key releases it.
     pub(crate) agent_table_focus: Option<AgentTableFocus>,
+    /// An agent shown full-pane over the current layout. The splits underneath
+    /// do not change, so a shell that was on screen keeps running. BACK, HIDE,
+    /// and double-clicking this row again clear it.
+    pub(crate) agent_peek: Option<PaneId>,
     /// The agent the delete key has asked about, until enter or escape answers.
     pub(crate) confirm_close_agent: Option<PendingAgentClose>,
     pub selection: Option<Selection>,
@@ -1894,6 +1898,7 @@ impl AppState {
             pane_press: None,
             agent_press: None,
             agent_table_focus: None,
+            agent_peek: None,
             confirm_close_agent: None,
             selection: None,
             selection_autoscroll: None,

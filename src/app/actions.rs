@@ -1699,6 +1699,9 @@ impl AppState {
     }
 
     pub fn toggle_zoom(&mut self) {
+        if self.agent_peek.take().is_some() {
+            return;
+        }
         if let Some(tab) = self
             .active
             .and_then(|i| self.workspaces.get_mut(i))
@@ -1756,8 +1759,66 @@ impl AppState {
         })
     }
 
+    /// Show `pane_id` over the current layout, or leave that overlay if it is
+    /// already showing. The splits underneath do not change.
+    pub(crate) fn peek_agent(&mut self, pane_id: PaneId) {
+        if self.agent_peek == Some(pane_id) {
+            self.agent_peek = None;
+        } else {
+            self.agent_peek = Some(pane_id);
+        }
+        self.mode = Mode::Terminal;
+    }
+
+    pub(crate) fn clear_agent_peek(&mut self) {
+        self.agent_peek = None;
+    }
+
+    pub(crate) fn terminal_id_for_any_pane(
+        &self,
+        pane_id: PaneId,
+    ) -> Option<crate::terminal::TerminalId> {
+        self.workspaces
+            .iter()
+            .find_map(|ws| ws.terminal_id(pane_id).cloned())
+            .or_else(|| {
+                self.detached_agents
+                    .iter()
+                    .find(|detached| detached.pane_id == pane_id)
+                    .map(|detached| detached.pane.attached_terminal_id.clone())
+            })
+    }
+
+    pub(crate) fn terminal_state_for_pane(
+        &self,
+        pane_id: PaneId,
+    ) -> Option<&crate::terminal::TerminalState> {
+        let terminal_id = self.terminal_id_for_any_pane(pane_id)?;
+        self.terminals.get(&terminal_id)
+    }
+
+    pub(crate) fn runtime_for_agent_pane<'a>(
+        &'a self,
+        terminal_runtimes: &'a crate::terminal::TerminalRuntimeRegistry,
+        pane_id: PaneId,
+    ) -> Option<&'a crate::terminal::TerminalRuntime> {
+        #[cfg(test)]
+        for ws in &self.workspaces {
+            if let Some(runtime) = ws.test_runtimes.get(&pane_id) {
+                return Some(runtime);
+            }
+            if let Some(runtime) = ws.tabs.iter().find_map(|tab| tab.runtimes.get(&pane_id)) {
+                return Some(runtime);
+            }
+        }
+        terminal_runtimes.get(&self.terminal_id_for_any_pane(pane_id)?)
+    }
+
     /// Close the focused pane. Returns true when the close was deferred to confirmation.
     pub fn close_pane(&mut self) -> bool {
+        if self.agent_peek.take().is_some() {
+            return false;
+        }
         let active = self.active;
         if active.is_some_and(|ws_idx| {
             self.close_focused_pane_would_close_workspace(ws_idx)
@@ -4757,6 +4818,50 @@ mod tests {
 
         state.close_pane();
         assert_eq!(state.workspaces[0].panes.len(), 1);
+    }
+
+    #[test]
+    fn peeking_a_hidden_agent_leaves_the_layout_alone() {
+        let mut state = app_with_workspaces(&["test"]);
+        let target = state.workspaces[0].tabs[0].root_pane;
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, pane_id);
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+        state.close_pane();
+        state.workspaces[0].layout.focus_pane(target);
+
+        state.peek_agent(pane_id);
+
+        assert_eq!(state.agent_peek, Some(pane_id));
+        assert_eq!(state.detached_agents.len(), 1);
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(target));
+        assert!(state.terminals.contains_key(&terminal_id));
+
+        state.peek_agent(pane_id);
+        assert_eq!(state.agent_peek, None);
+        assert_eq!(state.detached_agents.len(), 1);
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(target));
+    }
+
+    #[test]
+    fn hide_and_back_leave_a_peek_without_closing_the_focused_pane() {
+        let mut state = app_with_workspaces(&["test"]);
+        let target = state.workspaces[0].tabs[0].root_pane;
+        let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+        mark_agent(&mut state, 0, 0, pane_id);
+        state.close_pane();
+        state.workspaces[0].layout.focus_pane(target);
+        state.peek_agent(pane_id);
+
+        assert!(!state.close_pane());
+        assert_eq!(state.agent_peek, None);
+        assert!(state.workspaces[0].pane_state(target).is_some());
+
+        state.peek_agent(pane_id);
+        state.toggle_zoom();
+        assert_eq!(state.agent_peek, None);
+        assert!(!state.workspaces[0].zoomed);
+        assert!(state.workspaces[0].pane_state(target).is_some());
     }
 
     #[test]

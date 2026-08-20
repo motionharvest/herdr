@@ -201,11 +201,14 @@ fn compute_view_internal(
     app.view.agent_locations = compute_agent_locations(app, terminal_runtimes);
     let (agent_table, terminal_area) = split_agent_table(app, area);
 
-    let split_borders = app
-        .active
-        .and_then(|i| app.workspaces.get(i))
-        .map(|ws| ws.layout.splits(terminal_area))
-        .unwrap_or_default();
+    let split_borders = if app.agent_peek.is_some() {
+        Vec::new()
+    } else {
+        app.active
+            .and_then(|i| app.workspaces.get(i))
+            .map(|ws| ws.layout.splits(terminal_area))
+            .unwrap_or_default()
+    };
 
     let pane_infos = compute_pane_infos(
         app,
@@ -271,11 +274,14 @@ fn compute_mobile_view(
         app.mobile_switcher_scroll = app.mobile_switcher_scroll.min(max_scroll);
     }
 
-    let split_borders = app
-        .active
-        .and_then(|i| app.workspaces.get(i))
-        .map(|ws| ws.layout.splits(terminal_area))
-        .unwrap_or_default();
+    let split_borders = if app.agent_peek.is_some() {
+        Vec::new()
+    } else {
+        app.active
+            .and_then(|i| app.workspaces.get(i))
+            .map(|ws| ws.layout.splits(terminal_area))
+            .unwrap_or_default()
+    };
 
     let pane_infos = compute_pane_infos(
         app,

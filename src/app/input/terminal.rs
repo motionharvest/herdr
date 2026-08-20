@@ -119,12 +119,23 @@ impl App {
             return None;
         }
 
-        let ws_idx = self.state.active?;
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let pane_id = ws.focused_pane_id()?;
-        let rt =
-            self.state
-                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)?;
+        let (ws_idx, pane_id, rt) = if let Some(pane_id) = self.state.agent_peek {
+            let ws_idx = self.state.active.unwrap_or(0);
+            let rt = self
+                .state
+                .runtime_for_agent_pane(&self.terminal_runtimes, pane_id)?;
+            (ws_idx, pane_id, rt)
+        } else {
+            let ws_idx = self.state.active?;
+            let ws = self.state.workspaces.get(ws_idx)?;
+            let pane_id = ws.focused_pane_id()?;
+            let rt = self.state.runtime_for_pane_in_workspace(
+                &self.terminal_runtimes,
+                ws_idx,
+                pane_id,
+            )?;
+            (ws_idx, pane_id, rt)
+        };
 
         // Intercept plain PageUp/PageDown presses for pane scrollback when the
         // focused pane doesn't handle its own scrolling (e.g., a plain shell

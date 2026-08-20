@@ -314,6 +314,10 @@ impl App {
             return;
         }
 
+        if self.handle_agent_row_double_click(mouse) {
+            return;
+        }
+
         if self.handle_modified_url_click(mouse) {
             return;
         }
@@ -428,10 +432,59 @@ impl App {
         }
 
         self.last_agent_name_click = None;
+        self.last_agent_row_click = None;
         self.state.agent_press = None;
         self.state.drag = None;
         modal::open_rename_pane(&mut self.state, hit.pane_id);
         self.state.mode == Mode::RenamePane
+    }
+
+    fn handle_agent_row_double_click(&mut self, mouse: MouseEvent) -> bool {
+        if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) {
+            self.last_agent_row_click = None;
+            return false;
+        }
+
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+
+        if !mouse.modifiers.is_empty() || self.state.mode != Mode::Terminal {
+            self.last_agent_row_click = None;
+            return false;
+        }
+
+        if self
+            .state
+            .agent_name_target_at(mouse.column, mouse.row)
+            .is_some()
+        {
+            return false;
+        }
+
+        let Some(hit) = self.state.agent_table_target_at(mouse.column, mouse.row) else {
+            self.last_agent_row_click = None;
+            return false;
+        };
+        let click = super::AgentNameClickState {
+            pane_id: hit.pane_id,
+            row: mouse.row,
+            col: mouse.column,
+            at: std::time::Instant::now(),
+        };
+        if !self
+            .last_agent_row_click
+            .is_some_and(|last| last.is_double_click_for(click))
+        {
+            self.last_agent_row_click = Some(click);
+            return false;
+        }
+
+        self.last_agent_row_click = None;
+        self.state.agent_press = None;
+        self.state.drag = None;
+        self.state.peek_agent(hit.pane_id);
+        true
     }
 
     fn handle_modified_url_click(&mut self, mouse: MouseEvent) -> bool {

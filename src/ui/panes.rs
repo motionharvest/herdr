@@ -363,11 +363,10 @@ fn pane_title_hit_area(
 
 fn pane_hides_instead_of_closing(
     app: &AppState,
-    ws: &Workspace,
+    _ws: &Workspace,
     pane_id: crate::layout::PaneId,
 ) -> bool {
-    ws.pane_state(pane_id)
-        .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
+    app.terminal_state_for_pane(pane_id)
         .is_some_and(crate::terminal::TerminalState::is_agent_terminal)
 }
 
@@ -817,6 +816,36 @@ pub(super) fn compute_pane_infos(
     };
 
     let framed = ws.layout.pane_count() >= 1;
+    if let Some(pane_id) = app.agent_peek {
+        let pane_inner = pane_inner_rect(area, true);
+        let mut inner_rect = pane_inner;
+        let mut scrollbar_rect = None;
+        if let Some(rt) = app.runtime_for_agent_pane(terminal_runtimes, pane_id) {
+            (inner_rect, scrollbar_rect) = stable_scrollbar_gutter(rt, pane_inner);
+            if resize_panes
+                && app
+                    .terminal_id_for_any_pane(pane_id)
+                    .is_some_and(|terminal_id| {
+                        !app.direct_attach_resize_locks.contains(&terminal_id)
+                    })
+            {
+                rt.resize(
+                    inner_rect.height,
+                    inner_rect.width,
+                    cell_size.width_px,
+                    cell_size.height_px,
+                );
+            }
+        }
+        return vec![PaneInfo {
+            id: pane_id,
+            rect: area,
+            inner_rect,
+            scrollbar_rect,
+            is_focused: true,
+            exposed: ExposedSides::all(),
+        }];
+    }
     if ws.zoomed {
         let focused_id = ws.layout.focused();
         let pane_inner = pane_inner_rect(area, framed);
@@ -892,8 +921,9 @@ pub(super) fn render_panes(
         return;
     };
 
-    let multi_pane = ws.layout.pane_count() > 1;
-    let framed = ws.layout.pane_count() >= 1;
+    let peeking = app.agent_peek.is_some();
+    let multi_pane = !peeking && ws.layout.pane_count() > 1;
+    let framed = peeking || ws.layout.pane_count() >= 1;
     let terminal_active = app.mode == Mode::Terminal;
     let hidden_right_edges = if multi_pane {
         compute_hidden_right_edge_ranges(&app.view.pane_infos)
@@ -904,7 +934,7 @@ pub(super) fn render_panes(
     let swap_preview = pane_swap_preview_target(app);
 
     for info in &app.view.pane_infos {
-        if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
+        if let Some(rt) = app.runtime_for_agent_pane(terminal_runtimes, info.id) {
             let preview_zone = swap_preview
                 .filter(|(target, _)| *target == info.id)
                 .map(|(_, zone)| zone);
@@ -914,9 +944,7 @@ pub(super) fn render_panes(
             // it. A swap takes the whole pane, and there is nothing left to see.
             let covers_pane = preview_zone == Some(crate::layout::DropZone::Over);
             if framed {
-                let terminal = ws
-                    .pane_state(info.id)
-                    .and_then(|pane| app.terminals.get(&pane.attached_terminal_id));
+                let terminal = app.terminal_state_for_pane(info.id);
                 let assigned_name = terminal.and_then(|terminal| {
                     crate::pane_names::assigned_names(&app.terminals).remove(&terminal.id)
                 });
@@ -935,7 +963,7 @@ pub(super) fn render_panes(
                     info.id,
                     info.is_focused,
                     is_swap_preview,
-                    ws.zoomed,
+                    peeking || ws.zoomed,
                     pane_hides_instead_of_closing(app, ws, info.id),
                     info.exposed,
                     hidden_right_edges.get(&info.id).copied(),
@@ -1007,7 +1035,7 @@ pub(super) fn compute_pane_chrome_controls(app: &AppState) -> Vec<PaneChromeCont
         return Vec::new();
     }
 
-    let zoomed = ws.active_tab().map(|tab| tab.zoomed).unwrap_or(false);
+    let zoomed = app.agent_peek.is_some() || ws.active_tab().map(|tab| tab.zoomed).unwrap_or(false);
 
     app.view
         .pane_infos
@@ -1030,7 +1058,7 @@ pub(super) fn compute_pane_title_hit_areas(app: &AppState) -> Vec<PaneTitleHitAr
     let Some(ws) = app.workspaces.get(ws_idx) else {
         return Vec::new();
     };
-    if ws.layout.pane_count() <= 1 {
+    if app.agent_peek.is_some() || ws.layout.pane_count() <= 1 {
         return Vec::new();
     }
 

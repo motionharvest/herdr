@@ -820,7 +820,8 @@ pub(crate) fn render_agent_table(
         let Some(group) = layout.groups.get(row.group) else {
             continue;
         };
-        let selected = entry.docked && focused == Some((entry.ws_idx, entry.pane_id));
+        let selected = app.agent_peek == Some(entry.pane_id)
+            || (entry.docked && focused == Some((entry.ws_idx, entry.pane_id)));
         if selected {
             fill_row_band(app, frame, row.rect);
         }
@@ -979,6 +980,14 @@ fn render_margin(app: &AppState, frame: &mut Frame, entry: &AgentPanelEntry, row
     );
 }
 
+fn detail_fg(app: &AppState, entry: &AgentPanelEntry) -> ratatui::style::Color {
+    if entry.docked {
+        app.palette.text
+    } else {
+        app.palette.overlay0
+    }
+}
+
 /// One cell's text, in the tone that column reads in.
 fn cell_line<'a>(
     app: &AppState,
@@ -989,37 +998,31 @@ fn cell_line<'a>(
     selected: bool,
     folders: &FolderColors,
 ) -> Line<'a> {
-    let dim = Style::default().fg(app.palette.overlay0);
     match column {
         COL_NAME => {
-            // A set-down agent's name is written a shade quieter: the row is
-            // real, but nothing on screen is showing it.
             let style = if selected {
                 Style::default()
                     .fg(focus_accent(app))
                     .add_modifier(Modifier::BOLD)
-            } else if entry.docked {
-                Style::default().fg(app.palette.text)
             } else {
-                Style::default().fg(app.palette.subtext0)
+                Style::default().fg(detail_fg(app, entry))
             };
             Line::styled(pad(text, width), style)
         }
-        COL_SUMMARY => Line::styled(pad(text, width), dim),
-        COL_DIRECTORY => folder_line(app, entry, width, folders),
-        COL_AGENT => Line::styled(
+        COL_SUMMARY | COL_AGENT | COL_RUN | COL_IDLE => Line::styled(
             pad(text, width),
             Style::default().fg(if selected {
                 app.palette.text
             } else {
-                app.palette.subtext0
+                detail_fg(app, entry)
             }),
         ),
+        COL_DIRECTORY => folder_line(app, entry, width, folders),
         COL_GIT => Line::styled(
             pad(text, width),
             Style::default().fg(mute_when_host_unfocused(app, app.palette.mauve)),
         ),
-        _ => Line::styled(pad(text, width), dim),
+        _ => Line::styled(pad(text, width), Style::default().fg(detail_fg(app, entry))),
     }
 }
 
@@ -1309,6 +1312,33 @@ mod tests {
             .into_iter()
             .find(|entry| entry.pane_id == pane_id)
             .expect("a row for the agent")
+    }
+
+    #[test]
+    fn a_visible_agent_row_uses_the_default_foreground_for_details() {
+        let state = state_with_agents(1);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let row = row_of(&state, pane_id);
+        let folders = FolderColors::new();
+        for column in [COL_NAME, COL_SUMMARY, COL_AGENT, COL_RUN, COL_IDLE] {
+            let line = cell_line(&state, &row, column, "x", 8, false, &folders);
+            assert_eq!(line.style.fg, Some(state.palette.text), "column {column}");
+        }
+    }
+
+    #[test]
+    fn a_hidden_agent_row_uses_the_muted_color_for_details() {
+        let (state, pane_id) = state_with_a_set_down_agent();
+        let row = row_of(&state, pane_id);
+        let folders = FolderColors::new();
+        for column in [COL_NAME, COL_SUMMARY, COL_AGENT, COL_RUN, COL_IDLE] {
+            let line = cell_line(&state, &row, column, "x", 8, false, &folders);
+            assert_eq!(
+                line.style.fg,
+                Some(state.palette.overlay0),
+                "column {column}"
+            );
+        }
     }
 
     #[test]

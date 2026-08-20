@@ -463,6 +463,10 @@ impl AppState {
 
                 if !in_table {
                     if let Some(control) = self.pane_chrome_control_at(mouse.column, mouse.row) {
+                        if self.agent_peek.is_some() {
+                            self.clear_agent_peek();
+                            return None;
+                        }
                         self.focus_pane(control.pane_id);
                         match control.action {
                             crate::app::state::PaneChromeAction::Focus => self.toggle_zoom(),
@@ -560,6 +564,9 @@ impl AppState {
                             pane_id: hit.pane_id,
                         });
                         if hit.docked {
+                            if self.agent_peek != Some(hit.pane_id) {
+                                self.agent_peek = None;
+                            }
                             self.focus_pane_in_workspace(hit.ws_idx, hit.pane_id);
                             self.mode = Mode::Terminal;
                         }
@@ -824,12 +831,8 @@ impl AppState {
                 }
 
                 let pane_press = self.pane_press.take();
-                let agent_press = self.agent_press.take();
+                self.agent_press.take();
                 let drag = self.drag.take();
-                let dragged_agent = matches!(
-                    drag.as_ref().map(|drag| &drag.target),
-                    Some(DragTarget::AgentReorder { .. }) | Some(DragTarget::AgentDock { .. })
-                );
                 match drag {
                     Some(DragState {
                         target:
@@ -870,14 +873,6 @@ impl AppState {
                     }
                     Some(_) => {}
                     None => {
-                        if let Some(AgentPressState {
-                            docked: false,
-                            pane_id,
-                            ..
-                        }) = agent_press.filter(|_| !dragged_agent)
-                        {
-                            self.open_detached_agent(pane_id);
-                        }
                         if let Some(press) = pane_press {
                             self.focus_pane(press.pane_id);
                             self.mode = Mode::Terminal;
@@ -3538,7 +3533,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_set_down_agent_reopens_it_in_the_focused_pane() {
+    fn clicking_a_set_down_agent_selects_it_without_docking() {
         let mut app = app_for_mouse_test();
         let mut workspace = Workspace::test_new("space");
         let target = workspace.tabs[0].root_pane;
@@ -3582,14 +3577,101 @@ mod tests {
             row.rect.y,
         ));
 
-        assert!(app.state.detached_agents.is_empty());
-        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(pane_id));
+        assert_eq!(app.state.detached_agents.len(), 1);
+        assert_eq!(app.state.detached_agents[0].pane_id, pane_id);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(target));
+        assert!(app.state.workspaces[0].pane_state(pane_id).is_none());
+        assert_eq!(app.state.agent_peek, None);
         assert_eq!(
-            app.state.workspaces[0]
-                .pane_state(pane_id)
-                .map(|pane| pane.attached_terminal_id.clone()),
-            Some(terminal_id)
+            app.state
+                .agent_table_focus
+                .as_ref()
+                .map(|focus| focus.pane_id),
+            Some(pane_id)
         );
+        assert!(app.state.terminals.contains_key(&terminal_id));
+    }
+
+    #[test]
+    fn double_clicking_a_hidden_agent_peeks_without_docking() {
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("space");
+        let target = workspace.tabs[0].root_pane;
+        let pane_id = workspace.test_split(Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("agent pane")
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("agent terminal")
+            .set_agent_name("codex".into());
+        app.state.workspaces[0].layout.focus_pane(pane_id);
+        app.state.close_pane();
+        app.state.workspaces[0].layout.focus_pane(target);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let row = app
+            .state
+            .view
+            .agent_table
+            .rows
+            .iter()
+            .find(|row| row.pane_id == pane_id)
+            .expect("set-down agent row")
+            .clone();
+        let detail = app.state.view.agent_table.groups[row.group].columns[1];
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            detail.x,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            detail.x,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            detail.x,
+            row.rect.y,
+        ));
+
+        assert_eq!(app.state.agent_peek, Some(pane_id));
+        assert_eq!(app.state.detached_agents.len(), 1);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(target));
+        assert!(app.state.workspaces[0].pane_state(target).is_some());
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            detail.x,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            detail.x,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            detail.x,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            detail.x,
+            row.rect.y,
+        ));
+
+        assert_eq!(app.state.agent_peek, None);
+        assert_eq!(app.state.detached_agents.len(), 1);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(target));
     }
 
     #[test]
