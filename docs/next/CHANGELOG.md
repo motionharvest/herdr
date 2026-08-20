@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Choosing `Land on <branch>` on a hidden or peeked agent now prompts that agent. The click used the table name, and name lookup only found agents still sitting in a layout, so a set-down pane never received the land instructions.
 - `Delete agent + worktree` now follows that agent's folder, the same way `Land on <branch>` already does. The click used to require saved worktree membership on the space holding the row, so an agent Herdr had started in a linked checkout could raise `This workspace is not a Herdr-managed worktree checkout.` after a rebuild, a hide, or a dock into another space. The confirmation removes that agent's checkout and ends that agent. A space that still holds another agent is left in place.
 - Clicking a hidden agent peeks that agent in FOCUS over the current layout on release. The press used to peek immediately, which replaced the drop targets with the overlay, so a drag from that row could not dock. A drag from the row still places the agent: an edge splits, the middle replaces. While peeked, the pane name is a drag handle onto the layout behind it. BACK or HIDE leaves the peek. Clicking the same row again keeps it showing. Double-clicking the name still renames. A visible agent's row still focuses its pane.
 - Right-clicking a hidden agent row opens the same agent menu as a visible row. Land and `Delete agent + worktree` follow that agent's folder. The hidden-row menu used to offer only `Delete agent`, and those worktree actions required the agent to be docked in a space.

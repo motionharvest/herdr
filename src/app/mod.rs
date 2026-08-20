@@ -2594,6 +2594,98 @@ mod tests {
         assert_eq!(resolved.terminal_id, terminal_id.to_string());
     }
 
+    fn app_with_peeked_hidden_agent(
+        title_name: &str,
+    ) -> (
+        App,
+        crate::layout::PaneId,
+        tokio::sync::mpsc::Receiver<bytes::Bytes>,
+    ) {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("peek-land");
+        let remaining = workspace.tabs[0].root_pane;
+        let hidden = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let (runtime, input_rx) = TerminalRuntime::test_with_channel(80, 24);
+        workspace.insert_test_runtime(hidden, runtime);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(hidden)
+            .expect("hidden pane")
+            .attached_terminal_id
+            .clone();
+        {
+            let terminal = app
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("hidden terminal");
+            terminal.set_agent_name("codex".into());
+            terminal.title_name = Some(title_name.into());
+        }
+        app.state.workspaces[0].layout.focus_pane(hidden);
+        app.state.close_pane();
+        app.state.workspaces[0].layout.focus_pane(remaining);
+        app.state.peek_agent(hidden);
+        (app, hidden, input_rx)
+    }
+
+    #[test]
+    fn terminal_target_resolves_assigned_name_of_a_hidden_agent() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let _runtime_guard = rt.enter();
+        let (app, hidden, _input_rx) = app_with_peeked_hidden_agent("peeked-lander");
+        let name = crate::ui::agent_panel_entries(&app.state)
+            .into_iter()
+            .find(|entry| entry.pane_id == hidden)
+            .expect("hidden table row")
+            .name;
+        assert_eq!(name, "peeked-lander");
+
+        let resolved = app
+            .resolve_terminal_target(&name)
+            .expect("hidden agent table name should resolve");
+
+        assert_eq!(resolved.pane_id, hidden);
+        drop(_runtime_guard);
+        rt.shutdown_timeout(std::time::Duration::from_millis(100));
+    }
+
+    #[test]
+    fn land_prompt_reaches_a_peeked_hidden_agent() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let _runtime_guard = rt.enter();
+        let (mut app, hidden, mut input_rx) = app_with_peeked_hidden_agent("peeked-lander");
+        let name = crate::ui::agent_panel_entries(&app.state)
+            .into_iter()
+            .find(|entry| entry.pane_id == hidden)
+            .expect("hidden table row")
+            .name;
+        let text = crate::app::state::land_prompt_text();
+
+        app.submit_land_prompt(&name, &text);
+
+        let mut sent = Vec::new();
+        while let Ok(chunk) = input_rx.try_recv() {
+            sent.extend_from_slice(&chunk);
+        }
+        let sent = String::from_utf8_lossy(&sent);
+        assert!(
+            sent.contains(&text),
+            "land from a peeked hidden agent should paste into that agent's pane, got {sent:?}"
+        );
+        drop(_runtime_guard);
+        rt.shutdown_timeout(std::time::Duration::from_millis(100));
+    }
+
     #[test]
     fn terminal_target_resolves_unique_agent_name() {
         let mut app = test_app();

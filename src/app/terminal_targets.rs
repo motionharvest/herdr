@@ -57,6 +57,7 @@ impl App {
             }
         }
 
+        let assigned = crate::pane_names::assigned_names(&self.state.terminals);
         let name_matches: Vec<_> = self
             .terminal_targets()
             .into_iter()
@@ -68,6 +69,10 @@ impl App {
                     .is_some_and(|terminal| {
                         terminal.agent_name.as_deref() == Some(target)
                             || terminal.effective_agent_label() == Some(target)
+                            || terminal.manual_label.as_deref() == Some(target)
+                            || assigned
+                                .get(&terminal.id)
+                                .is_some_and(|name| name.eq_ignore_ascii_case(target))
                     })
             })
             .collect();
