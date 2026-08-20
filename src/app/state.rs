@@ -636,6 +636,7 @@ pub struct WorktreeCreateState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeRemoveState {
     pub workspace_id: String,
+    pub pane_id: Option<PaneId>,
     pub repo_root: std::path::PathBuf,
     pub path: std::path::PathBuf,
     pub error: Option<String>,
@@ -1459,6 +1460,7 @@ pub struct AppState {
     pub request_open_existing_worktree: Option<usize>,
     pub request_new_workspace_cwd: Option<std::path::PathBuf>,
     pub request_remove_linked_worktree: Option<usize>,
+    pub request_remove_agent_worktree: Option<PaneId>,
     pub request_submit_worktree_create: bool,
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
@@ -1848,6 +1850,7 @@ impl AppState {
             request_open_existing_worktree: None,
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
+            request_remove_agent_worktree: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,

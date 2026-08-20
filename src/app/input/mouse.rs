@@ -2443,6 +2443,7 @@ mod tests {
         app.state.mode = Mode::ConfirmRemoveWorktree;
         app.state.worktree_remove = Some(crate::app::state::WorktreeRemoveState {
             workspace_id: "issue".into(),
+            pane_id: None,
             repo_root: "/repo/herdr".into(),
             path: "/repo/herdr-issue".into(),
             error: None,
@@ -2471,6 +2472,7 @@ mod tests {
         app.state.mode = Mode::ConfirmRemoveWorktree;
         app.state.worktree_remove = Some(crate::app::state::WorktreeRemoveState {
             workspace_id: "issue".into(),
+            pane_id: None,
             repo_root: "/repo/herdr".into(),
             path: "/repo/herdr-issue".into(),
             error: None,

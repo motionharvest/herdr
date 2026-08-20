@@ -619,8 +619,8 @@ pub(super) fn apply_context_menu_action(
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::Agent { ws_idx, .. }, Some("Delete agent + worktree")) => {
-            state.request_remove_linked_worktree = Some(ws_idx);
+        (ContextMenuKind::Agent { pane_id, .. }, Some("Delete agent + worktree")) => {
+            state.request_remove_agent_worktree = Some(pane_id);
             leave_modal(state);
         }
         (ContextMenuKind::Agent { pane_id, .. }, Some(item)) if is_land_menu_item(item) => {
@@ -1171,7 +1171,40 @@ mod tests {
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, delete_idx);
 
         assert_eq!(state.request_remove_linked_worktree, None);
+        assert_eq!(state.request_remove_agent_worktree, None);
         assert!(state.context_menu.is_some());
         assert_eq!(state.mode, Mode::ContextMenu);
+    }
+
+    #[test]
+    fn worktree_delete_in_a_worktree_directory_requests_the_agent_folder() {
+        let mut state = state_with_workspaces(&["main"]);
+        state.mode = Mode::ContextMenu;
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::Agent {
+                ws_idx: 0,
+                pane_id,
+                space: SpaceMenuKind::LinkedWorktree {
+                    parent_branch: Some("main".into()),
+                    already_landed: false,
+                    in_worktree_directory: true,
+                },
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        let delete_idx = menu
+            .items()
+            .iter()
+            .position(|item| item == "Delete agent + worktree")
+            .expect("delete worktree item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, delete_idx);
+
+        assert_eq!(state.request_remove_agent_worktree, Some(pane_id));
+        assert_eq!(state.request_remove_linked_worktree, None);
     }
 }

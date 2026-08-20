@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- `Delete agent + worktree` now follows that agent's folder, the same way `Land on <branch>` already does. The click used to require saved worktree membership on the space holding the row, so an agent Herdr had started in a linked checkout could raise `This workspace is not a Herdr-managed worktree checkout.` after a rebuild, a hide, or a dock into another space. The confirmation removes that agent's checkout and ends that agent. A space that still holds another agent is left in place.
+
 ### Changed
 - Double-clicking an agent row (anywhere but the name) now peeks that agent in FOCUS over the current layout. The splits underneath do not change, so a shell running `npm run dev` keeps running. BACK, HIDE, or double-clicking that row again leaves the peek. A single click on a hidden agent selects the row and no longer docks it over the focused pane, which is what ended the shell. Dragging still places the agent: an edge splits, the middle replaces. Double-clicking the name still renames.
 - Visible agent rows use the default foreground for name, summary, harness, run, and idle. Hidden rows use the muted color for those cells, including the name, so a hidden agent is visibly quieter than one on screen. Folder color, git status, and the gutter marks are unchanged.

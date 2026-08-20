@@ -1564,6 +1564,13 @@ impl HeadlessServer {
             crate::render_prof::event("full_render_cause.deferred_workspace_cwd");
         }
 
+        if let Some(pane_id) = self.app.state.request_remove_agent_worktree.take() {
+            self.app.state.request_remove_linked_worktree = None;
+            self.app.open_remove_linked_worktree_for_agent(pane_id);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
+        }
+
         if let Some(ws_idx) = self.app.state.request_remove_linked_worktree.take() {
             self.app.open_remove_linked_worktree_confirmation(ws_idx);
             needs_render = true;

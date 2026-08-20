@@ -377,6 +377,7 @@ impl App {
             request_open_existing_worktree: None,
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
+            request_remove_agent_worktree: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -739,6 +740,12 @@ impl App {
                     tracing::error!(err = %err, "failed to create workspace at requested cwd");
                     self.state.mode = Mode::Navigate;
                 }
+                needs_render = true;
+            }
+
+            if let Some(pane_id) = self.state.request_remove_agent_worktree.take() {
+                self.state.request_remove_linked_worktree = None;
+                self.open_remove_linked_worktree_for_agent(pane_id);
                 needs_render = true;
             }
 
