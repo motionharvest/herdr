@@ -2470,6 +2470,7 @@ mod tests {
             error: None,
             removing: false,
             force_confirmation: false,
+            already_landed: true,
         });
         let popup = crate::ui::remove_worktree_popup_rect(app.state.screen_rect()).unwrap();
         let inner = Rect::new(
@@ -2499,6 +2500,7 @@ mod tests {
             error: None,
             removing: false,
             force_confirmation: false,
+            already_landed: true,
         });
         let popup = crate::ui::remove_worktree_popup_rect(app.state.screen_rect()).unwrap();
         let inner = Rect::new(

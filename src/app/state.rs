@@ -642,6 +642,7 @@ pub struct WorktreeRemoveState {
     pub error: Option<String>,
     pub removing: bool,
     pub force_confirmation: bool,
+    pub already_landed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

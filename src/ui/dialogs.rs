@@ -335,6 +335,10 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
     );
 }
 
+fn remove_worktree_is_risky(remove: &crate::app::state::WorktreeRemoveState) -> bool {
+    !remove.already_landed || remove.force_confirmation
+}
+
 pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     let Some(remove) = app.worktree_remove.as_ref() else {
         return;
@@ -344,8 +348,13 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
     let Some(popup) = remove_worktree_popup_rect(area) else {
         return;
     };
-    let Some(inner) = render_panel_shell(frame, popup, app.palette.red, app.palette.panel_bg)
-    else {
+    let risky = remove_worktree_is_risky(remove);
+    let border = if risky {
+        app.palette.red
+    } else {
+        app.palette.accent
+    };
+    let Some(inner) = render_panel_shell(frame, popup, border, app.palette.panel_bg) else {
         return;
     };
 
@@ -361,12 +370,15 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
     ])
     .areas::<8>(inner);
 
+    let title_fg = if risky {
+        app.palette.red
+    } else {
+        app.palette.text
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             " delete agent / worktree?",
-            Style::default()
-                .fg(app.palette.red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
         )])),
         rows[0],
     );
@@ -381,13 +393,19 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
         rows[2],
     );
     frame.render_widget(
-        Paragraph::new(" The agent space will close. Land work first if you need it.")
+        Paragraph::new(" The agent space will close.")
             .style(Style::default().fg(app.palette.overlay0)),
         rows[3],
     );
     if remove.force_confirmation {
         frame.render_widget(
             Paragraph::new(" Uncommitted files or unlanded commits will be permanently deleted.")
+                .style(Style::default().fg(app.palette.red)),
+            rows[4],
+        );
+    } else if !remove.already_landed {
+        frame.render_widget(
+            Paragraph::new(" This worktree has changes that are not landed.")
                 .style(Style::default().fg(app.palette.red)),
             rows[4],
         );
@@ -410,6 +428,11 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
     } else {
         "remove"
     };
+    let remove_bg = if risky {
+        app.palette.red
+    } else {
+        app.palette.accent
+    };
     render_action_button(
         frame,
         remove_rect,
@@ -417,7 +440,7 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
         remove_label,
         Style::default()
             .fg(panel_contrast_fg(&app.palette))
-            .bg(app.palette.red)
+            .bg(remove_bg)
             .add_modifier(Modifier::BOLD),
     );
     render_action_button(
@@ -1072,6 +1095,81 @@ mod tests {
             .collect();
         assert!(failed_text.contains("uncommitted"), "{failed_text}");
         assert!(failed_text.contains("close"), "{failed_text}");
+    }
+
+    fn draw_remove_worktree_dialog(
+        already_landed: bool,
+        force_confirmation: bool,
+    ) -> (crate::app::AppState, ratatui::buffer::Buffer) {
+        let mut app = AppState::test_new();
+        app.mode = crate::app::Mode::ConfirmRemoveWorktree;
+        app.worktree_remove = Some(crate::app::state::WorktreeRemoveState {
+            workspace_id: "ws".into(),
+            pane_id: None,
+            repo_root: "/repo/herdr".into(),
+            path: "/repo/herdr/.herdr/worktrees/worktree-green".into(),
+            error: None,
+            removing: false,
+            force_confirmation,
+            already_landed,
+        });
+        let area = Rect::new(0, 0, 106, 24);
+        app.view.terminal_area = area;
+        crate::ui::compute_view(&mut app, area);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(106, 24))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| crate::ui::render(&app, frame))
+            .expect("draw");
+        (app, terminal.backend().buffer().clone())
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn landed_remove_dialog_is_routine_and_does_not_tell_you_to_land() {
+        let (app, buffer) = draw_remove_worktree_dialog(true, false);
+        let text = buffer_text(&buffer);
+        assert!(text.contains("The agent space will close."), "{text}");
+        assert!(!text.contains("Land work first if you need it."), "{text}");
+        assert!(
+            !text.contains("This worktree has changes that are not landed"),
+            "{text}"
+        );
+        let popup = super::remove_worktree_popup_rect(app.view.terminal_area).expect("popup");
+        assert_eq!(buffer[(popup.x, popup.y)].fg, app.palette.accent);
+    }
+
+    #[test]
+    fn force_remove_dialog_warns_that_unlanded_work_will_be_deleted() {
+        let (app, buffer) = draw_remove_worktree_dialog(false, true);
+        let text = buffer_text(&buffer);
+        assert!(
+            text.contains("Uncommitted files or unlanded commits will be permanently deleted."),
+            "{text}"
+        );
+        assert!(text.contains("delete anyway"), "{text}");
+        let popup = super::remove_worktree_popup_rect(app.view.terminal_area).expect("popup");
+        assert_eq!(buffer[(popup.x, popup.y)].fg, app.palette.red);
+    }
+
+    #[test]
+    fn unlanded_remove_dialog_says_the_worktree_has_changes_that_are_not_landed() {
+        let (app, buffer) = draw_remove_worktree_dialog(false, false);
+        let text = buffer_text(&buffer);
+        assert!(
+            text.contains("This worktree has changes that are not landed"),
+            "{text}"
+        );
+        assert!(!text.contains("Land work first if you need it."), "{text}");
+        let popup = super::remove_worktree_popup_rect(app.view.terminal_area).expect("popup");
+        assert_eq!(buffer[(popup.x, popup.y)].fg, app.palette.red);
     }
 
     #[test]

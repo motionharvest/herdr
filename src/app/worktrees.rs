@@ -168,16 +168,7 @@ impl App {
         if let Some(ws_idx) = self.state.active {
             self.state.selected = ws_idx;
         }
-        self.state.worktree_remove = Some(WorktreeRemoveState {
-            workspace_id,
-            pane_id: Some(pane_id),
-            repo_root: parent,
-            path: checkout,
-            error: None,
-            removing: false,
-            force_confirmation: false,
-        });
-        self.state.mode = Mode::ConfirmRemoveWorktree;
+        self.confirm_worktree_remove(workspace_id, Some(pane_id), parent, checkout);
     }
 
     fn open_remove_linked_worktree(
@@ -193,6 +184,17 @@ impl App {
             return;
         };
         self.state.selected = ws_idx;
+        self.confirm_worktree_remove(workspace_id, pane_id, repo_root, path);
+    }
+
+    fn confirm_worktree_remove(
+        &mut self,
+        workspace_id: String,
+        pane_id: Option<crate::layout::PaneId>,
+        repo_root: std::path::PathBuf,
+        path: std::path::PathBuf,
+    ) {
+        let already_landed = crate::worktree::worktree_already_landed(&path, &repo_root);
         self.state.worktree_remove = Some(WorktreeRemoveState {
             workspace_id,
             pane_id,
@@ -201,6 +203,7 @@ impl App {
             error: None,
             removing: false,
             force_confirmation: false,
+            already_landed,
         });
         self.state.mode = Mode::ConfirmRemoveWorktree;
     }
@@ -1450,6 +1453,7 @@ mod tests {
             error: None,
             removing: true,
             force_confirmation: false,
+            already_landed: false,
         });
 
         app.handle_worktree_remove_finished(WorktreeRemoveResult {
@@ -1479,6 +1483,7 @@ mod tests {
             error: None,
             removing: true,
             force_confirmation: false,
+            already_landed: false,
         });
 
         app.handle_worktree_remove_finished(WorktreeRemoveResult {
@@ -1527,6 +1532,7 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.open_remove_linked_worktree_confirmation(0);
+        assert!(!app.state.worktree_remove.as_ref().unwrap().already_landed);
 
         app.start_worktree_remove();
         let safe_event = wait_for_worktree_event(&mut app);
@@ -1768,10 +1774,80 @@ mod tests {
             crate::worktree::canonical_or_original(&repo)
         );
         assert_eq!(remove.pane_id, Some(pane_id));
+        assert!(remove.already_landed);
 
         let remove_checkout =
             crate::worktree::build_worktree_remove_command(&repo, &checkout, true);
         crate::worktree::run_worktree_command(&remove_checkout).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    fn linked_remove_app(
+        name: &str,
+        branch: &str,
+    ) -> (App, std::path::PathBuf, std::path::PathBuf) {
+        let repo = create_committed_repo(name);
+        let checkout = unique_temp_path(&format!("{name}-checkout"));
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                branch,
+                checkout.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let mut app = app_for_worktree_tests();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("issue")];
+        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: repo.clone(),
+            checkout_path: checkout.clone(),
+            is_linked_worktree: true,
+        });
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        (app, repo, checkout)
+    }
+
+    #[test]
+    fn remove_confirmation_treats_a_clean_shared_commit_as_landed() {
+        let (mut app, repo, checkout) =
+            linked_remove_app("app-worktree-remove-landed", "worktree/remove-landed");
+        app.open_remove_linked_worktree_confirmation(0);
+        assert!(app.state.worktree_remove.as_ref().unwrap().already_landed);
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, true);
+        crate::worktree::run_worktree_command(&remove).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn remove_confirmation_treats_uncommitted_files_as_not_landed() {
+        let (mut app, repo, checkout) =
+            linked_remove_app("app-worktree-remove-dirty", "worktree/remove-dirty");
+        std::fs::write(checkout.join("agent.txt"), "uncommitted\n").unwrap();
+        app.open_remove_linked_worktree_confirmation(0);
+        assert!(!app.state.worktree_remove.as_ref().unwrap().already_landed);
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, true);
+        crate::worktree::run_worktree_command(&remove).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn remove_confirmation_treats_a_commit_missing_from_the_parent_as_not_landed() {
+        let (mut app, repo, checkout) =
+            linked_remove_app("app-worktree-remove-ahead", "worktree/remove-ahead");
+        std::fs::write(checkout.join("agent.txt"), "ahead\n").unwrap();
+        run_git(&checkout, &["add", "agent.txt"]);
+        run_git(&checkout, &["commit", "--quiet", "-m", "ahead"]);
+        app.open_remove_linked_worktree_confirmation(0);
+        assert!(!app.state.worktree_remove.as_ref().unwrap().already_landed);
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, true);
+        crate::worktree::run_worktree_command(&remove).unwrap();
         let _ = std::fs::remove_dir_all(repo);
     }
 
