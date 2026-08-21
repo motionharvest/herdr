@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- The Directory and Task fields no longer draw a `❯` prompt in front of what is typed.
+
 ## [0.11.0] - 2026-08-21
 
 ### Fixed

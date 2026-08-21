@@ -24,8 +24,6 @@ use crate::composer::Focus;
 
 use super::widgets::panel_contrast_fg;
 
-/// The prompt every task is typed after.
-const PROMPT: &str = "❯";
 const CLOSED: &str = "▾";
 const OPENED: &str = "▴";
 const FOLDER_CAPTION: &str = "Directory";
@@ -43,10 +41,8 @@ const NO_AGENT: &str = "none installed";
 const BAND_HEIGHT: u16 = 4;
 /// Below this much room the band would crowd out the panes, so it is dropped.
 const MIN_ROWS_BELOW: u16 = 3;
-/// Border, then two spaces, and a field's prompt begins.
+/// Border, then two spaces, and a field's text begins.
 const PROMPT_INSET: u16 = 3;
-/// The prompt and the space after it, when nothing stands in front of it.
-const BARE_LEAD: u16 = 2;
 /// The gap between two controls.
 const GAP: u16 = 2;
 /// Room enough to read a line of a task in. Below this the task keeps its
@@ -68,9 +64,9 @@ pub(crate) struct ComposerLayout {
     pub agent: Rect,
     pub task: Rect,
     /// The columns between the left of the task box and its text — the border,
-    /// its inset, the prefix, and the prompt. The drawing indents by it and a
-    /// click subtracts it, and they only land on the same character if one
-    /// place decides it.
+    /// its inset, and the prefix. The drawing indents by it and a click
+    /// subtracts it, and they only land on the same character if one place
+    /// decides it.
     pub task_lead: u16,
     /// The row all four boxes put their value on.
     pub value_row: u16,
@@ -222,7 +218,7 @@ fn folder_control_width(app: &AppState, cap: u16) -> u16 {
         .max(MIN_FOLDER_TEXT as usize) as u16;
     if app.composer.open == Some(Focus::Folder) {
         let typed = app.composer.path().text().chars().count() as u16 + 1;
-        wanted = wanted.max(typed + BARE_LEAD);
+        wanted = wanted.max(typed);
     }
     (wanted + 5).min(cap)
 }
@@ -233,13 +229,13 @@ fn worktree_control_width() -> u16 {
     WORKTREE_CAPTION.chars().count() as u16
 }
 
-/// What stands between a box's left border and the first character typed: the
-/// prefix, where there is one, and the prompt.
+/// What stands in front of the typed text after the box's inset: the prefix,
+/// where there is one, and the space after it.
 fn lead_width(prefix: &str) -> u16 {
     if prefix.is_empty() {
-        BARE_LEAD
+        0
     } else {
-        prefix.chars().count() as u16 + 1 + BARE_LEAD
+        prefix.chars().count() as u16 + 1
     }
 }
 
@@ -325,7 +321,7 @@ fn draw_folder(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_ba
     if open {
         let (visible, _) = typing(app, rect.width);
         frame.render_widget(
-            prompt_line(app, "", &visible, focused, in_band),
+            Paragraph::new(Line::styled(visible, value_style(app, in_band))),
             inner(rect, layout.value_row, PROMPT_INSET),
         );
         if layout.dropdown_rows.is_empty() {
@@ -437,7 +433,7 @@ fn draw_task(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_band
     {
         let y = layout.value_row + index as u16;
         if index == 0 {
-            let mut line = prompt_line(app, prefix, &row.text, focused, in_band);
+            let mut line = prompt_line(app, prefix, &row.text, in_band);
             if !in_band {
                 line = line.style(Style::default().fg(p.overlay1));
             }
@@ -511,7 +507,7 @@ fn item_text(app: &AppState, which: Focus, index: usize) -> Option<String> {
 fn typing(app: &AppState, box_width: u16) -> (String, usize) {
     let text: Vec<char> = app.composer.path().text().chars().collect();
     let (_, cursor) = app.composer.path().cursor_row();
-    let room = box_width.saturating_sub(PROMPT_INSET + BARE_LEAD + 2) as usize;
+    let room = box_width.saturating_sub(PROMPT_INSET + 2) as usize;
     if room == 0 {
         return (String::new(), 0);
     }
@@ -536,7 +532,7 @@ fn place_cursor(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_b
         Focus::Folder if app.composer.open == Some(Focus::Folder) => {
             let (_, col) = typing(app, layout.folder.width);
             frame.set_cursor_position((
-                layout.folder.x + PROMPT_INSET + BARE_LEAD + col as u16,
+                layout.folder.x + PROMPT_INSET + col as u16,
                 layout.value_row,
             ));
         }
@@ -643,15 +639,8 @@ fn rule(buffer: &mut Buffer, box_area: Rect, row: u16, style: Style) {
     }
 }
 
-fn prompt_line(
-    app: &AppState,
-    prefix: &str,
-    text: &str,
-    focused: bool,
-    in_band: bool,
-) -> Paragraph<'static> {
+fn prompt_line(app: &AppState, prefix: &str, text: &str, in_band: bool) -> Paragraph<'static> {
     let p = &app.palette;
-    let prompt_colour = if focused { p.accent } else { p.overlay0 };
     let mut spans = Vec::new();
     if !prefix.is_empty() {
         spans.push(Span::styled(
@@ -659,14 +648,6 @@ fn prompt_line(
             Style::default().fg(p.accent),
         ));
     }
-    spans.push(Span::styled(
-        format!("{PROMPT} "),
-        Style::default().fg(prompt_colour).add_modifier(if focused {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        }),
-    ));
     spans.push(Span::styled(text.to_string(), value_style(app, in_band)));
     Paragraph::new(Line::from(spans))
 }
@@ -861,7 +842,8 @@ mod tests {
         app.composer.open_dropdown(Focus::Folder);
         app.composer.edit_path(|path| path.insert_str("/tmp"));
         let row = row_text(&draw(&mut app, 100, 24), 2, 100);
-        assert!(row.contains("❯ /tmp"), "the prompt leads the path: {row}");
+        assert!(row.contains("/tmp"), "the path is in the field: {row}");
+        assert!(!row.contains('❯'), "no prompt glyph: {row}");
     }
 
     #[test]
@@ -878,24 +860,26 @@ mod tests {
     }
 
     #[test]
-    fn auto_writes_the_command_it_stands_for_in_front_of_the_prompt() {
+    fn auto_writes_the_command_it_stands_for_in_front_of_the_task() {
         let mut app = band_state();
         app.composer.task.set_text("fix the drag preview");
         let row = row_text(&draw(&mut app, 100, 24), 2, 100);
         assert!(
-            row.contains("/who ❯ fix the drag preview"),
+            row.contains("/who fix the drag preview"),
             "the field reads as what will be sent: {row}"
         );
+        assert!(!row.contains('❯'), "no prompt glyph: {row}");
     }
 
     #[test]
-    fn naming_a_harness_writes_nothing_in_front_of_the_prompt() {
+    fn naming_a_harness_writes_nothing_in_front_of_the_task() {
         let mut app = band_state();
         app.composer.agent = "Claude Code".to_string();
         app.composer.task.set_text("fix the drag preview");
         let row = row_text(&draw(&mut app, 100, 24), 2, 100);
         assert!(!row.contains("/who"), "no prefix: {row}");
-        assert!(row.contains("❯ fix the drag preview"), "{row}");
+        assert!(!row.contains('❯'), "no prompt glyph: {row}");
+        assert!(row.contains("fix the drag preview"), "{row}");
     }
 
     #[test]

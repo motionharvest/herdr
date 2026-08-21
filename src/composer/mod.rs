@@ -175,7 +175,7 @@ impl ComposerState {
             .unwrap_or(0)
     }
 
-    /// What the task field writes in front of its prompt, given the agent on
+    /// What the task field writes in front of the task, given the agent on
     /// show. Only `Auto` writes anything.
     pub fn task_prefix(&self) -> &'static str {
         self.harness().map_or("", |harness| harness.prefix)
