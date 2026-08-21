@@ -391,8 +391,8 @@ fn row_is_selected(
     entry: &AgentPanelEntry,
     focused: Option<(usize, PaneId)>,
 ) -> bool {
-    if app.agent_peek == Some(entry.pane_id) {
-        return true;
+    if let Some(pane_id) = app.agent_peek {
+        return pane_id == entry.pane_id;
     }
     if let Some(focus) = app.agent_table_focus.as_ref() {
         return focus.pane_id == entry.pane_id;
@@ -1446,9 +1446,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_hidden_agent_with_table_focus_is_selected() {
-        let (mut state, pane_id) = state_with_a_set_down_agent();
+    fn state_with_a_set_down_agent_and_a_docked_agent() -> (AppState, PaneId, PaneId) {
+        let (mut state, hidden) = state_with_a_set_down_agent();
         let docked = state.workspaces[0].tabs[0].root_pane;
         let docked_terminal = state.workspaces[0].tabs[0].panes[&docked]
             .attached_terminal_id
@@ -1457,11 +1456,30 @@ mod tests {
             terminal.set_detected_state(Some(crate::detect::Agent::Pi), AgentState::Idle);
         }
         state.workspaces[0].layout.focus_pane(docked);
+        (state, hidden, docked)
+    }
+
+    #[test]
+    fn a_hidden_agent_with_table_focus_is_selected() {
+        let (mut state, pane_id, docked) = state_with_a_set_down_agent_and_a_docked_agent();
         state.agent_table_focus = Some(crate::app::state::AgentTableFocus {
             docked: false,
             pane_id,
         });
         let hidden = row_of(&state, pane_id);
+        let visible = row_of(&state, docked);
+        let focused = focused_agent_row(&state);
+
+        assert!(row_is_selected(&state, &hidden, focused));
+        assert!(!row_is_selected(&state, &visible, focused));
+    }
+
+    #[test]
+    fn peeking_a_hidden_agent_selects_only_that_row() {
+        let (mut state, hidden_id, docked) = state_with_a_set_down_agent_and_a_docked_agent();
+        state.agent_peek = Some(hidden_id);
+        state.agent_table_focus = None;
+        let hidden = row_of(&state, hidden_id);
         let visible = row_of(&state, docked);
         let focused = focused_agent_row(&state);
 
