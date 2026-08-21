@@ -18,6 +18,7 @@ use super::{
 pub struct GitStatusCacheEntry {
     pub fingerprint: GitStatusFingerprint,
     pub snapshot: WorkspaceGitStatusSnapshot,
+    pub commits_on_parent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,18 +74,20 @@ pub fn git_status_snapshot_for_cwd(
     let branch = fingerprint.branch_name().map(str::to_string);
 
     if let Some(cached) = cached.filter(|entry| entry.fingerprint == fingerprint) {
+        let worktree_state = git_worktree_state(cwd);
         let snapshot = WorkspaceGitStatusSnapshot {
             branch,
             ahead_behind: cached.snapshot.ahead_behind,
             space,
-            worktree_state: git_worktree_state(cwd),
-            landed: cached.snapshot.landed,
+            worktree_state,
+            landed: landed_from(cached.commits_on_parent, worktree_state),
         };
         return (
             snapshot.clone(),
             Some(GitStatusCacheEntry {
                 fingerprint,
                 snapshot,
+                commits_on_parent: cached.commits_on_parent,
             }),
         );
     }
@@ -93,18 +96,21 @@ pub fn git_status_snapshot_for_cwd(
         .head_oid()
         .zip(fingerprint.upstream_oid())
         .and_then(|(head_oid, upstream_oid)| git_ahead_behind_between(cwd, head_oid, upstream_oid));
+    let worktree_state = git_worktree_state(cwd);
+    let commits_on_parent = worktree_commits_are_on_parent_cwd(cwd);
     let snapshot = WorkspaceGitStatusSnapshot {
         branch,
         ahead_behind,
         space,
-        worktree_state: git_worktree_state(cwd),
-        landed: worktree_is_landed(cwd),
+        worktree_state,
+        landed: landed_from(commits_on_parent, worktree_state),
     };
     (
         snapshot.clone(),
         Some(GitStatusCacheEntry {
             fingerprint,
             snapshot,
+            commits_on_parent,
         }),
     )
 }
@@ -178,10 +184,14 @@ fn parent_head_oid(cwd: &Path) -> Option<String> {
     git_rev_parse_verify(&parent, "HEAD")
 }
 
-fn worktree_is_landed(cwd: &Path) -> bool {
+fn worktree_commits_are_on_parent_cwd(cwd: &Path) -> bool {
     linked_land_paths(cwd).is_some_and(|(parent, checkout)| {
         crate::worktree::worktree_commits_are_on_parent(&checkout, &parent)
     })
+}
+
+fn landed_from(commits_on_parent: bool, worktree_state: GitWorktreeState) -> bool {
+    commits_on_parent && worktree_state == GitWorktreeState::Clean
 }
 
 impl GitStatusFingerprint {
@@ -349,6 +359,7 @@ mod tests {
                 worktree_state: GitWorktreeState::Clean,
                 landed: false,
             },
+            commits_on_parent: false,
         };
 
         let (snapshot, update) = git_status_snapshot_for_cwd(&root, Some(&cached));
@@ -374,6 +385,7 @@ mod tests {
                 worktree_state: GitWorktreeState::Clean,
                 landed: false,
             },
+            commits_on_parent: false,
         };
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n").unwrap();
         std::fs::write(
@@ -409,6 +421,7 @@ mod tests {
                 worktree_state: GitWorktreeState::Clean,
                 landed: false,
             },
+            commits_on_parent: false,
         };
         std::fs::write(root.join(".git/config"), "").unwrap();
 
@@ -576,8 +589,54 @@ mod tests {
         let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
         assert_eq!(snapshot.worktree_state, GitWorktreeState::Unstaged);
         assert!(
+            !snapshot.landed,
+            "uncommitted files mean the worktree is not landed"
+        );
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn git_status_cache_drops_landed_when_the_worktree_becomes_dirty() {
+        let base = temp_test_dir("landed-then-dirty");
+        let repo = base.join("repo");
+        let checkout = base.join("checkout");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "herdr@example.invalid"]);
+        run_git(&repo, &["config", "user.name", "Herdr Test"]);
+        run_git(&repo, &["commit", "--allow-empty", "-m", "initial"]);
+        run_git(&repo, &["branch", "-M", "main"]);
+        let checkout_arg = checkout.to_string_lossy().to_string();
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "worktree/quiet-river",
+                &checkout_arg,
+            ],
+        );
+
+        let (snapshot, cache) = git_status_snapshot_for_cwd(&checkout, None);
+        assert!(snapshot.landed);
+        assert_eq!(snapshot.worktree_state, GitWorktreeState::Clean);
+
+        std::fs::write(checkout.join("dirty.txt"), "more\n").unwrap();
+        let (snapshot, cache) = git_status_snapshot_for_cwd(&checkout, cache.as_ref());
+        assert_eq!(snapshot.worktree_state, GitWorktreeState::Unstaged);
+        assert!(
+            !snapshot.landed,
+            "a dirty worktree is not landed even when HEAD is still on the parent"
+        );
+
+        std::fs::remove_file(checkout.join("dirty.txt")).unwrap();
+        let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, cache.as_ref());
+        assert_eq!(snapshot.worktree_state, GitWorktreeState::Clean);
+        assert!(
             snapshot.landed,
-            "uncommitted files do not hide that the latest commit is on the parent"
+            "clearing uncommitted files restores Landed when HEAD is on the parent"
         );
 
         std::fs::remove_dir_all(base).unwrap();

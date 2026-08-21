@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Git Status no longer writes `Landed` when a linked worktree has uncommitted files. The label used to follow the dirty marker whenever that checkout's latest commit was already on the parent, so a dirty tree still looked finished.
+
 ### Changed
 - The Directory and Task fields no longer draw a `❯` prompt in front of what is typed.
 

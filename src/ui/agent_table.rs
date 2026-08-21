@@ -482,7 +482,7 @@ fn git_cell_text(location: Option<&AgentLocation>) -> String {
     let Some(git) = location.git.as_ref() else {
         return String::new();
     };
-    if location.landed {
+    if location.landed && location.worktree_state == crate::workspace::GitWorktreeState::Clean {
         format!("{git} Landed")
     } else {
         git.clone()
@@ -1102,10 +1102,9 @@ fn git_status_line<'a>(
         .map(|location| git_status_color(&app.palette, location.worktree_state))
         .unwrap_or(app.palette.overlay0);
     let status_style = Style::default().fg(mute_when_host_unfocused(app, color));
-    let landed = entry
-        .location
-        .as_ref()
-        .is_some_and(|location| location.landed);
+    let landed = entry.location.as_ref().is_some_and(|location| {
+        location.landed && location.worktree_state == crate::workspace::GitWorktreeState::Clean
+    });
     if !landed {
         return Line::styled(pad(text, width), status_style);
     }
@@ -1527,6 +1526,22 @@ mod tests {
         assert_eq!(
             cell_texts(&state, &row)[COL_GIT],
             "worktree/quiet-river-1085 ✓ Landed"
+        );
+    }
+
+    #[test]
+    fn git_status_does_not_say_landed_when_the_checkout_is_dirty() {
+        let state = AppState::test_new();
+        let mut row = entry("~/lab/herdr");
+        row.location = Some(AgentLocation {
+            path: "~/lab/herdr".into(),
+            git: Some("worktree/quiet-river-1085 !".into()),
+            worktree_state: crate::workspace::GitWorktreeState::Unstaged,
+            landed: true,
+        });
+        assert_eq!(
+            cell_texts(&state, &row)[COL_GIT],
+            "worktree/quiet-river-1085 !"
         );
     }
 

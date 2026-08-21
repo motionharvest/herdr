@@ -131,7 +131,7 @@ pub struct Workspace {
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     /// Cached working tree state for status display.
     pub(crate) cached_git_worktree_state: GitWorktreeState,
-    /// Whether this checkout's HEAD is already on the parent branch.
+    /// Whether this linked checkout is landed: clean, and HEAD already on the parent.
     pub(crate) cached_git_landed: bool,
     /// Cached Git status for individual pane working directories.
     pub(crate) pane_git_statuses: HashMap<PaneId, WorkspaceGitStatusSnapshot>,
