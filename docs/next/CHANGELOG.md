@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.11.0] - 2026-08-21
+
 ### Fixed
 - Choosing `Land on <branch>` on a hidden or peeked agent now prompts that agent. The click used the table name, and name lookup only found agents still sitting in a layout, so a set-down pane never received the land instructions.
 - `Delete agent + worktree` now follows that agent's folder, the same way `Land on <branch>` already does. The click used to require saved worktree membership on the space holding the row, so an agent Herdr had started in a linked checkout could raise `This workspace is not a Herdr-managed worktree checkout.` after a rebuild, a hide, or a dock into another space. The confirmation removes that agent's checkout and ends that agent. A space that still holds another agent is left in place.
