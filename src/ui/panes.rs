@@ -685,25 +685,25 @@ pub(super) fn display_location_path(
     display_path_with_home(rewritten.as_deref().unwrap_or(path))
 }
 
-/// What the parentheses after the path carry: the branch, marked as a worktree
-/// when the path was written against the repository instead of the checkout.
+/// The branch the checkout is on. A nested worktree with no branch still says
+/// `worktree`, because the rewritten path no longer names the checkout.
 pub(super) fn git_branch_label(
     git_status: &crate::workspace::WorkspaceGitStatusSnapshot,
 ) -> Option<String> {
     let branch = git_status
         .branch
         .as_deref()
-        .filter(|branch| !branch.is_empty());
-    let nested_worktree = git_status
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_string);
+    if branch.is_some() {
+        return branch;
+    }
+    git_status
         .space
         .as_ref()
         .and_then(primary_checkout_root)
-        .is_some();
-    match (nested_worktree, branch) {
-        (true, Some(branch)) => Some(format!("worktree {branch}")),
-        (true, None) => Some("worktree".to_string()),
-        (false, branch) => branch.map(str::to_string),
-    }
+        .is_some()
+        .then(|| "worktree".to_string())
 }
 
 /// Single-glyph dirty marker for a worktree state, shared by pane chrome and
@@ -1416,6 +1416,7 @@ mod tests {
                 is_linked_worktree,
             }),
             worktree_state: crate::workspace::GitWorktreeState::Clean,
+            landed: false,
         }
     }
 
@@ -1434,7 +1435,7 @@ mod tests {
             ),
             "/repo/herdr"
         );
-        assert_eq!(git_branch_label(&status).as_deref(), Some("worktree eich"));
+        assert_eq!(git_branch_label(&status).as_deref(), Some("eich"));
     }
 
     #[test]
@@ -1452,7 +1453,22 @@ mod tests {
             ),
             "/repo/herdr"
         );
-        assert_eq!(git_branch_label(&status).as_deref(), Some("worktree eich"));
+        assert_eq!(git_branch_label(&status).as_deref(), Some("eich"));
+    }
+
+    #[test]
+    fn a_worktree_branch_is_not_prefixed_with_worktree() {
+        let mut status = checkout(
+            "/repo/herdr/.git",
+            "/repo/herdr/.herdr/worktrees/worktree-quiet-river-1085",
+            true,
+        );
+        status.branch = Some("worktree/quiet-river-1085".to_string());
+
+        assert_eq!(
+            git_branch_label(&status).as_deref(),
+            Some("worktree/quiet-river-1085")
+        );
     }
 
     #[test]

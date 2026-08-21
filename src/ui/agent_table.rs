@@ -20,7 +20,7 @@
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
@@ -151,6 +151,7 @@ pub(crate) struct AgentLocation {
     /// `feat/space-done !` — branch and worktree marker, absent outside a repo.
     pub git: Option<String>,
     pub worktree_state: crate::workspace::GitWorktreeState,
+    pub landed: bool,
 }
 
 impl AgentLocation {
@@ -470,12 +471,22 @@ fn cell_texts(app: &AppState, entry: &AgentPanelEntry) -> [String; COLUMNS] {
             .idle_duration
             .map(compact_duration)
             .unwrap_or_default(),
-        entry
-            .location
-            .as_ref()
-            .and_then(|location| location.git.clone())
-            .unwrap_or_default(),
+        git_cell_text(entry.location.as_ref()),
     ]
+}
+
+fn git_cell_text(location: Option<&AgentLocation>) -> String {
+    let Some(location) = location else {
+        return String::new();
+    };
+    let Some(git) = location.git.as_ref() else {
+        return String::new();
+    };
+    if location.landed {
+        format!("{git} Landed")
+    } else {
+        git.clone()
+    }
 }
 
 fn compact_duration(duration: std::time::Duration) -> String {
@@ -711,6 +722,7 @@ fn agent_location(
         path: super::panes::display_location_path(&cwd, &git_status),
         git,
         worktree_state: git_status.worktree_state,
+        landed: git_status.landed,
     })
 }
 
@@ -742,6 +754,7 @@ fn detached_agent_location(
         worktree_state: status
             .map(|status| status.worktree_state)
             .unwrap_or_default(),
+        landed: status.is_some_and(|status| status.landed),
     })
 }
 
@@ -1060,18 +1073,7 @@ fn cell_line<'a>(
             }),
         ),
         COL_DIRECTORY => folder_line(app, entry, width, folders),
-        COL_GIT => {
-            let color = entry
-                .location
-                .as_ref()
-                .filter(|location| location.git.is_some())
-                .map(|location| git_status_color(&app.palette, location.worktree_state))
-                .unwrap_or(app.palette.overlay0);
-            Line::styled(
-                pad(text, width),
-                Style::default().fg(mute_when_host_unfocused(app, color)),
-            )
-        }
+        COL_GIT => git_status_line(app, entry, text, width),
         _ => Line::styled(pad(text, width), Style::default().fg(detail_fg(app, entry))),
     }
 }
@@ -1083,6 +1085,49 @@ fn git_status_color(palette: &Palette, state: crate::workspace::GitWorktreeState
         | crate::workspace::GitWorktreeState::Unstaged
         | crate::workspace::GitWorktreeState::Mixed => palette.yellow,
     }
+}
+
+const LANDED_LABEL: &str = "Landed";
+
+fn git_status_line<'a>(
+    app: &AppState,
+    entry: &AgentPanelEntry,
+    text: &'a str,
+    width: usize,
+) -> Line<'a> {
+    let color = entry
+        .location
+        .as_ref()
+        .filter(|location| location.git.is_some())
+        .map(|location| git_status_color(&app.palette, location.worktree_state))
+        .unwrap_or(app.palette.overlay0);
+    let status_style = Style::default().fg(mute_when_host_unfocused(app, color));
+    let landed = entry
+        .location
+        .as_ref()
+        .is_some_and(|location| location.landed);
+    if !landed {
+        return Line::styled(pad(text, width), status_style);
+    }
+    let status = text
+        .strip_suffix(LANDED_LABEL)
+        .map(str::trim_end)
+        .unwrap_or(text);
+    let status_len = status.chars().count();
+    let label_len = LANDED_LABEL.chars().count();
+    if status_len + 1 + label_len <= width {
+        let rest = width.saturating_sub(status_len + 1 + label_len);
+        return Line::from(vec![
+            Span::styled(status.to_string(), status_style),
+            Span::raw(" "),
+            Span::styled(
+                LANDED_LABEL,
+                Style::default().fg(mute_when_host_unfocused(app, app.palette.overlay0)),
+            ),
+            Span::raw(" ".repeat(rest)),
+        ]);
+    }
+    Line::styled(pad(text, width), status_style)
 }
 
 /// The parent and current folders, in the color that folder is written in
@@ -1258,6 +1303,7 @@ mod tests {
                 path: path.to_string(),
                 git: None,
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             }),
             state: AgentState::Idle,
             seen: true,
@@ -1458,6 +1504,7 @@ mod tests {
             path: "~/lab/herdr".into(),
             git: Some("feat/space-done !".into()),
             worktree_state: crate::workspace::GitWorktreeState::Unstaged,
+            landed: false,
         });
         let texts = cell_texts(&state, &row);
         assert_eq!(texts[COL_NAME], "Olivia");
@@ -1465,6 +1512,22 @@ mod tests {
         assert_eq!(texts[COL_AGENT], "Codex");
         assert_eq!(texts[COL_GIT], "feat/space-done !");
         assert!(!texts[COL_DIRECTORY].contains('('));
+    }
+
+    #[test]
+    fn git_status_says_landed_after_the_dirty_marker_when_the_commit_is_on_parent() {
+        let state = AppState::test_new();
+        let mut row = entry("~/lab/herdr");
+        row.location = Some(AgentLocation {
+            path: "~/lab/herdr".into(),
+            git: Some("worktree/quiet-river-1085 ✓".into()),
+            worktree_state: crate::workspace::GitWorktreeState::Clean,
+            landed: true,
+        });
+        assert_eq!(
+            cell_texts(&state, &row)[COL_GIT],
+            "worktree/quiet-river-1085 ✓ Landed"
+        );
     }
 
     #[test]
@@ -1510,6 +1573,7 @@ mod tests {
                 path: path.into(),
                 git: Some(git.into()),
                 worktree_state: crate::workspace::GitWorktreeState::Unstaged,
+                landed: false,
             },
         );
         let id = state.terminals.keys().next().cloned().expect("a terminal");
@@ -1556,6 +1620,7 @@ mod tests {
                 ahead_behind: None,
                 space: None,
                 worktree_state: crate::workspace::GitWorktreeState::Unstaged,
+                landed: false,
             },
         );
 
@@ -1653,6 +1718,7 @@ mod tests {
                 ahead_behind: None,
                 space: None,
                 worktree_state,
+                landed: false,
             },
         );
         let area = Rect::new(0, 0, 200, 20);
@@ -1707,5 +1773,46 @@ mod tests {
             painted_git_status_fg(crate::workspace::GitWorktreeState::Mixed),
             yellow
         );
+    }
+
+    #[test]
+    fn landed_is_muted_after_the_git_status() {
+        let mut state = state_with_agents(1);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        state.workspaces[0].pane_git_statuses.insert(
+            pane_id,
+            crate::workspace::WorkspaceGitStatusSnapshot {
+                branch: Some("worktree/quiet-river-1085".into()),
+                ahead_behind: None,
+                space: None,
+                worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: true,
+            },
+        );
+        let area = Rect::new(0, 0, 200, 20);
+        let (layout, _) = split_agent_table(&mut state, area);
+        let entries = agent_panel_entries(&state);
+        let git = cell_texts(&state, &entries[0])[COL_GIT].clone();
+        assert_eq!(git, "worktree/quiet-river-1085 ✓ Landed");
+        let backend = ratatui::backend::TestBackend::new(area.width, area.height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_agent_table(&state, frame, &layout, &entries))
+            .unwrap();
+        let git_col = layout.groups[0].columns[COL_GIT];
+        let row = layout.rows[0].rect.y;
+        let buffer = terminal.backend().buffer();
+        let branch_fg = buffer
+            .cell((git_col.x, row))
+            .expect("the branch")
+            .style()
+            .fg
+            .expect("a branch color");
+        let landed_x = git_col.x + "worktree/quiet-river-1085 ✓ ".chars().count() as u16;
+        let landed_cell = buffer.cell((landed_x, row)).expect("the Landed label");
+        assert_eq!(landed_cell.symbol(), "L");
+        let landed_fg = landed_cell.style().fg.expect("a Landed color");
+        assert_eq!(branch_fg, Palette::catppuccin().green);
+        assert_eq!(landed_fg, Palette::catppuccin().overlay0);
     }
 }

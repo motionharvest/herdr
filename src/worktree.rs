@@ -345,10 +345,7 @@ fn heads_match(checkout: &Path, parent: &Path) -> bool {
     }
 }
 
-pub(crate) fn worktree_already_landed(checkout: &Path, parent: &Path) -> bool {
-    if !worktree_is_clean(checkout) {
-        return false;
-    }
+pub(crate) fn worktree_commits_are_on_parent(checkout: &Path, parent: &Path) -> bool {
     let Ok(base_branch) = current_branch(parent) else {
         return heads_match(checkout, parent);
     };
@@ -359,6 +356,10 @@ pub(crate) fn worktree_already_landed(checkout: &Path, parent: &Path) -> bool {
         return true;
     }
     commits_ahead(checkout, &base_branch, &branch).ok() == Some(0)
+}
+
+pub(crate) fn worktree_already_landed(checkout: &Path, parent: &Path) -> bool {
+    worktree_is_clean(checkout) && worktree_commits_are_on_parent(checkout, parent)
 }
 
 fn run_verify_command(cwd: &Path, argv: &[String]) -> Result<(), String> {

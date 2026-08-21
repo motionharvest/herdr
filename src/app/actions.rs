@@ -2315,6 +2315,7 @@ impl AppState {
                     ahead_behind: result.ahead_behind,
                     space: result.space,
                     worktree_state: result.worktree_state,
+                    landed: result.landed,
                 };
                 let ws = &mut self.workspaces[ws_idx];
                 if ws.pane_git_statuses.get(&pane_id) != Some(&snapshot) {
@@ -2347,6 +2348,10 @@ impl AppState {
             }
             if ws.cached_git_worktree_state != result.worktree_state {
                 ws.cached_git_worktree_state = result.worktree_state;
+                changed = true;
+            }
+            if ws.cached_git_landed != result.landed {
+                ws.cached_git_landed = result.landed;
                 changed = true;
             }
         }
@@ -2391,6 +2396,7 @@ impl AppState {
             ahead_behind: result.ahead_behind,
             space: result.space,
             worktree_state: result.worktree_state,
+            landed: result.landed,
         };
         if self.detached_git_statuses.get(&pane_id) == Some(&snapshot) {
             return false;
@@ -3364,6 +3370,7 @@ mod tests {
                 ahead_behind: Some((2, 1)),
                 space: None,
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             }],
         );
 
@@ -3400,6 +3407,7 @@ mod tests {
                 ahead_behind: None,
                 space: None,
                 worktree_state: crate::workspace::GitWorktreeState::Unstaged,
+                landed: false,
             }],
         );
 
@@ -3431,6 +3439,7 @@ mod tests {
                 ahead_behind: Some((0, 1)),
                 space: None,
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             }],
         );
 
@@ -3458,6 +3467,7 @@ mod tests {
                 ahead_behind: None,
                 space: None,
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             }],
         );
 
@@ -3491,6 +3501,7 @@ mod tests {
                     is_linked_worktree: false,
                 }),
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             }],
         );
 
@@ -3527,6 +3538,7 @@ mod tests {
                 ahead_behind: None,
                 space: None,
                 worktree_state: crate::workspace::GitWorktreeState::Staged,
+                landed: false,
             }],
         );
 
@@ -3561,6 +3573,7 @@ mod tests {
                 ahead_behind: None,
                 space: None,
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             }],
         );
 
@@ -3703,6 +3716,7 @@ mod tests {
                 path: "/tmp/Zebra".into(),
                 git: None,
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             },
         );
         state.view.agent_locations.insert(
@@ -3711,6 +3725,7 @@ mod tests {
                 path: "/tmp/apple".into(),
                 git: None,
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             },
         );
         state.view.agent_locations.insert(
@@ -3719,6 +3734,7 @@ mod tests {
                 path: "/tmp/mango".into(),
                 git: None,
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             },
         );
 

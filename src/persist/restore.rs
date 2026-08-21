@@ -413,6 +413,7 @@ fn restore_workspace(
             cached_git_ahead_behind: None,
             cached_git_space: crate::workspace::git_space_metadata(&snap.identity_cwd),
             cached_git_worktree_state: crate::workspace::GitWorktreeState::Clean,
+            cached_git_landed: false,
             pane_git_statuses: HashMap::new(),
             worktree_space,
             public_pane_numbers,

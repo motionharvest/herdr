@@ -1685,6 +1685,7 @@ mod tests {
                 ahead_behind: Some((1, 0)),
                 space: None,
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             }],
             cache_updates: Vec::new(),
         });

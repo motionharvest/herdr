@@ -18,6 +18,7 @@
 - The pane chrome on an agent pane now says `HIDE` instead of `✕`. Clicking it still takes the pane out of the layout and leaves the agent running in the table, so you can open it again from its row. A shell pane still says `✕` and still closes. Closing used to drop the agent from the table when Herdr no longer counted the pane as an agent at that moment, even though a reported session or a named row still meant there was an agent to keep.
 - The agent-table row menu now says `Delete agent + worktree` instead of `Delete agent / worktree...`.
 - Git Status in the agent table is now green when that checkout is clean and yellow when it is dirty. The column used to write every branch in mauve.
+- Git Status writes the branch name as git reports it. A nested worktree used to prefix `worktree ` in front of that name, so a Herdr branch `worktree/quiet-river-1085` read `worktree worktree/quiet-river-1085`. When that checkout's latest commit is already on the parent repo, a muted `Landed` follows the dirty marker.
 
 ## [0.10.0] - 2026-08-19
 

@@ -63,6 +63,7 @@ pub struct WorkspaceGitStatus {
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
     pub worktree_state: GitWorktreeState,
+    pub landed: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -80,6 +81,7 @@ pub struct WorkspaceGitStatusSnapshot {
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
     pub worktree_state: GitWorktreeState,
+    pub landed: bool,
 }
 
 impl WorkspaceGitStatusSnapshot {
@@ -97,6 +99,7 @@ impl WorkspaceGitStatusSnapshot {
             ahead_behind: self.ahead_behind,
             space: self.space,
             worktree_state: self.worktree_state,
+            landed: self.landed,
         }
     }
 }
@@ -128,6 +131,8 @@ pub struct Workspace {
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     /// Cached working tree state for status display.
     pub(crate) cached_git_worktree_state: GitWorktreeState,
+    /// Whether this checkout's HEAD is already on the parent branch.
+    pub(crate) cached_git_landed: bool,
     /// Cached Git status for individual pane working directories.
     pub(crate) pane_git_statuses: HashMap<PaneId, WorkspaceGitStatusSnapshot>,
     /// Explicit Herdr-managed worktree grouping provenance.
@@ -265,6 +270,7 @@ impl Workspace {
                 cached_git_ahead_behind: None,
                 cached_git_space: None,
                 cached_git_worktree_state: GitWorktreeState::Clean,
+                cached_git_landed: false,
                 pane_git_statuses: HashMap::new(),
                 worktree_space: None,
                 public_pane_numbers,
@@ -674,6 +680,7 @@ impl Workspace {
                 ahead_behind: self.cached_git_ahead_behind,
                 space: self.cached_git_space.clone(),
                 worktree_state: self.cached_git_worktree_state,
+                landed: self.cached_git_landed,
             })
     }
 
@@ -846,6 +853,7 @@ impl Workspace {
             cached_git_ahead_behind: None,
             cached_git_space: None,
             cached_git_worktree_state: GitWorktreeState::Clean,
+            cached_git_landed: false,
             pane_git_statuses: HashMap::new(),
             worktree_space: None,
             public_pane_numbers,

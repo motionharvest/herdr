@@ -10,7 +10,7 @@ use super::{
     discovery::{
         canonicalize_best_effort_path, git_branch, git_ref_storage_is_reftable,
         git_rev_parse_verify, git_space_metadata, git_symbolic_head_full, git_worktree_info,
-        read_ref_oid, GitWorktreeInfo,
+        linked_land_paths, read_ref_oid, GitWorktreeInfo,
     },
 };
 
@@ -26,6 +26,7 @@ pub struct GitStatusFingerprint {
     pub git_common_dir: PathBuf,
     pub head: GitHeadIdentity,
     pub upstream: Option<GitUpstreamIdentity>,
+    pub parent_head: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +65,7 @@ pub fn git_status_snapshot_for_cwd(
                 ahead_behind: None,
                 space,
                 worktree_state: GitWorktreeState::Clean,
+                landed: false,
             },
             None,
         );
@@ -76,6 +78,7 @@ pub fn git_status_snapshot_for_cwd(
             ahead_behind: cached.snapshot.ahead_behind,
             space,
             worktree_state: git_worktree_state(cwd),
+            landed: cached.snapshot.landed,
         };
         return (
             snapshot.clone(),
@@ -95,6 +98,7 @@ pub fn git_status_snapshot_for_cwd(
         ahead_behind,
         space,
         worktree_state: git_worktree_state(cwd),
+        landed: worktree_is_landed(cwd),
     };
     (
         snapshot.clone(),
@@ -165,6 +169,18 @@ pub(super) fn git_status_fingerprint(cwd: &Path) -> Option<GitStatusFingerprint>
         git_common_dir: canonicalize_best_effort_path(&info.git_common_dir),
         head,
         upstream,
+        parent_head: parent_head_oid(cwd),
+    })
+}
+
+fn parent_head_oid(cwd: &Path) -> Option<String> {
+    let (parent, _) = linked_land_paths(cwd)?;
+    git_rev_parse_verify(&parent, "HEAD")
+}
+
+fn worktree_is_landed(cwd: &Path) -> bool {
+    linked_land_paths(cwd).is_some_and(|(parent, checkout)| {
+        crate::worktree::worktree_commits_are_on_parent(&checkout, &parent)
     })
 }
 
@@ -331,6 +347,7 @@ mod tests {
                 ahead_behind: Some((2, 1)),
                 space: git_space_metadata(&root),
                 worktree_state: GitWorktreeState::Clean,
+                landed: false,
             },
         };
 
@@ -355,6 +372,7 @@ mod tests {
                 ahead_behind: Some((4, 0)),
                 space: git_space_metadata(&root),
                 worktree_state: GitWorktreeState::Clean,
+                landed: false,
             },
         };
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n").unwrap();
@@ -389,6 +407,7 @@ mod tests {
                 ahead_behind: Some((0, 3)),
                 space: git_space_metadata(&root),
                 worktree_state: GitWorktreeState::Clean,
+                landed: false,
             },
         };
         std::fs::write(root.join(".git/config"), "").unwrap();
@@ -509,6 +528,57 @@ mod tests {
 
         assert_eq!(updated.branch.as_deref(), Some("main"));
         assert_eq!(updated.ahead_behind, Some((1, 0)));
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn git_status_snapshot_marks_a_worktree_landed_when_its_head_is_on_parent() {
+        let base = temp_test_dir("landed-worktree");
+        let repo = base.join("repo");
+        let checkout = base.join("checkout");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "herdr@example.invalid"]);
+        run_git(&repo, &["config", "user.name", "Herdr Test"]);
+        run_git(&repo, &["commit", "--allow-empty", "-m", "initial"]);
+        run_git(&repo, &["branch", "-M", "main"]);
+        let checkout_arg = checkout.to_string_lossy().to_string();
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "worktree/quiet-river",
+                &checkout_arg,
+            ],
+        );
+
+        let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
+        assert!(
+            snapshot.landed,
+            "a worktree that still shares the parent commit is landed"
+        );
+
+        std::fs::write(checkout.join("agent.txt"), "work\n").unwrap();
+        run_git(&checkout, &["add", "agent.txt"]);
+        run_git(&checkout, &["commit", "-m", "ahead"]);
+        let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
+        assert!(
+            !snapshot.landed,
+            "a worktree with commits the parent does not have is not landed"
+        );
+
+        std::fs::write(checkout.join("dirty.txt"), "more\n").unwrap();
+        run_git(&checkout, &["reset", "--hard", "HEAD~1"]);
+        std::fs::write(checkout.join("dirty.txt"), "more\n").unwrap();
+        let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
+        assert_eq!(snapshot.worktree_state, GitWorktreeState::Unstaged);
+        assert!(
+            snapshot.landed,
+            "uncommitted files do not hide that the latest commit is on the parent"
+        );
 
         std::fs::remove_dir_all(base).unwrap();
     }

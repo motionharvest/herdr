@@ -878,6 +878,7 @@ mod tests {
                 path: "~/lab/herdr".into(),
                 git: Some("main ✓".into()),
                 worktree_state: crate::workspace::GitWorktreeState::Clean,
+                landed: false,
             }),
             Some("pi"),
         );
