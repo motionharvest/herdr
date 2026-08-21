@@ -9,6 +9,7 @@
 - Right-clicking a hidden agent row opens the same agent menu as a visible row. Land and `Delete agent + worktree` follow that agent's folder. The hidden-row menu used to offer only `Delete agent`, and those worktree actions required the agent to be docked in a space.
 
 ### Changed
+- The Worktree control sits between Directory and Agent on the composer bar, drawn as a captioned rounded checkbox. It used to be `[✓] Worktree` on the caption row after Task.
 - The `Delete agent + worktree` confirmation is routine when that checkout is already landed: it no longer paints the question in red or says to land first. Uncommitted files, or a latest commit that is not on the parent checkout, get the red warning `This worktree has changes that are not landed`.
 - Choosing `Land on <branch>` now prompts `Land this clean branch by running \`herdr agent worktree land\``. The previous prompt told the agent to commit outstanding work first, so an already-committed agent treated land as another commit.
 - Clicking a hidden agent paints that row with the same selected band as a visible agent. The row used to stay muted with no background, which made a hidden agent look disabled rather than merely not on screen. Unselected hidden rows stay muted.

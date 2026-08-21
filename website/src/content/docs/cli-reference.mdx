@@ -108,7 +108,7 @@ herdr pane split <pane_id> --direction right|down [--cwd PATH] [--focus] [--no-f
 herdr pane close <pane_id>
 ```
 
-`<pane_id>` accepts a pane ID from `pane list` or the pane's assigned name (`Olivia`, `Olivia-2` on collision), case-insensitively. Pane IDs compact when panes close; the name stays with its pane for the life of the terminal and survives restarts, so prefer names in anything longer-lived than one command. `pane list` and `pane get` return the name as a `name` field.
+`<pane_id>` accepts a pane ID from `pane list` or the pane's assigned name, case-insensitively. An agent with a session title is named from that title: a headline that ends in a past verb becomes an `-er`/`-or` agentive on the last two content nouns (`naming-convention-explainer`), an imperative title uses the first content verb and the last two content words of its object (`yellow-banner-hider`), a noun-only title becomes `-man` or `-ist` (`workman`, `machinist`), and anything else uses the first three words as a slug (`herdr-pane-title`). Collisions get `-2`. A shell, or an agent that has not been titled yet, still gets a first name from the word list (`Olivia`, `Olivia-2` on collision). Pane IDs compact when panes close; the name stays with its pane for the life of the terminal and survives restarts, so prefer names in anything longer-lived than one command. `pane list` and `pane get` return the name as a `name` field.
 
 Read output:
 
