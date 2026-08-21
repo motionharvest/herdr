@@ -43,6 +43,12 @@ impl TextField {
         self.lines.iter().all(String::is_empty)
     }
 
+    /// Whether the cursor sits after the last character, which is where a
+    /// completion can be drawn without covering letters already in the field.
+    pub fn at_end(&self) -> bool {
+        self.line + 1 == self.lines.len() && self.col == self.len(self.line)
+    }
+
     pub fn text(&self) -> String {
         self.lines.join("\n")
     }
@@ -265,6 +271,12 @@ mod tests {
         field.set_text(text);
         field.set_width(width);
         field
+    }
+
+    #[test]
+    fn setting_text_leaves_the_cursor_at_the_end() {
+        let field = field("~/lab/herdr", 40);
+        assert!(field.at_end());
     }
 
     #[test]

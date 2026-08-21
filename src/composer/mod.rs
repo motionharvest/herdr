@@ -2,8 +2,10 @@
 //!
 //! Four controls, read left to right: where to work, whether in a worktree,
 //! who works, what to do. Type a path, `Enter`, type a task, `Enter`, and an
-//! agent is running. It takes no `Tab` at all — the keyboard starts wherever
-//! the first thing left to do is, and settling a control hands it on to the
+//! agent is running. Opening the directory copies the folder on show into the
+//! field so it can be edited. While a path is being typed, the best match
+//! fills in the letters not yet typed; `Tab` takes that guess and `Enter`
+//! takes only what was typed. Settling a control hands the keyboard on to the
 //! next: directory, agent, task. The worktree box sits between directory and
 //! agent and is flipped by a click.
 //!
@@ -80,11 +82,11 @@ pub struct ComposerState {
     /// brings it back up: a row picked against the letters before this one was
     /// picked against a different question.
     pointed: bool,
-    /// The path being typed, which is a field of its own rather than an edit of
-    /// the folder on show: typing a new path must not lose the one that is
-    /// already chosen until the new one is settled. Every edit of it goes
-    /// through [`ComposerState::edit_path`], which is what keeps `matches`
-    /// answering the letters actually in it.
+    /// The path being typed. Opening the list copies the folder on show into
+    /// it so that path can be edited; a letter on the closed control starts
+    /// over. The folder on show is not replaced until the new path is settled.
+    /// Every edit of it goes through [`ComposerState::edit_path`], which is
+    /// what keeps `matches` answering the letters actually in it.
     path: TextField,
     /// The folders offered for what is being typed, best first. Worked out on
     /// each edit rather than where it is drawn, because working it out reads a
@@ -212,13 +214,37 @@ impl ComposerState {
     }
 
     /// The rows the folder list is showing: what is offered for the path being
-    /// typed, or the folders already known when nothing is being typed.
+    /// typed, or the folders already known when nothing is being typed — and
+    /// when the field still holds the folder already on show, because opening
+    /// the list to edit that path is not a search yet.
     pub fn folder_rows(&self) -> &[Folder] {
-        if self.path.is_empty() {
+        if self.path.is_empty() || self.path_holds_the_chosen_folder() {
             &self.folders
         } else {
             &self.matches
         }
+    }
+
+    /// Whether the path field still holds the folder already chosen. Opening
+    /// the list copies that label in so it can be edited, and until it changes
+    /// the remembered folders are the list, not a search for those letters.
+    pub fn path_holds_the_chosen_folder(&self) -> bool {
+        self.folder_label()
+            .is_some_and(|label| self.path.text() == label)
+    }
+
+    /// The letters of the best match that have not been typed yet. Drawn after
+    /// the cursor, muted, and not in the field: Tab takes them, Enter does not.
+    pub fn ghost_suffix(&self) -> Option<String> {
+        if self.open != Some(Focus::Folder) || self.pointing() || !self.path.at_end() {
+            return None;
+        }
+        let typed = self.path.text();
+        if typed.is_empty() {
+            return None;
+        }
+        let top = self.matches.first()?;
+        ghost_after(&typed, &top.label)
     }
 
     /// Whether a row of the open list is the thing being pointed at. It is not,
@@ -314,6 +340,12 @@ impl ComposerState {
             Focus::Folder => self.folder.unwrap_or(0),
             _ => self.agent_row(),
         };
+        if which == Focus::Folder {
+            if let Some(label) = self.folder_label().map(str::to_string) {
+                self.path.set_text(&label);
+                self.pointed = true;
+            }
+        }
     }
 
     pub fn close_dropdown(&mut self) {
@@ -382,8 +414,18 @@ impl ComposerState {
 
     /// Settle the directory: the row pointed at, or else the path typed, or
     /// else — for a path that names nothing yet — the best folder offered under
-    /// it, so that a few letters and `Enter` are a whole answer.
+    /// it, so that a few letters and `Tab` are a whole answer.
     pub fn take_folder(&mut self) -> Result<(), PathError> {
+        self.settle_pointed_or_typed(true)
+    }
+
+    /// Settle the directory from what was typed, ignoring the ghost. A row
+    /// pointed at is still taken, because that is a choice, not a suggestion.
+    pub fn take_typed_folder(&mut self) -> Result<(), PathError> {
+        self.settle_pointed_or_typed(false)
+    }
+
+    fn settle_pointed_or_typed(&mut self, guess: bool) -> Result<(), PathError> {
         if self.pointing() {
             if let Some(path) = self.folder_rows().get(self.highlight).map(row_path) {
                 self.settle_folder(path);
@@ -391,14 +433,17 @@ impl ComposerState {
             }
         }
         match self.take_typed_path() {
-            Err(PathError::NotADirectory(typed)) => match self.matches.first().map(row_path) {
-                Some(path) => {
-                    self.settle_folder(path);
-                    Ok(())
+            Ok(()) => Ok(()),
+            Err(PathError::Empty) => Err(PathError::Empty),
+            Err(PathError::NotADirectory(typed)) => {
+                if guess {
+                    if let Some(path) = self.matches.first().map(row_path) {
+                        self.settle_folder(path);
+                        return Ok(());
+                    }
                 }
-                None => Err(PathError::NotADirectory(typed)),
-            },
-            settled => settled,
+                Err(PathError::NotADirectory(typed))
+            }
         }
     }
 
@@ -544,6 +589,32 @@ impl PathError {
     }
 }
 
+/// The untyped tail of `label` once `typed` is a prefix of it, or of its last
+/// folder name. The last-name path is what makes `~/lab/h` complete to `erdr`
+/// even when the field still holds a home-relative prefix the label does not.
+fn ghost_after(typed: &str, label: &str) -> Option<String> {
+    if let Some(rest) = strip_prefix_ignore_ascii_case(label, typed) {
+        return (!rest.is_empty()).then(|| rest.to_string());
+    }
+    let typed_name = typed.rsplit('/').next().unwrap_or(typed);
+    let label_name = label.rsplit('/').next().unwrap_or(label);
+    let rest = strip_prefix_ignore_ascii_case(label_name, typed_name)?;
+    (!rest.is_empty()).then(|| rest.to_string())
+}
+
+fn strip_prefix_ignore_ascii_case<'a>(full: &'a str, prefix: &str) -> Option<&'a str> {
+    let mut consumed = 0usize;
+    let mut chars = full.chars();
+    for want in prefix.chars() {
+        let got = chars.next()?;
+        if !got.eq_ignore_ascii_case(&want) {
+            return None;
+        }
+        consumed += got.len_utf8();
+    }
+    Some(&full[consumed..])
+}
+
 /// A leading `~` stands for the home directory, because a path field that does
 /// not understand the character every shell does is a field that has to be
 /// typed around.
@@ -631,7 +702,16 @@ mod tests {
         composer.open_dropdown(Focus::Folder);
         assert_eq!(composer.highlight, 0);
         composer.point(-1);
-        assert_eq!(composer.highlight, 0, "the top row has nowhere to go");
+        assert!(
+            !composer.pointing(),
+            "up off the first row is back to the path"
+        );
+        composer.point(5);
+        assert!(composer.pointing());
+        assert_eq!(
+            composer.highlight, 0,
+            "down from the field enters the first row"
+        );
         composer.point(5);
         assert_eq!(composer.highlight, 2, "and the last row is the floor");
     }
@@ -825,6 +905,53 @@ mod tests {
     }
 
     #[test]
+    fn the_best_match_fills_in_the_letters_not_yet_typed() {
+        let (_, composer) = typing_a_path("ghost", "h");
+        assert_eq!(composer.ghost_suffix().as_deref(), Some("erdr"));
+    }
+
+    #[test]
+    fn a_cursor_that_is_not_at_the_end_shows_no_ghost() {
+        let (_, mut composer) = typing_a_path("midghost", "h");
+        composer.edit_path(|path| path.left());
+        assert_eq!(composer.ghost_suffix(), None);
+    }
+
+    #[test]
+    fn pointing_at_a_row_hides_the_ghost() {
+        let (_, mut composer) = typing_a_path("pointghost", "h");
+        assert!(composer.ghost_suffix().is_some());
+        composer.point(1);
+        assert_eq!(composer.ghost_suffix(), None);
+    }
+
+    #[test]
+    fn editing_the_chosen_path_stops_listing_the_remembered_folders() {
+        let mut composer = composer_with_folders(&["/tmp", "/usr"]);
+        composer.open_dropdown(Focus::Folder);
+        assert_eq!(composer.folder_rows().len(), 2);
+        composer.edit_path(|path| path.backspace());
+        assert!(
+            !composer.path_holds_the_chosen_folder(),
+            "the letters are a search now"
+        );
+        assert!(!composer.pointing());
+    }
+
+    #[test]
+    fn opening_with_no_folder_leaves_the_field_empty() {
+        let mut composer = ComposerState::default();
+        composer.open_dropdown(Focus::Folder);
+        assert!(composer.path().is_empty());
+    }
+
+    #[test]
+    fn a_path_that_already_names_the_match_shows_no_ghost() {
+        let (_, composer) = typing_a_path("fullghost", "herdr");
+        assert_eq!(composer.ghost_suffix(), None);
+    }
+
+    #[test]
     fn typing_a_path_offers_the_folders_under_it() {
         let (_, composer) = typing_a_path("offers", "her");
         let labels: Vec<_> = composer
@@ -901,6 +1028,17 @@ mod tests {
     }
 
     #[test]
+    fn a_typed_path_that_is_not_a_folder_is_not_replaced_by_the_guess() {
+        let (_, mut composer) = typing_a_path("noguess", "her");
+        assert!(matches!(
+            composer.take_typed_folder(),
+            Err(PathError::NotADirectory(_))
+        ));
+        assert_eq!(composer.folder, None, "and nothing is settled");
+        assert_eq!(composer.open, Some(Focus::Folder), "the list stays open");
+    }
+
+    #[test]
     fn a_path_that_names_a_folder_outright_is_the_one_taken() {
         let (root, mut composer) = typing_a_path("outright", "herdr");
         assert_eq!(composer.take_folder(), Ok(()));
@@ -927,7 +1065,22 @@ mod tests {
         let mut composer = composer_with_folders(&["/tmp", "/usr"]);
         composer.open_dropdown(Focus::Folder);
         assert_eq!(composer.folder_rows().len(), 2);
-        assert!(composer.pointing(), "with nothing typed a row is the value");
+        assert!(composer.pointing(), "the chosen row is still the value");
+    }
+
+    #[test]
+    fn opening_the_folder_list_keeps_the_chosen_path_in_the_field() {
+        let mut composer = composer_with_folders(&["/tmp", "/usr"]);
+        composer.open_dropdown(Focus::Folder);
+        let label = composer.folder_label().unwrap().to_string();
+        assert_eq!(composer.path().text(), label);
+        assert_eq!(
+            composer.path().cursor_row(),
+            (0, label.chars().count()),
+            "the cursor sits at the end so the path can be edited"
+        );
+        assert_eq!(composer.folder_rows().len(), 2, "the remembered list stays");
+        assert!(composer.pointing(), "the chosen row is still the value");
     }
 
     #[test]

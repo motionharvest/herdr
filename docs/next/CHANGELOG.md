@@ -7,6 +7,7 @@
 
 ### Changed
 - The Directory and Task fields no longer draw a `❯` prompt in front of what is typed.
+- Clicking the composer Directory control keeps the chosen folder in the field, with the cursor at the end, so the path can be edited. While typing, the best match fills in the letters not yet typed, muted. `Tab` takes that guess. `Enter` takes only what was typed.
 
 ## [0.11.0] - 2026-08-21
 

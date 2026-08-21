@@ -208,8 +208,9 @@ fn agent_control_width(app: &AppState) -> u16 {
 /// shortened only when the frame cannot hold it. Its ceiling is whatever
 /// leaves the task its own minimum, so on a narrow frame the folder is the one
 /// that gives up its width. A path being typed is what the box has to hold, so
-/// it grows with what is typed rather than cutting it off — the +1 is the
-/// cursor's own column, which has to be inside the box to be seen.
+/// it grows with what is typed rather than cutting it off — the untyped letters
+/// of the best match, and the cursor's own column when there are none, have to
+/// sit inside the box to be seen.
 fn folder_control_width(app: &AppState, cap: u16) -> u16 {
     let mut wanted = app
         .composer
@@ -217,8 +218,13 @@ fn folder_control_width(app: &AppState, cap: u16) -> u16 {
         .max(PLACEHOLDER.chars().count())
         .max(MIN_FOLDER_TEXT as usize) as u16;
     if app.composer.open == Some(Focus::Folder) {
-        let typed = app.composer.path().text().chars().count() as u16 + 1;
-        wanted = wanted.max(typed);
+        let typed = app.composer.path().text().chars().count() as u16;
+        let ghost = app
+            .composer
+            .ghost_suffix()
+            .map(|suffix| suffix.chars().count() as u16)
+            .unwrap_or(0);
+        wanted = wanted.max(typed + ghost.max(1));
     }
     (wanted + 5).min(cap)
 }
@@ -320,8 +326,16 @@ fn draw_folder(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_ba
 
     if open {
         let (visible, _) = typing(app, rect.width);
+        let ghost = app.composer.ghost_suffix().unwrap_or_default();
+        let mut spans = vec![Span::styled(visible, value_style(app, in_band))];
+        if !ghost.is_empty() {
+            spans.push(Span::styled(
+                ghost,
+                Style::default().fg(app.palette.overlay0),
+            ));
+        }
         frame.render_widget(
-            Paragraph::new(Line::styled(visible, value_style(app, in_band))),
+            Paragraph::new(Line::from(spans)),
             inner(rect, layout.value_row, PROMPT_INSET),
         );
         if layout.dropdown_rows.is_empty() {
@@ -840,7 +854,7 @@ mod tests {
     fn an_open_folder_list_turns_the_box_into_a_path_field() {
         let mut app = band_state();
         app.composer.open_dropdown(Focus::Folder);
-        app.composer.edit_path(|path| path.insert_str("/tmp"));
+        app.composer.edit_path(|path| path.set_text("/tmp"));
         let row = row_text(&draw(&mut app, 100, 24), 2, 100);
         assert!(row.contains("/tmp"), "the path is in the field: {row}");
         assert!(!row.contains('❯'), "no prompt glyph: {row}");
@@ -902,6 +916,56 @@ mod tests {
         assert!(first.contains("tmp"), "the first row: {first}");
         let second = row_text(&buffer, 5, 100);
         assert!(second.contains("herdr"), "the second row: {second}");
+    }
+
+    #[test]
+    fn a_path_being_typed_shows_the_untyped_letters_of_the_best_match() {
+        let root = std::env::temp_dir().join(format!(
+            "composer-ghost-draw-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for child in ["herdr", "herdr-old"] {
+            std::fs::create_dir_all(root.join(child)).unwrap();
+        }
+        let root = root.canonicalize().unwrap();
+        let typed = format!("{}/h", root.display());
+
+        let mut app = band_state();
+        app.composer.open_dropdown(Focus::Folder);
+        app.composer.edit_path(|path| path.set_text(&typed));
+        let (layout, _) = split_composer(&mut app, Rect::new(0, 0, 160, 24));
+        let buffer = draw(&mut app, 160, 24);
+        let row = row_text(&buffer, layout.value_row, 160);
+
+        assert!(
+            row.contains(&format!("{typed}erdr")),
+            "typed path plus muted remainder: {row}"
+        );
+        let ghost_at = (0..160u16).find(|col| {
+            (0..4)
+                .map(|offset| {
+                    buffer[(*col + offset, layout.value_row)]
+                        .symbol()
+                        .to_string()
+                })
+                .collect::<String>()
+                == "erdr"
+        });
+        let ghost_at = ghost_at.expect("the remainder is drawn as its own letters");
+        let ghost_cols: Vec<_> = (0..4)
+            .map(|offset| buffer[(ghost_at + offset, layout.value_row)].style().fg)
+            .collect();
+        assert!(
+            ghost_cols
+                .iter()
+                .all(|fg| *fg == Some(app.palette.overlay0)),
+            "the remainder is muted: {ghost_cols:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

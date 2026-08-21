@@ -1242,8 +1242,10 @@ impl AppState {
     }
 
     /// A click outside the open folder box, while a path is being typed, settles
-    /// that path the same way Enter does. Returns the reason the path could not
-    /// be settled, which is the click being refused so the field stays as it is.
+    /// that path the same way Enter does: only what was typed, not the ghost.
+    /// Opening the list to edit the chosen folder is not a typed path yet.
+    /// Returns the reason the path could not be settled, which is the click
+    /// being refused so the field stays as it is.
     pub(super) fn commit_typed_folder_on_away_click(
         &mut self,
         col: u16,
@@ -1252,13 +1254,13 @@ impl AppState {
         if self.composer.open != Some(crate::composer::Focus::Folder) {
             return None;
         }
-        if self.composer.path().is_empty() {
+        if self.composer.path().is_empty() || self.composer.path_holds_the_chosen_folder() {
             return None;
         }
         if rect_contains(self.view.composer.folder, col, row) {
             return None;
         }
-        match self.composer.take_folder() {
+        match self.composer.take_typed_folder() {
             Ok(()) => None,
             Err(err) => Some(err.message()),
         }
@@ -4086,6 +4088,56 @@ mod tests {
         );
         assert_eq!(app.state.composer.open, None);
         assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn clicking_away_from_a_half_typed_directory_ignores_the_guess() {
+        let unique = format!(
+            "herdr-composer-click-away-half-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        for child in ["herdr", "herdr-old"] {
+            std::fs::create_dir_all(root.join(child)).unwrap();
+        }
+        let root = root.canonicalize().unwrap();
+        let typed = format!("{}/her", root.display());
+
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("space")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Composer;
+        app.state
+            .composer
+            .add_folder(std::path::PathBuf::from("/tmp"));
+        app.state
+            .composer
+            .open_dropdown(crate::composer::Focus::Folder);
+        app.state.composer.edit_path(|path| path.set_text(&typed));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+
+        let task = app.state.view.composer.task;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            task.x + 4,
+            task.y,
+        ));
+
+        assert_eq!(
+            app.state.composer.folder_path(),
+            Some(std::path::Path::new("/tmp")),
+            "the guess is not taken"
+        );
+        assert_eq!(
+            app.state.composer.open,
+            Some(crate::composer::Focus::Folder)
+        );
+        assert_eq!(app.state.composer.path().text(), typed);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

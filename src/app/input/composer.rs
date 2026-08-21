@@ -58,8 +58,8 @@ pub(crate) fn handle_composer_key(
     let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
 
     // An open dropdown owns the arrows and Enter, whichever control opened it.
-    // Tab commits it the way Enter does, because settling a control is only
-    // ever the step before settling the next.
+    // Tab commits a pointed row the way Enter does. On the folder field they
+    // split: Tab takes the guessed directory, Enter takes only what was typed.
     if let Some(open) = state.composer.open {
         match key.code {
             KeyCode::Esc => {
@@ -83,8 +83,14 @@ pub(crate) fn handle_composer_key(
                 state.composer.point(1);
                 return ComposerKeyOutcome::Edited;
             }
-            KeyCode::Enter | KeyCode::Tab if open == Focus::Folder => {
+            KeyCode::Tab if open == Focus::Folder => {
                 return match state.composer.take_folder() {
+                    Ok(()) => ComposerKeyOutcome::Edited,
+                    Err(err) => ComposerKeyOutcome::Trouble(err.message()),
+                };
+            }
+            KeyCode::Enter if open == Focus::Folder => {
+                return match state.composer.take_typed_folder() {
                     Ok(()) => ComposerKeyOutcome::Edited,
                     Err(err) => ComposerKeyOutcome::Trouble(err.message()),
                 };
@@ -530,20 +536,38 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_a_half_typed_folder_takes_the_one_at_the_top_of_the_list() {
+    fn enter_on_a_half_typed_folder_ignores_the_guess() {
         let root = folders_on_disk("half");
         let mut state = composer_state();
         state.composer.focus = Focus::Folder;
         type_in(&mut state, &format!("{}/her", root.display()));
 
-        assert_eq!(
+        assert!(matches!(
             press(&mut state, KeyCode::Enter),
-            ComposerKeyOutcome::Edited
+            ComposerKeyOutcome::Trouble(_)
+        ));
+        assert_eq!(
+            state.composer.folder_path(),
+            Some(std::path::Path::new("/tmp")),
+            "the folder on show is unchanged"
         );
+        assert_eq!(state.composer.open, Some(Focus::Folder));
+        let _ = root;
+    }
+
+    #[test]
+    fn tab_on_a_half_typed_folder_takes_the_one_at_the_top_of_the_list() {
+        let root = folders_on_disk("tabhalf");
+        let mut state = composer_state();
+        state.composer.focus = Focus::Folder;
+        type_in(&mut state, &format!("{}/her", root.display()));
+
+        assert_eq!(press(&mut state, KeyCode::Tab), ComposerKeyOutcome::Edited);
         assert_eq!(
             state.composer.folder_path(),
             Some(root.join("herdr").as_path())
         );
+        assert_eq!(state.composer.focus, Focus::Agent);
     }
 
     #[test]
