@@ -225,6 +225,19 @@ impl ComposerState {
         }
     }
 
+    /// How many of those rows the box itself holds. A path being typed keeps
+    /// five on show so the list can be read without looking away; the rest are
+    /// reached by pointing past the last visible row. The remembered folders
+    /// still fill the box, because that list is the whole answer.
+    pub fn folder_visible_rows(&self) -> usize {
+        let count = self.folder_rows().len();
+        if self.path.is_empty() || self.path_holds_the_chosen_folder() {
+            count
+        } else {
+            count.min(suggest::MOST)
+        }
+    }
+
     /// Whether the path field still holds the folder already chosen. Opening
     /// the list copies that label in so it can be edited, and until it changes
     /// the remembered folders are the list, not a search for those letters.
@@ -994,6 +1007,34 @@ mod tests {
             !composer.pointing(),
             "stepping off the top is back to typing"
         );
+    }
+
+    #[test]
+    fn a_long_match_list_is_pointed_through_to_the_last_folder() {
+        let unique = format!(
+            "herdr-composer-tests-long-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        for index in 0..12 {
+            std::fs::create_dir_all(root.join(format!("dir{index:02}"))).unwrap();
+        }
+        let root = root.canonicalize().unwrap();
+        let mut composer = ComposerState::default();
+        composer.open_dropdown(Focus::Folder);
+        composer.edit_path(|path| path.set_text(&format!("{}/", root.display())));
+        assert_eq!(composer.folder_rows().len(), 12);
+        assert_eq!(composer.folder_visible_rows(), suggest::MOST);
+        for _ in 0..20 {
+            composer.point(1);
+        }
+        assert_eq!(composer.highlight, 11, "the last match is the floor");
+        assert!(composer.pointing());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

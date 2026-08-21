@@ -5,15 +5,16 @@
 //! so the folders on disk under that place lead. A bare word names nothing on
 //! disk yet, so it is matched against the directories herdr already knows.
 //!
-//! The list is short on purpose. It is read while typing, out of the corner of
+//! Five rows are shown at once. It is read while typing, out of the corner of
 //! an eye, and a list long enough to need reading is a list that has to be
-//! looked away at.
+//! looked away at. Matching folders past those five stay behind the window.
 
 use std::path::{Path, PathBuf};
 
 use super::{expand_home, Folder};
 
-/// How many folders are offered at once.
+/// How many match rows the Directory list shows at once. More matches stay
+/// behind that window and are reached by pointing past the last visible row.
 pub const MOST: usize = 5;
 
 /// The folders worth offering for what has been typed, best first.
@@ -35,9 +36,6 @@ pub fn matching(typed: &str, recent: &[Folder]) -> Vec<Folder> {
             continue;
         }
         folders.push(Folder::new(path));
-        if folders.len() == MOST {
-            break;
-        }
     }
     folders
 }
@@ -196,13 +194,13 @@ mod tests {
     }
 
     #[test]
-    fn no_more_than_five_are_offered() {
+    fn every_matching_folder_is_offered() {
         let root = temp_dir("many");
         for index in 0..12 {
             std::fs::create_dir(root.join(format!("dir{index:02}"))).unwrap();
         }
         let typed = format!("{}/", root.display());
-        assert_eq!(matching(&typed, &[]).len(), MOST);
+        assert_eq!(matching(&typed, &[]).len(), 12);
     }
 
     #[test]

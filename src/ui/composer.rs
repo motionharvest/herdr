@@ -134,7 +134,7 @@ pub(crate) fn split_composer(app: &mut AppState, area: Rect) -> (ComposerLayout,
         folder_width,
         listing(
             app.composer.open == Some(Focus::Folder),
-            app.composer.folder_rows().len(),
+            app.composer.folder_visible_rows(),
         ),
     );
     let worktree = Rect::new(
@@ -1008,6 +1008,90 @@ mod tests {
                 .style()
                 .fg,
             Some(app.palette.accent)
+        );
+    }
+
+    fn many_matching_folders(name: &str, count: usize) -> (std::path::PathBuf, AppState) {
+        let root = std::env::temp_dir().join(format!(
+            "composer-match-window-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for index in 0..count {
+            std::fs::create_dir_all(root.join(format!("dir{index:02}"))).unwrap();
+        }
+        let root = root.canonicalize().unwrap();
+        let mut app = band_state();
+        app.composer.open_dropdown(Focus::Folder);
+        app.composer
+            .edit_path(|path| path.set_text(&format!("{}/", root.display())));
+        (root, app)
+    }
+
+    #[test]
+    fn a_long_match_list_keeps_five_visible_rows() {
+        let (root, mut app) = many_matching_folders("five", 12);
+        let (layout, _) = split_composer(&mut app, Rect::new(0, 0, 160, 24));
+        assert_eq!(app.composer.folder_rows().len(), 12);
+        assert_eq!(
+            layout.dropdown_rows.len(),
+            crate::composer::suggest::MOST,
+            "the box stays short"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pointing_past_the_last_visible_match_shifts_the_list_up() {
+        let (root, mut app) = many_matching_folders("shift", 12);
+        let (layout, _) = split_composer(&mut app, Rect::new(0, 0, 160, 24));
+        for _ in 0..6 {
+            app.composer.point(1);
+        }
+        assert_eq!(app.composer.highlight, 5);
+        let buffer = draw(&mut app, 160, 24);
+        let first = row_text(&buffer, layout.dropdown_rows[0], 160);
+        assert!(first.contains("dir01"), "the top row moved up: {first}");
+        assert!(
+            !first.contains("dir00"),
+            "the first match is off the top: {first}"
+        );
+        let last = row_text(
+            &buffer,
+            *layout.dropdown_rows.last().expect("visible rows"),
+            160,
+        );
+        assert!(
+            last.contains("dir05"),
+            "and the new last is the pointed one: {last}"
+        );
+
+        app.composer.point(-1);
+        let buffer = draw(&mut app, 160, 24);
+        let first = row_text(&buffer, layout.dropdown_rows[0], 160);
+        assert!(
+            first.contains("dir00"),
+            "up off the top of the window brings the first match back: {first}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remembered_folders_still_fill_the_box() {
+        let mut app = band_state();
+        for name in ["one", "two", "three", "four", "five", "six"] {
+            app.composer
+                .add_folder(std::path::PathBuf::from(format!("/tmp/{name}")));
+        }
+        app.composer.open_dropdown(Focus::Folder);
+        let (layout, _) = split_composer(&mut app, Rect::new(0, 0, 100, 24));
+        assert!(
+            layout.dropdown_rows.len() > crate::composer::suggest::MOST,
+            "the remembered list is the whole answer: {}",
+            layout.dropdown_rows.len()
         );
     }
 
