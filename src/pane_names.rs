@@ -7,13 +7,14 @@
 //! that verb as an `-er`/`-or` agentive and the last two content nouns before
 //! it as the head compound (`Clever Agent Naming Convention Explained` →
 //! `naming-convention-explainer`). An imperative title uses the first content
-//! verb and its first object noun (`Commit work and land herdr worktree` →
-//! `work-committer`). A title with no content verb uses `-man` on a
-//! one-syllable noun or `-ist` on a longer one. Anything else falls back to
-//! the first three words as a slug. That name is frozen on the terminal so a
-//! later title refresh does not move the CLI target. Collisions among live
-//! terminals are disambiguated with a numeric suffix assigned in stable id
-//! order, so an existing pane never loses its name when a new one appears.
+//! verb and the last two content words of its object (`Hide yellow bad weather
+//! banner from pages` → `yellow-banner-hider`). A title with no content verb
+//! uses `-man` on a one-syllable noun or `-ist` on a longer one. Anything else
+//! falls back to the first three words as a slug. That name is frozen on the
+//! terminal so a later title refresh does not move the CLI target. Collisions
+//! among live terminals are disambiguated with a numeric suffix assigned in
+//! stable id order, so an existing pane never loses its name when a new one
+//! appears.
 
 use std::collections::HashMap;
 
@@ -202,16 +203,25 @@ fn syllable_count(word: &str) -> usize {
     count.max(1)
 }
 
+struct TitleToken {
+    word: String,
+    clause_end: bool,
+}
+
 fn extract_heads(title: &str) -> Option<(Option<String>, Vec<String>)> {
-    let tokens = title_tokens(title);
+    let tokens = tokenize_title(title);
     if tokens.is_empty() {
         return None;
     }
 
     if let Some(last) = tokens.last() {
-        if let Some(lemma) = past_verb_lemma(last) {
+        if let Some(lemma) = past_verb_lemma(&last.word) {
             if !is_auxiliary(&lemma) {
-                let nouns = head_compound(&tokens[..tokens.len() - 1]);
+                let words: Vec<String> = tokens[..tokens.len() - 1]
+                    .iter()
+                    .map(|token| token.word.clone())
+                    .collect();
+                let nouns = last_content_pair(&words);
                 return Some((Some(lemma), nouns));
             }
         }
@@ -219,24 +229,32 @@ fn extract_heads(title: &str) -> Option<(Option<String>, Vec<String>)> {
 
     let mut verb = None;
     let mut nouns = Vec::new();
-    for token in tokens {
-        if is_function_word(&token) {
+    let mut object = Vec::new();
+    for token in &tokens {
+        if verb.is_none() {
+            if is_function_word(&token.word) || is_auxiliary(&token.word) {
+                continue;
+            }
+            if is_base_verb(&token.word) {
+                verb = Some(token.word.clone());
+                continue;
+            }
+            if is_adjective(&token.word) {
+                continue;
+            }
+            nouns.push(token.word.clone());
             continue;
         }
-        if is_auxiliary(&token) {
-            continue;
+        if is_object_cut(&token.word) {
+            break;
         }
-        if verb.is_none() && is_base_verb(&token) {
-            verb = Some(token);
-            continue;
+        object.push(token.word.clone());
+        if token.clause_end {
+            break;
         }
-        if is_adjective(&token) {
-            continue;
-        }
-        nouns.push(token);
     }
-    if verb.is_some() && nouns.len() > 1 {
-        nouns.truncate(1);
+    if verb.is_some() {
+        nouns = object_compound(&object);
     }
     if verb.is_none() && nouns.is_empty() {
         None
@@ -245,21 +263,53 @@ fn extract_heads(title: &str) -> Option<(Option<String>, Vec<String>)> {
     }
 }
 
-fn title_tokens(title: &str) -> Vec<String> {
+fn tokenize_title(title: &str) -> Vec<TitleToken> {
     title
         .split_whitespace()
         .filter_map(|raw| {
-            let cleaned = kebab(raw);
-            if cleaned.is_empty() {
+            let word = kebab(raw);
+            if word.is_empty() {
                 None
             } else {
-                Some(cleaned)
+                let clause_end = raw.chars().any(|ch| matches!(ch, ';' | '.' | '!' | '?'));
+                Some(TitleToken { word, clause_end })
             }
         })
         .collect()
 }
 
-fn head_compound(tokens: &[String]) -> Vec<String> {
+fn object_compound(tokens: &[String]) -> Vec<String> {
+    let mut content = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = &tokens[i];
+        if is_function_word(token) || is_auxiliary(token) {
+            i += 1;
+            continue;
+        }
+        if is_adjective(token) {
+            if i + 1 < tokens.len() {
+                let next = &tokens[i + 1];
+                if !is_function_word(next) && !is_adjective(next) && !is_auxiliary(next) {
+                    let later_noun = tokens[i + 2..].iter().any(|rest| {
+                        !is_function_word(rest) && !is_adjective(rest) && !is_auxiliary(rest)
+                    });
+                    if later_noun {
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+            continue;
+        }
+        content.push(token.clone());
+        i += 1;
+    }
+    last_content_pair(&content)
+}
+
+fn last_content_pair(tokens: &[String]) -> Vec<String> {
     let nouns: Vec<String> = tokens
         .iter()
         .filter(|token| !is_function_word(token) && !is_adjective(token) && !is_auxiliary(token))
@@ -270,6 +320,39 @@ fn head_compound(tokens: &[String]) -> Vec<String> {
         1 => nouns,
         n => nouns[n - 2..].to_vec(),
     }
+}
+
+fn is_object_cut(word: &str) -> bool {
+    matches!(
+        word,
+        "from"
+            | "to"
+            | "for"
+            | "in"
+            | "on"
+            | "at"
+            | "by"
+            | "with"
+            | "into"
+            | "onto"
+            | "over"
+            | "under"
+            | "via"
+            | "per"
+            | "and"
+            | "or"
+            | "but"
+            | "nor"
+            | "if"
+            | "when"
+            | "while"
+            | "than"
+            | "then"
+            | "as"
+            | "vs"
+            | "versus"
+            | "plus"
+    )
 }
 
 fn is_function_word(word: &str) -> bool {
@@ -848,11 +931,27 @@ mod tests {
     fn an_imperative_title_still_uses_the_first_verb_and_object() {
         assert_eq!(
             summary_name("Hide agent panes; peek instead of replacing").as_deref(),
-            Some("agent-hider")
+            Some("agent-panes-hider")
         );
         assert_eq!(
             summary_name("Fix the parser").as_deref(),
             Some("parser-fixer")
+        );
+    }
+
+    #[test]
+    fn an_imperative_title_uses_a_three_segment_object_compound() {
+        assert_eq!(
+            summary_name("Hide yellow bad weather banner from pages").as_deref(),
+            Some("yellow-banner-hider")
+        );
+        assert_eq!(
+            summary_name("Add Playbill link to main navigation").as_deref(),
+            Some("playbill-link-adder")
+        );
+        assert_eq!(
+            summary_name("Add Donate Auction Survey nav links").as_deref(),
+            Some("nav-links-adder")
         );
     }
 
