@@ -1423,11 +1423,8 @@ impl AppState {
         pane_id: crate::layout::PaneId,
         lines: usize,
     ) {
-        if let Some(ws_idx) = self.active {
-            if let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
-            {
-                rt.scroll_up(lines);
-            }
+        if let Some(rt) = self.runtime_for_agent_pane(terminal_runtimes, pane_id) {
+            rt.scroll_up(lines);
         }
     }
 
@@ -1437,11 +1434,8 @@ impl AppState {
         pane_id: crate::layout::PaneId,
         lines: usize,
     ) {
-        if let Some(ws_idx) = self.active {
-            if let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
-            {
-                rt.scroll_down(lines);
-            }
+        if let Some(rt) = self.runtime_for_agent_pane(terminal_runtimes, pane_id) {
+            rt.scroll_down(lines);
         }
     }
 
@@ -1450,8 +1444,7 @@ impl AppState {
         terminal_runtimes: &TerminalRuntimeRegistry,
         pane_id: crate::layout::PaneId,
     ) -> Option<crate::pane::ScrollMetrics> {
-        self.active
-            .and_then(|i| self.runtime_for_pane_in_workspace(terminal_runtimes, i, pane_id))
+        self.runtime_for_agent_pane(terminal_runtimes, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
     }
 
@@ -1567,13 +1560,11 @@ impl AppState {
             return;
         }
 
-        if let Some(ws_idx) = self.active {
-            if let Some(rt) = self.focused_runtime_in_workspace(terminal_runtimes, ws_idx) {
-                match mouse.kind {
-                    MouseEventKind::ScrollUp => rt.scroll_up(lines_per_notch),
-                    MouseEventKind::ScrollDown => rt.scroll_down(lines_per_notch),
-                    _ => {}
-                }
+        if let Some((_, _, rt)) = self.terminal_input_target(terminal_runtimes) {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => rt.scroll_up(lines_per_notch),
+                MouseEventKind::ScrollDown => rt.scroll_down(lines_per_notch),
+                _ => {}
             }
         }
     }
@@ -1584,11 +1575,7 @@ impl AppState {
         info: &PaneInfo,
         mouse: MouseEvent,
     ) -> bool {
-        let Some(ws_idx) = self.active else {
-            return false;
-        };
-        let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
-        else {
+        let Some(rt) = self.runtime_for_agent_pane(terminal_runtimes, info.id) else {
             return false;
         };
         let column = mouse.column.saturating_sub(info.inner_rect.x);
@@ -1609,11 +1596,7 @@ impl AppState {
         info: &PaneInfo,
         mouse: MouseEvent,
     ) -> bool {
-        let Some(ws_idx) = self.active else {
-            return false;
-        };
-        let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
-        else {
+        let Some(rt) = self.runtime_for_agent_pane(terminal_runtimes, info.id) else {
             return false;
         };
         let column = mouse.column.saturating_sub(info.inner_rect.x);
@@ -1633,11 +1616,7 @@ impl AppState {
         info: &PaneInfo,
         mouse: MouseEvent,
     ) -> bool {
-        let Some(ws_idx) = self.active else {
-            return false;
-        };
-        let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
-        else {
+        let Some(rt) = self.runtime_for_agent_pane(terminal_runtimes, info.id) else {
             return false;
         };
         if !rt
@@ -1665,11 +1644,7 @@ impl AppState {
         info: &PaneInfo,
         mouse: MouseEvent,
     ) -> bool {
-        let Some(ws_idx) = self.active else {
-            return false;
-        };
-        let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
-        else {
+        let Some(rt) = self.runtime_for_agent_pane(terminal_runtimes, info.id) else {
             return false;
         };
         match rt.wheel_routing() {
@@ -1707,11 +1682,8 @@ impl AppState {
         pane_id: crate::layout::PaneId,
         offset_from_bottom: usize,
     ) {
-        if let Some(ws_idx) = self.active {
-            if let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
-            {
-                rt.set_scroll_offset_from_bottom(offset_from_bottom);
-            }
+        if let Some(rt) = self.runtime_for_agent_pane(terminal_runtimes, pane_id) {
+            rt.set_scroll_offset_from_bottom(offset_from_bottom);
         }
     }
 
@@ -1721,7 +1693,6 @@ impl AppState {
         col: u16,
         row: u16,
     ) -> Option<(crate::layout::PaneId, ScrollbarClickTarget)> {
-        let ws_idx = self.active?;
         let info = self.view.pane_infos.iter().find(|info| {
             crate::ui::pane_scrollbar_rect(info).is_some_and(|track| {
                 col >= track.x
@@ -1730,7 +1701,7 @@ impl AppState {
                     && row < track.y + track.height
             })
         })?;
-        let rt = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)?;
+        let rt = self.runtime_for_agent_pane(terminal_runtimes, info.id)?;
         let metrics = rt.scroll_metrics()?;
         if metrics.max_offset_from_bottom == 0 {
             return None;
@@ -1755,14 +1726,13 @@ impl AppState {
         row: u16,
         grab_row_offset: u16,
     ) -> Option<usize> {
-        let ws_idx = self.active?;
         let info = self
             .view
             .pane_infos
             .iter()
             .find(|info| info.id == pane_id)?;
         let track = crate::ui::pane_scrollbar_rect(info)?;
-        let rt = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)?;
+        let rt = self.runtime_for_agent_pane(terminal_runtimes, pane_id)?;
         let metrics = rt.scroll_metrics()?;
         if metrics.max_offset_from_bottom == 0 {
             return None;
@@ -3888,6 +3858,80 @@ mod tests {
             .iter()
             .all(|detached| detached.pane_id != pane_id));
         assert!(app.state.workspaces[0].pane_state(remaining).is_none());
+    }
+
+    #[tokio::test]
+    async fn client_wheel_scrolls_the_peeked_pane_instead_of_the_docked_focus() {
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("space");
+        let docked = workspace.tabs[0].root_pane;
+        let peeked = workspace.test_split(Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.mouse_capture = false;
+        let peeked_terminal = app.state.workspaces[0]
+            .pane_state(peeked)
+            .expect("peeked pane")
+            .attached_terminal_id
+            .clone();
+        let docked_terminal = app.state.workspaces[0]
+            .pane_state(docked)
+            .expect("docked pane")
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&peeked_terminal)
+            .expect("peeked terminal")
+            .set_agent_name("codex".into());
+        let (peeked_rt, mut peeked_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80,
+                18,
+                0,
+                b"\x1b[?1002h\x1b[?1006h",
+                4,
+            );
+        let (docked_rt, mut docked_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 18, 0, b"", 4,
+            );
+        app.terminal_runtimes.insert(peeked_terminal, peeked_rt);
+        app.terminal_runtimes.insert(docked_terminal, docked_rt);
+        app.state.workspaces[0].layout.focus_pane(peeked);
+        app.state.close_pane();
+        app.state.workspaces[0].layout.focus_pane(docked);
+        app.state.peek_agent(peeked);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let info = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == peeked)
+            .expect("peek overlay")
+            .clone();
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Mouse(mouse(
+                MouseEventKind::ScrollUp,
+                info.inner_rect.x + 2,
+                info.inner_rect.y + 2,
+            ))],
+            true,
+        );
+
+        assert!(
+            peeked_rx.try_recv().is_ok(),
+            "wheel should reach the peeked pane"
+        );
+        assert!(
+            docked_rx.try_recv().is_err(),
+            "wheel must not go to the last selected docked pane"
+        );
     }
 
     #[test]

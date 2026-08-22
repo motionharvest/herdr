@@ -1683,8 +1683,8 @@ impl AppState {
     ) -> bool {
         self.mode == Mode::Terminal
             && self
-                .active
-                .and_then(|idx| self.focused_runtime_in_workspace(terminal_runtimes, idx))
+                .terminal_input_target(terminal_runtimes)
+                .map(|(_, _, runtime)| runtime)
                 .and_then(crate::terminal::TerminalRuntime::input_state)
                 .is_some_and(crate::pane::InputState::mouse_reporting_enabled)
     }
