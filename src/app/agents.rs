@@ -315,12 +315,14 @@ impl App {
         )
         .map_err(|err| AgentStartError::SpawnFailed(err.to_string()))?;
 
-        let input = format!("{command}\r");
-        if let Err(err) = runtime.try_send_bytes(Bytes::from(input)) {
-            runtime.shutdown();
-            return Err(AgentStartError::SpawnFailed(format!(
-                "could not send command to terminal: {err}"
-            )));
+        if !command.is_empty() {
+            let input = format!("{command}\r");
+            if let Err(err) = runtime.try_send_bytes(Bytes::from(input)) {
+                runtime.shutdown();
+                return Err(AgentStartError::SpawnFailed(format!(
+                    "could not send command to terminal: {err}"
+                )));
+            }
         }
 
         let terminal_id = crate::terminal::TerminalId::alloc();

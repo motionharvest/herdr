@@ -155,7 +155,9 @@ impl Harness {
 
     /// The task as it will actually be sent, which is what the field shows.
     pub fn message(&self, task: &str) -> String {
-        if self.prefix.is_empty() {
+        if task.trim().is_empty() {
+            String::new()
+        } else if self.prefix.is_empty() {
             task.to_string()
         } else {
             format!("{} {task}", self.prefix)
@@ -173,6 +175,12 @@ impl Harness {
                 command: task.to_string(),
             };
         };
+        if task.trim().is_empty() {
+            return Launch::Agent {
+                agent,
+                argv: vec![agent_label(agent).to_string()],
+            };
+        }
         let mut argv = vec![agent_label(agent).to_string()];
         match self.hand {
             Hand::Word => {}
@@ -368,6 +376,53 @@ mod tests {
             }
         );
         assert_eq!(auto().program(), Some("claude"));
+    }
+
+    #[test]
+    fn an_empty_task_starts_the_harness_idle() {
+        assert_eq!(named("Claude Code").unwrap().message(""), "");
+        assert_eq!(
+            auto().message(""),
+            "",
+            "Auto writes /who only when there is a task"
+        );
+        assert_eq!(
+            named("Claude Code").unwrap().launch("", false),
+            Launch::Agent {
+                agent: Agent::Claude,
+                argv: vec!["claude".into()],
+            },
+            "no prompt is put on the command line"
+        );
+        assert_eq!(
+            auto().launch("", false),
+            Launch::Agent {
+                agent: Agent::Claude,
+                argv: vec!["claude".into()],
+            },
+            "Auto without a task is Claude, not /who with nothing to route"
+        );
+        assert_eq!(
+            named("OpenCode").unwrap().launch("", false),
+            Launch::Agent {
+                agent: Agent::OpenCode,
+                argv: vec!["opencode".into()],
+            },
+            "a subcommand that exists to carry the task goes with it"
+        );
+        assert_eq!(
+            named("Kimi").unwrap().launch("", false),
+            Launch::Agent {
+                agent: Agent::Kimi,
+                argv: vec!["kimi".into()],
+            }
+        );
+        assert_eq!(
+            named("Terminal").unwrap().launch("", false),
+            Launch::Terminal {
+                command: String::new(),
+            }
+        );
     }
 
     #[test]

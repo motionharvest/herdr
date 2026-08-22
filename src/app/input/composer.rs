@@ -16,7 +16,8 @@ use crate::input::TerminalKey;
 pub(crate) enum ComposerKeyOutcome {
     /// The band absorbed the key.
     Edited,
-    /// The task is complete and an agent should be started on it.
+    /// The band is ready to start an agent: a task if one was typed, or the
+    /// chosen agent idle in the chosen folder if the task is empty.
     Submit(Box<Pending>),
     /// The key could not do what it asked for, and this says why.
     Trouble(String),
@@ -362,13 +363,23 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_an_empty_task_does_nothing() {
+    fn enter_on_an_empty_task_starts_the_agent_with_no_prompt() {
         let mut state = composer_state();
+        state
+            .composer
+            .use_harnesses(vec![crate::harness::named("Claude Code").unwrap()]);
+        let ComposerKeyOutcome::Submit(pending) = press(&mut state, KeyCode::Enter) else {
+            panic!("an empty task with a folder should start the agent");
+        };
+        assert_eq!(pending.cwd, std::path::PathBuf::from("/tmp"));
+        assert!(pending.task.is_empty());
         assert_eq!(
-            press(&mut state, KeyCode::Enter),
-            ComposerKeyOutcome::Edited
+            pending.launch(),
+            crate::harness::Launch::Agent {
+                agent: crate::detect::Agent::Claude,
+                argv: vec!["claude".into()],
+            }
         );
-        assert_eq!(state.mode, Mode::Composer);
     }
 
     #[test]

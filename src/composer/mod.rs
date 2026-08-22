@@ -2,7 +2,8 @@
 //!
 //! Four controls, read left to right: where to work, whether in a worktree,
 //! who works, what to do. Type a path, `Enter`, type a task, `Enter`, and an
-//! agent is running. Opening the directory copies the folder on show into the
+//! agent is running. An empty task still starts the chosen agent, with nothing
+//! typed into it. Opening the directory copies the folder on show into the
 //! field so it can be edited. While a path is being typed, the best match
 //! fills in the letters not yet typed; `Tab` takes that guess and `Enter`
 //! takes only what was typed. Settling a control hands the keyboard on to the
@@ -542,17 +543,14 @@ impl ComposerState {
         Ok(())
     }
 
-    /// What would be sent, prefix and all. `None` when there is nothing to send
-    /// or nowhere to send it.
+    /// What would be sent, prefix and all. An empty task still starts the
+    /// chosen agent in the chosen folder, with nothing typed into it. `None`
+    /// when there is nowhere to send it.
     pub fn pending(&self) -> Option<Pending> {
-        let task = self.task.text();
-        if task.trim().is_empty() {
-            return None;
-        }
         Some(Pending {
             cwd: self.folder_path()?.to_path_buf(),
             harness: self.harness()?,
-            task: task.trim().to_string(),
+            task: self.task.text().trim().to_string(),
             worktree: self.worktree,
         })
     }
@@ -1125,15 +1123,30 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_pending_without_a_task_or_without_a_folder() {
+    fn an_empty_task_is_still_pending_when_a_folder_is_chosen() {
         let mut composer = composer_with_folders(&["/tmp"]);
-        assert_eq!(composer.pending(), None, "no task");
-        composer.task.set_text("   ");
-        assert_eq!(composer.pending(), None, "and whitespace is no task");
+        let pending = composer
+            .pending()
+            .expect("an empty task still starts in the chosen folder");
+        assert!(pending.task.is_empty());
+        assert_eq!(pending.cwd, PathBuf::from("/tmp"));
 
+        composer.task.set_text("   ");
+        let pending = composer.pending().expect("whitespace is still no prompt");
+        assert!(pending.task.is_empty());
+    }
+
+    #[test]
+    fn nothing_is_pending_without_a_folder() {
         let mut nowhere = ComposerState::default();
         nowhere.task.set_text("fix the tests");
         assert_eq!(nowhere.pending(), None, "nowhere to send it");
+        nowhere.task.clear();
+        assert_eq!(
+            nowhere.pending(),
+            None,
+            "and an empty task has nowhere either"
+        );
     }
 
     #[test]

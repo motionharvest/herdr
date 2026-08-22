@@ -8,6 +8,7 @@
 - Git Status no longer writes `Landed` when a linked worktree has uncommitted files. The label used to follow the dirty marker whenever that checkout's latest commit was already on the parent, so a dirty tree still looked finished.
 
 ### Changed
+- Enter on an empty task starts the chosen agent in the chosen folder with nothing typed into it. It used to do nothing, so opening an idle agent meant leaving the band and starting one by hand.
 - The Directory and Task fields no longer draw a `❯` prompt in front of what is typed.
 - Clicking the composer Directory control keeps the chosen folder in the field, with the cursor at the end, so the path can be edited. While typing, the best match fills in the letters not yet typed, muted. `Tab` takes that guess. `Enter` takes only what was typed.
 - Directory matches stay five rows on screen. Down on the last visible row shifts the list up through the rest of the matches. Up from the first visible row after a shift brings earlier matches back. The remembered-folder list still fills the box.
