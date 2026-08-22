@@ -961,6 +961,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_paste_goes_to_the_peeked_pane_instead_of_the_docked_focus() {
+        let (mut app, mut docked_rx, mut peeked_rx) = app_with_peeked_and_docked_paste_targets();
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Paste(
+                "client peeked paste".into(),
+            )],
+            true,
+        );
+
+        let pasted = peeked_rx
+            .try_recv()
+            .expect("headless paste should reach the peeked pane");
+        assert_eq!(pasted.as_ref(), b"client peeked paste");
+        assert!(
+            docked_rx.try_recv().is_err(),
+            "headless paste must not go to the last selected docked pane"
+        );
+    }
+
+    #[tokio::test]
     async fn paste_without_peek_still_goes_to_the_docked_focus() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");

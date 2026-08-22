@@ -1304,28 +1304,20 @@ impl App {
                     if self.state.mode == Mode::Composer {
                         self.state.composer.task.insert_str(&text);
                     } else if self.state.mode == Mode::Terminal {
-                        if let Some(ws_idx) = self.state.active {
-                            if let Some(ws) = self.state.workspaces.get(ws_idx) {
-                                if let Some(focused) = ws.focused_pane_id() {
-                                    if let Some(runtime) = self.state.runtime_for_pane_in_workspace(
-                                        &self.terminal_runtimes,
-                                        ws_idx,
-                                        focused,
-                                    ) {
-                                        let _ = runtime.try_send_bytes(bytes::Bytes::from(
-                                            if runtime
-                                                .input_state()
-                                                .map(|s| s.bracketed_paste)
-                                                .unwrap_or(false)
-                                            {
-                                                format!("\x1b[200~{text}\x1b[201~")
-                                            } else {
-                                                text
-                                            },
-                                        ));
-                                    }
-                                }
-                            }
+                        if let Some((_, _, runtime)) =
+                            self.state.terminal_input_target(&self.terminal_runtimes)
+                        {
+                            let _ = runtime.try_send_bytes(bytes::Bytes::from(
+                                if runtime
+                                    .input_state()
+                                    .map(|s| s.bracketed_paste)
+                                    .unwrap_or(false)
+                                {
+                                    format!("\x1b[200~{text}\x1b[201~")
+                                } else {
+                                    text
+                                },
+                            ));
                         }
                     }
                 }
