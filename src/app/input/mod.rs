@@ -154,13 +154,8 @@ impl App {
             return;
         }
 
-        if let Some(ws_idx) = self.state.active {
-            if let Some(rt) = self
-                .state
-                .focused_runtime_in_workspace(&self.terminal_runtimes, ws_idx)
-            {
-                let _ = rt.send_paste(text).await;
-            }
+        if let Some((_, _, rt)) = self.state.terminal_input_target(&self.terminal_runtimes) {
+            let _ = rt.send_paste(text).await;
         }
     }
 
@@ -182,9 +177,13 @@ impl App {
     }
 
     async fn try_bridge_clipboard_image_paste(&mut self) -> bool {
-        let Some(ws_idx) = self.state.active else {
+        if self
+            .state
+            .terminal_input_target(&self.terminal_runtimes)
+            .is_none()
+        {
             return false;
-        };
+        }
 
         let Some(image) = crate::platform::read_clipboard_image() else {
             self.show_copy_feedback_message("clipboard image paste: no image on clipboard");
@@ -209,10 +208,7 @@ impl App {
                 }
             };
 
-        if let Some(rt) = self
-            .state
-            .focused_runtime_in_workspace(&self.terminal_runtimes, ws_idx)
-        {
+        if let Some((_, _, rt)) = self.state.terminal_input_target(&self.terminal_runtimes) {
             let _ = rt.send_paste(paste_text).await;
         }
         true

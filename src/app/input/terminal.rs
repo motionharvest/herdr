@@ -119,23 +119,7 @@ impl App {
             return None;
         }
 
-        let (ws_idx, pane_id, rt) = if let Some(pane_id) = self.state.agent_peek {
-            let ws_idx = self.state.active.unwrap_or(0);
-            let rt = self
-                .state
-                .runtime_for_agent_pane(&self.terminal_runtimes, pane_id)?;
-            (ws_idx, pane_id, rt)
-        } else {
-            let ws_idx = self.state.active?;
-            let ws = self.state.workspaces.get(ws_idx)?;
-            let pane_id = ws.focused_pane_id()?;
-            let rt = self.state.runtime_for_pane_in_workspace(
-                &self.terminal_runtimes,
-                ws_idx,
-                pane_id,
-            )?;
-            (ws_idx, pane_id, rt)
-        };
+        let (ws_idx, pane_id, rt) = self.state.terminal_input_target(&self.terminal_runtimes)?;
 
         // Intercept plain PageUp/PageDown presses for pane scrollback when the
         // focused pane doesn't handle its own scrolling (e.g., a plain shell
@@ -923,6 +907,83 @@ mod tests {
 
         assert!(!app.state.detach_confirm_armed(std::time::Instant::now()));
         assert!(!app.state.detach_requested);
+    }
+
+    fn app_with_peeked_and_docked_paste_targets() -> (
+        App,
+        tokio::sync::mpsc::Receiver<bytes::Bytes>,
+        tokio::sync::mpsc::Receiver<bytes::Bytes>,
+    ) {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let docked = ws.tabs[0].root_pane;
+        let peeked = ws.test_split(ratatui::layout::Direction::Horizontal);
+        let (docked_rt, docked_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (peeked_rt, peeked_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        ws.insert_test_runtime(docked, docked_rt);
+        ws.insert_test_runtime(peeked, peeked_rt);
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(peeked)
+            .expect("peeked pane")
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("peeked terminal")
+            .set_agent_name("codex".into());
+        app.state.workspaces[0].layout.focus_pane(peeked);
+        app.state.close_pane();
+        app.state.workspaces[0].layout.focus_pane(docked);
+        app.state.peek_agent(peeked);
+        (app, docked_rx, peeked_rx)
+    }
+
+    #[tokio::test]
+    async fn paste_goes_to_the_peeked_pane_instead_of_the_docked_focus() {
+        let (mut app, mut docked_rx, mut peeked_rx) = app_with_peeked_and_docked_paste_targets();
+
+        app.handle_paste("peeked paste".into()).await;
+
+        let pasted = peeked_rx
+            .try_recv()
+            .expect("paste should reach the peeked pane");
+        assert_eq!(pasted.as_ref(), b"peeked paste");
+        assert!(
+            docked_rx.try_recv().is_err(),
+            "paste must not go to the last selected docked pane"
+        );
+    }
+
+    #[tokio::test]
+    async fn paste_without_peek_still_goes_to_the_docked_focus() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let docked = ws.tabs[0].root_pane;
+        let other = ws.test_split(ratatui::layout::Direction::Horizontal);
+        let (docked_rt, mut docked_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (other_rt, mut other_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        ws.insert_test_runtime(docked, docked_rt);
+        ws.insert_test_runtime(other, other_rt);
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.workspaces[0].layout.focus_pane(docked);
+
+        app.handle_paste("docked paste".into()).await;
+
+        let pasted = docked_rx
+            .try_recv()
+            .expect("paste should reach the focused docked pane");
+        assert_eq!(pasted.as_ref(), b"docked paste");
+        assert!(other_rx.try_recv().is_err());
     }
 
     #[tokio::test]

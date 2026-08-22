@@ -1785,6 +1785,26 @@ impl AppState {
         self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
     }
 
+    pub(crate) fn terminal_input_target<'a>(
+        &'a self,
+        terminal_runtimes: &'a crate::terminal::TerminalRuntimeRegistry,
+    ) -> Option<(
+        usize,
+        crate::layout::PaneId,
+        &'a crate::terminal::TerminalRuntime,
+    )> {
+        if let Some(pane_id) = self.agent_peek {
+            let ws_idx = self.active.unwrap_or(0);
+            let runtime = self.runtime_for_agent_pane(terminal_runtimes, pane_id)?;
+            Some((ws_idx, pane_id, runtime))
+        } else {
+            let ws_idx = self.active?;
+            let pane_id = self.workspaces.get(ws_idx)?.focused_pane_id()?;
+            let runtime = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)?;
+            Some((ws_idx, pane_id, runtime))
+        }
+    }
+
     pub fn is_active_pane(
         &self,
         ws_idx: usize,

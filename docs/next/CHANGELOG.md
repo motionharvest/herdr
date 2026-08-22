@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Paste now goes to the peeked pane. Typing already went there; paste used the last selected docked pane because it followed layout focus instead of the overlay.
 - Peeking a hidden agent now highlights only that row. Typing into the overlay, or clicking it, used to also paint the last docked pane that had focus, so two rows showed the selected band.
 - Git Status no longer writes `Landed` when a linked worktree has uncommitted files. The label used to follow the dirty marker whenever that checkout's latest commit was already on the parent, so a dirty tree still looked finished.
 
