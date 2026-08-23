@@ -36,6 +36,7 @@ pub(crate) fn enter_composer_mode(
 
 pub(crate) fn leave_composer_mode(state: &mut AppState) {
     state.composer.close_dropdown();
+    state.composer.selecting = false;
     state.mode = if state.active.is_some() {
         Mode::Terminal
     } else {
@@ -57,6 +58,44 @@ pub(crate) fn handle_composer_key(
 
     let key = raw_key.as_key_event();
     let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+    let ctrl =
+        key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT);
+
+    if ctrl {
+        match key.code {
+            KeyCode::Char('a') => {
+                match state.composer.focus {
+                    Focus::Task => state.composer.task.select_all(),
+                    Focus::Folder if state.composer.open == Some(Focus::Folder) => {
+                        state.composer.edit_path(|path| path.select_all());
+                    }
+                    _ => {}
+                }
+                return ComposerKeyOutcome::Edited;
+            }
+            KeyCode::Char('c') => {
+                copy_focused_selection(state);
+                return ComposerKeyOutcome::Edited;
+            }
+            KeyCode::Char('x') => {
+                if copy_focused_selection(state) {
+                    match state.composer.focus {
+                        Focus::Task => {
+                            let _ = state.composer.task.delete_selection();
+                        }
+                        Focus::Folder if state.composer.open == Some(Focus::Folder) => {
+                            state.composer.edit_path(|path| {
+                                let _ = path.delete_selection();
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                return ComposerKeyOutcome::Edited;
+            }
+            _ => {}
+        }
+    }
 
     // An open dropdown owns the arrows and Enter, whichever control opened it.
     // Tab commits a pointed row the way Enter does. On the folder field they
@@ -229,6 +268,21 @@ fn task_key(
     }
 }
 
+fn copy_focused_selection(state: &mut AppState) -> bool {
+    let text = match state.composer.focus {
+        Focus::Task => state.composer.task.selected_text(),
+        Focus::Folder if state.composer.open == Some(Focus::Folder) => {
+            state.composer.path().selected_text()
+        }
+        _ => None,
+    };
+    let Some(text) = text else {
+        return false;
+    };
+    state.request_clipboard_write = Some(text.into_bytes());
+    true
+}
+
 /// The editing keys every field in the band shares. Returns whether the key was
 /// one of them.
 fn edit_field(
@@ -237,6 +291,7 @@ fn edit_field(
     modifiers: KeyModifiers,
     plain: bool,
 ) -> bool {
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
     match code {
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => field.clear(),
         KeyCode::Backspace if modifiers.contains(KeyModifiers::SUPER) => field.clear(),
@@ -249,14 +304,24 @@ fn edit_field(
         KeyCode::Char('h' | 'w') if modifiers.contains(KeyModifiers::CONTROL) => delete_word(field),
         KeyCode::Backspace => field.backspace(),
         KeyCode::Delete => field.delete(),
+        KeyCode::Left if shift => field.select_left(),
+        KeyCode::Right if shift => field.select_right(),
         KeyCode::Left => field.left(),
         KeyCode::Right => field.right(),
+        KeyCode::Up if shift => {
+            field.select_up();
+        }
+        KeyCode::Down if shift => {
+            field.select_down();
+        }
         KeyCode::Up => {
             field.up();
         }
         KeyCode::Down => {
             field.down();
         }
+        KeyCode::Home if shift => field.select_home(),
+        KeyCode::End if shift => field.select_end(),
         KeyCode::Home => field.home(),
         KeyCode::End => field.end(),
         KeyCode::Char(c) if plain => field.insert(c),
@@ -284,6 +349,9 @@ fn word_class(ch: char) -> WordClass {
 /// separators, so deleting by class stops at the slash rather than eating the
 /// whole path.
 fn delete_word(field: &mut crate::composer::TextField) {
+    if field.delete_selection() {
+        return;
+    }
     let text = field.text();
     let mut chars: Vec<char> = text.chars().collect();
     while chars.last().is_some_and(|ch| ch.is_whitespace()) {
@@ -423,6 +491,49 @@ mod tests {
         press(&mut state, KeyCode::Esc);
         assert_eq!(state.mode, Mode::Terminal);
         assert_eq!(state.composer.task.text(), "half a thought");
+    }
+
+    #[test]
+    fn shift_arrows_select_task_text_and_ctrl_c_copies_it() {
+        let mut state = composer_state();
+        type_in(&mut state, "fix the tests");
+        press_key(&mut state, shift(KeyCode::Left));
+        press_key(&mut state, shift(KeyCode::Left));
+        press_key(&mut state, shift(KeyCode::Left));
+        press_key(&mut state, shift(KeyCode::Left));
+        press_key(&mut state, shift(KeyCode::Left));
+        assert_eq!(
+            state.composer.task.selected_text().as_deref(),
+            Some("tests")
+        );
+
+        press_key(&mut state, ctrl(KeyCode::Char('c')));
+        assert_eq!(
+            state.request_clipboard_write.as_deref(),
+            Some(b"tests".as_slice())
+        );
+        assert_eq!(state.composer.task.text(), "fix the tests");
+    }
+
+    #[test]
+    fn ctrl_a_selects_the_whole_task() {
+        let mut state = composer_state();
+        type_in(&mut state, "fix the tests");
+        press_key(&mut state, ctrl(KeyCode::Char('a')));
+        assert_eq!(
+            state.composer.task.selected_text().as_deref(),
+            Some("fix the tests")
+        );
+    }
+
+    #[test]
+    fn typing_replaces_the_selected_task_text() {
+        let mut state = composer_state();
+        type_in(&mut state, "fix the tests");
+        press_key(&mut state, ctrl(KeyCode::Char('a')));
+        type_in(&mut state, "rename it");
+        assert_eq!(state.composer.task.text(), "rename it");
+        assert!(!state.composer.task.has_selection());
     }
 
     #[test]

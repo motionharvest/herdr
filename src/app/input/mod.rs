@@ -79,6 +79,7 @@ impl App {
                     ComposerKeyOutcome::Trouble(reason) => self.show_composer_trouble(reason),
                     ComposerKeyOutcome::Edited => {}
                 }
+                self.flush_clipboard_write();
             }
             _ => {
                 let key_event = key.as_key_event();
@@ -288,6 +289,18 @@ impl App {
         }
     }
 
+    fn flush_clipboard_write(&mut self) {
+        if let Some(content) = self.state.request_clipboard_write.take() {
+            if self
+                .event_tx
+                .try_send(crate::events::AppEvent::ClipboardWrite { content })
+                .is_err()
+            {
+                tracing::warn!("failed to queue clipboard write event");
+            }
+        }
+    }
+
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
         if self.dismiss_config_diagnostic_at(mouse) {
             return;
@@ -347,15 +360,7 @@ impl App {
         {
             self.refresh_integration_recommendations();
         }
-        if let Some(content) = self.state.request_clipboard_write.take() {
-            if self
-                .event_tx
-                .try_send(crate::events::AppEvent::ClipboardWrite { content })
-                .is_err()
-            {
-                tracing::warn!("failed to queue clipboard write event");
-            }
-        }
+        self.flush_clipboard_write();
 
         // Sync autoscroll deadline with state (mouse handler may have
         // set or cleared selection_autoscroll during handle_mouse).

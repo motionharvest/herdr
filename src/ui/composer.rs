@@ -20,7 +20,8 @@ use ratatui::{
 };
 
 use crate::app::{AppState, Mode};
-use crate::composer::Focus;
+use crate::composer::field::Row;
+use crate::composer::{Focus, TextField};
 
 use super::widgets::panel_contrast_fg;
 
@@ -436,7 +437,6 @@ fn draw_task(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_band
     let p = &app.palette;
     let prefix = app.composer.task_prefix();
     let lead = lead_width(prefix);
-    let text_style = value_style(app, in_band);
     for (index, row) in app
         .composer
         .task
@@ -447,14 +447,19 @@ fn draw_task(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_band
     {
         let y = layout.value_row + index as u16;
         if index == 0 {
-            let mut line = prompt_line(app, prefix, &row.text, in_band);
+            let mut line = task_prompt_line(app, prefix, &app.composer.task, row, in_band);
             if !in_band {
                 line = line.style(Style::default().fg(p.overlay1));
             }
             frame.render_widget(line, inner(rect, y, PROMPT_INSET));
         } else {
             frame.render_widget(
-                Paragraph::new(Line::styled(row.text.clone(), text_style)),
+                Paragraph::new(Line::from(task_text_spans(
+                    app,
+                    &app.composer.task,
+                    row,
+                    in_band,
+                ))),
                 inner(rect, y, PROMPT_INSET + lead),
             );
         }
@@ -653,7 +658,13 @@ fn rule(buffer: &mut Buffer, box_area: Rect, row: u16, style: Style) {
     }
 }
 
-fn prompt_line(app: &AppState, prefix: &str, text: &str, in_band: bool) -> Paragraph<'static> {
+fn task_prompt_line(
+    app: &AppState,
+    prefix: &str,
+    field: &TextField,
+    row: &Row,
+    in_band: bool,
+) -> Paragraph<'static> {
     let p = &app.palette;
     let mut spans = Vec::new();
     if !prefix.is_empty() {
@@ -662,8 +673,38 @@ fn prompt_line(app: &AppState, prefix: &str, text: &str, in_band: bool) -> Parag
             Style::default().fg(p.accent),
         ));
     }
-    spans.push(Span::styled(text.to_string(), value_style(app, in_band)));
+    spans.extend(task_text_spans(app, field, row, in_band));
     Paragraph::new(Line::from(spans))
+}
+
+fn task_text_spans(
+    app: &AppState,
+    field: &TextField,
+    row: &Row,
+    in_band: bool,
+) -> Vec<Span<'static>> {
+    let chars: Vec<char> = row.text.chars().collect();
+    let Some((start, end)) = field.selection_on_row(row) else {
+        return vec![Span::styled(row.text.clone(), value_style(app, in_band))];
+    };
+    let p = &app.palette;
+    let selected = Style::default().fg(panel_contrast_fg(p)).bg(p.accent);
+    let rest = value_style(app, in_band);
+    let mut spans = Vec::new();
+    if start > 0 {
+        spans.push(Span::styled(
+            chars[..start].iter().collect::<String>(),
+            rest,
+        ));
+    }
+    spans.push(Span::styled(
+        chars[start..end].iter().collect::<String>(),
+        selected,
+    ));
+    if end < chars.len() {
+        spans.push(Span::styled(chars[end..].iter().collect::<String>(), rest));
+    }
+    spans
 }
 
 /// The writable strip on one row of a box, starting `indent` in from its left

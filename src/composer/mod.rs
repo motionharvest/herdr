@@ -94,6 +94,9 @@ pub struct ComposerState {
     /// directory and the drawing happens on every frame.
     matches: Vec<Folder>,
     pub task: TextField,
+    /// True while the mouse is down in the task field, so a drag keeps
+    /// extending the selection instead of falling through to the panes.
+    pub selecting: bool,
     /// The letters typed at the agent control, matched against the front of
     /// the agents' names: `cl` is Claude Code, `co` is Codex. It grows a
     /// letter at a time and starts over on a letter that fits no name, so a
@@ -121,6 +124,7 @@ impl Default for ComposerState {
             path: TextField::default(),
             matches: Vec::new(),
             task: TextField::default(),
+            selecting: false,
             typed_agent: String::new(),
             worktree: true,
         }

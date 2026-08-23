@@ -38,6 +38,18 @@ impl App {
 
         let key_event = key.as_key_event();
 
+        // Peek is an overlay. Escape dismisses it the same way BACK and HIDE
+        // already do, instead of going through to the agent underneath.
+        if self.state.agent_peek.is_some()
+            && key_event.code == KeyCode::Esc
+            && key_event.modifiers.is_empty()
+        {
+            if key_event.kind != crossterm::event::KeyEventKind::Release {
+                self.state.clear_agent_peek();
+            }
+            return None;
+        }
+
         if is_ctrl_q(key) {
             if key_event.kind == crossterm::event::KeyEventKind::Release {
                 return None;
@@ -740,6 +752,22 @@ mod tests {
         );
         assert_eq!(app.state.mode, Mode::ContextMenu);
         assert!(app.state.context_menu.is_some());
+    }
+
+    #[tokio::test]
+    async fn escape_closes_a_peeked_pane_instead_of_forwarding_to_it() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("space")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Terminal;
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.peek_agent(pane_id);
+
+        app.handle_terminal_key(TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert_eq!(app.state.agent_peek, None);
+        assert_eq!(app.state.mode, Mode::Terminal);
     }
 
     #[tokio::test]

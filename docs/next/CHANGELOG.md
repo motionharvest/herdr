@@ -6,6 +6,8 @@
 - The spaces and agents sidebar is back on the left of the frame. Composer, the agent table, and the panes keep their places to its right. Click a space to switch, click an agent to focus it, drag a pane onto `+ new` to fly it out, and `prefix+b` folds the sidebar to a strip.
 
 ### Fixed
+- Escape now leaves a peeked pane. It used to go to the agent, so the overlay stayed up unless you hit BACK or HIDE.
+- Dragging in the Task field now selects the text under the pointer, copies it on release, and keeps the highlight. A click still only moves the cursor. Shift-arrows, Ctrl-A, Ctrl-C, and Ctrl-X work the same way they do in a text field. The field used to ignore the drag, so nothing could be highlighted or copied from it.
 - Paste now goes to the peeked pane, including in `herdr server`. Typing already went there; paste used the last selected docked pane because the client paste path followed layout focus instead of the overlay.
 - Wheel scroll now reaches the peeked pane. Mouse and host-scroll lookups used the workspace layout, so a set-down agent shown in peek could not be scrolled.
 - Peeking a hidden agent now highlights only that row. Typing into the overlay, or clicking it, used to also paint the last docked pane that had focus, so two rows showed the selected band.

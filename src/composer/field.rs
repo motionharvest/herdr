@@ -21,6 +21,9 @@ pub struct TextField {
     lines: Vec<String>,
     line: usize,
     col: usize,
+    /// One end of a selection, the other being the cursor. Equal ends, or
+    /// `None`, means nothing is highlighted.
+    anchor: Option<(usize, usize)>,
     /// How wide the field is drawn, which is what `up` and `down` need in order
     /// to step by rows on screen rather than by lines in the text. Zero means
     /// the field is not wrapped and the two are the same thing.
@@ -33,6 +36,7 @@ impl Default for TextField {
             lines: vec![String::new()],
             line: 0,
             col: 0,
+            anchor: None,
             width: 0,
         }
     }
@@ -60,12 +64,121 @@ impl TextField {
         }
         self.line = self.lines.len() - 1;
         self.col = self.len(self.line);
+        self.anchor = None;
     }
 
     pub fn clear(&mut self) {
         self.lines = vec![String::new()];
         self.line = 0;
         self.col = 0;
+        self.anchor = None;
+    }
+
+    fn pos(&self) -> (usize, usize) {
+        (self.line, self.col)
+    }
+
+    /// The selected range in text coordinates, start then end, when it covers
+    /// at least one character.
+    pub fn ordered(&self) -> Option<((usize, usize), (usize, usize))> {
+        let anchor = self.anchor?;
+        let cursor = self.pos();
+        if anchor == cursor {
+            return None;
+        }
+        if anchor <= cursor {
+            Some((anchor, cursor))
+        } else {
+            Some((cursor, anchor))
+        }
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.ordered().is_some()
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let ((start_line, start_col), (end_line, end_col)) = self.ordered()?;
+        if start_line == end_line {
+            let line = &self.lines[start_line];
+            let from = self.byte(start_line, start_col);
+            let to = self.byte(start_line, end_col);
+            return Some(line[from..to].to_string());
+        }
+        let mut out = String::new();
+        out.push_str(&self.lines[start_line][self.byte(start_line, start_col)..]);
+        out.push('\n');
+        for line in start_line + 1..end_line {
+            out.push_str(&self.lines[line]);
+            out.push('\n');
+        }
+        out.push_str(&self.lines[end_line][..self.byte(end_line, end_col)]);
+        Some(out)
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.anchor = None;
+    }
+
+    pub fn select_all(&mut self) {
+        self.anchor = Some((0, 0));
+        self.line = self.lines.len() - 1;
+        self.col = self.len(self.line);
+        if self.anchor == Some(self.pos()) {
+            self.anchor = None;
+        }
+    }
+
+    /// Columns in this drawn row that are selected, as a half-open range
+    /// within the row's text.
+    pub fn selection_on_row(&self, row: &Row) -> Option<(usize, usize)> {
+        let ((a_line, a_col), (b_line, b_col)) = self.ordered()?;
+        if row.line < a_line || row.line > b_line {
+            return None;
+        }
+        let len = row.text.chars().count();
+        let start = if row.line == a_line {
+            a_col.saturating_sub(row.start)
+        } else {
+            0
+        };
+        let end = if row.line == b_line {
+            b_col.saturating_sub(row.start)
+        } else {
+            len
+        };
+        let start = start.min(len);
+        let end = end.min(len);
+        (start < end).then_some((start, end))
+    }
+
+    /// Drop the selected characters, leaving the cursor at the hole. Returns
+    /// whether there was anything to drop.
+    pub fn delete_selection(&mut self) -> bool {
+        let Some(((start_line, start_col), (end_line, end_col))) = self.ordered() else {
+            self.anchor = None;
+            return false;
+        };
+        if start_line == end_line {
+            let from = self.byte(start_line, start_col);
+            let to = self.byte(start_line, end_col);
+            self.lines[start_line].replace_range(from..to, "");
+        } else {
+            let head = self.lines[start_line][..self.byte(start_line, start_col)].to_string();
+            let tail = self.lines[end_line][self.byte(end_line, end_col)..].to_string();
+            self.lines.drain(start_line + 1..=end_line);
+            self.lines[start_line] = head + &tail;
+        }
+        self.line = start_line;
+        self.col = start_col;
+        self.anchor = None;
+        true
+    }
+
+    fn ensure_anchor(&mut self) {
+        if self.anchor.is_none() {
+            self.anchor = Some(self.pos());
+        }
     }
 
     /// Tell the field how wide it is drawn. Everything else about it is
@@ -132,6 +245,7 @@ impl TextField {
     }
 
     pub fn insert(&mut self, c: char) {
+        let _ = self.delete_selection();
         let at = self.byte(self.line, self.col);
         self.lines[self.line].insert(at, c);
         self.col += 1;
@@ -142,6 +256,7 @@ impl TextField {
     /// same key, and two new lines where the paste had one is not what was
     /// copied.
     pub fn insert_str(&mut self, text: &str) {
+        let _ = self.delete_selection();
         let mut chars = text.chars().peekable();
         while let Some(c) = chars.next() {
             match c {
@@ -158,6 +273,7 @@ impl TextField {
     }
 
     pub fn newline(&mut self) {
+        let _ = self.delete_selection();
         let at = self.byte(self.line, self.col);
         let rest = self.lines[self.line].split_off(at);
         self.lines.insert(self.line + 1, rest);
@@ -166,6 +282,9 @@ impl TextField {
     }
 
     pub fn backspace(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if self.col > 0 {
             let at = self.byte(self.line, self.col - 1);
             self.lines[self.line].remove(at);
@@ -179,6 +298,9 @@ impl TextField {
     }
 
     pub fn delete(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if self.col < self.len(self.line) {
             let at = self.byte(self.line, self.col);
             self.lines[self.line].remove(at);
@@ -189,6 +311,41 @@ impl TextField {
     }
 
     pub fn left(&mut self) {
+        if let Some((start, _)) = self.ordered() {
+            self.set_pos(start);
+            self.anchor = None;
+            return;
+        }
+        self.anchor = None;
+        self.move_left();
+    }
+
+    pub fn right(&mut self) {
+        if let Some((_, end)) = self.ordered() {
+            self.set_pos(end);
+            self.anchor = None;
+            return;
+        }
+        self.anchor = None;
+        self.move_right();
+    }
+
+    pub fn select_left(&mut self) {
+        self.ensure_anchor();
+        self.move_left();
+    }
+
+    pub fn select_right(&mut self) {
+        self.ensure_anchor();
+        self.move_right();
+    }
+
+    fn set_pos(&mut self, (line, col): (usize, usize)) {
+        self.line = line;
+        self.col = col;
+    }
+
+    fn move_left(&mut self) {
         if self.col > 0 {
             self.col -= 1;
         } else if self.line > 0 {
@@ -197,7 +354,7 @@ impl TextField {
         }
     }
 
-    pub fn right(&mut self) {
+    fn move_right(&mut self) {
         if self.col < self.len(self.line) {
             self.col += 1;
         } else if self.line + 1 < self.lines.len() {
@@ -210,11 +367,23 @@ impl TextField {
     /// of the text once a line has wrapped. Returns `false` when already on the
     /// top row, which is what lets the caller give the key to something else.
     pub fn up(&mut self) -> bool {
+        self.anchor = None;
         self.step(-1)
     }
 
     /// Move down one row as drawn. Returns `false` when already on the last.
     pub fn down(&mut self) -> bool {
+        self.anchor = None;
+        self.step(1)
+    }
+
+    pub fn select_up(&mut self) -> bool {
+        self.ensure_anchor();
+        self.step(-1)
+    }
+
+    pub fn select_down(&mut self) -> bool {
+        self.ensure_anchor();
         self.step(1)
     }
 
@@ -233,21 +402,53 @@ impl TextField {
     }
 
     pub fn home(&mut self) {
+        self.anchor = None;
         self.col = 0;
     }
 
     pub fn end(&mut self) {
+        self.anchor = None;
         self.col = self.len(self.line);
     }
 
-    /// Put the cursor where a click landed, given as a row of the field as
-    /// drawn and a column within that row, each clamped to the text that is
-    /// actually there.
-    pub fn click(&mut self, row: usize, col: usize) {
+    pub fn select_home(&mut self) {
+        self.ensure_anchor();
+        self.col = 0;
+    }
+
+    pub fn select_end(&mut self) {
+        self.ensure_anchor();
+        self.col = self.len(self.line);
+    }
+
+    fn place(&mut self, row: usize, col: usize) {
         let rows = self.rows();
         let target = &rows[row.min(rows.len() - 1)];
         self.line = target.line;
         self.col = target.start + col.min(target.text.chars().count());
+    }
+
+    /// Put the cursor where a click landed, given as a row of the field as
+    /// drawn and a column within that row, each clamped to the text that is
+    /// actually there. A click starts a selection at that point; a drag then
+    /// extends it.
+    pub fn click(&mut self, row: usize, col: usize) {
+        self.place(row, col);
+        self.anchor = Some(self.pos());
+    }
+
+    /// Extend the selection to the character a drag landed on, keeping the
+    /// click as the other end.
+    pub fn drag(&mut self, row: usize, col: usize) {
+        self.ensure_anchor();
+        self.place(row, col);
+    }
+
+    /// Shift-click: keep the existing anchor, or the current cursor if there
+    /// is none yet, and move the cursor to the character clicked.
+    pub fn extend(&mut self, row: usize, col: usize) {
+        self.ensure_anchor();
+        self.place(row, col);
     }
 }
 
@@ -389,5 +590,81 @@ mod tests {
             assert_eq!(field.text(), "first\nsecond", "pasting {pasted:?}");
             assert_eq!(field.rows().len(), 2);
         }
+    }
+
+    #[test]
+    fn a_click_does_not_leave_a_visible_selection() {
+        let mut field = field("fix the tests", 40);
+        field.click(0, 4);
+        assert!(!field.has_selection());
+        field.insert('X');
+        assert_eq!(field.text(), "fix Xthe tests");
+    }
+
+    #[test]
+    fn a_drag_selects_the_characters_between_the_click_and_the_cursor() {
+        let mut field = field("fix the tests", 40);
+        field.click(0, 4);
+        field.drag(0, 7);
+        assert_eq!(field.selected_text().as_deref(), Some("the"));
+        assert_eq!(field.selection_on_row(&field.rows()[0]), Some((4, 7)));
+    }
+
+    #[test]
+    fn typing_replaces_the_selection() {
+        let mut field = field("fix the tests", 40);
+        field.click(0, 4);
+        field.drag(0, 7);
+        field.insert_str("those");
+        assert_eq!(field.text(), "fix those tests");
+        assert!(!field.has_selection());
+    }
+
+    #[test]
+    fn backspace_drops_the_selection_rather_than_the_character_before_it() {
+        let mut field = field("fix the tests", 40);
+        field.click(0, 4);
+        field.drag(0, 7);
+        field.backspace();
+        assert_eq!(field.text(), "fix  tests");
+        assert!(!field.has_selection());
+    }
+
+    #[test]
+    fn left_without_shift_collapses_to_the_start_of_the_selection() {
+        let mut field = field("fix the tests", 40);
+        field.click(0, 4);
+        field.drag(0, 7);
+        field.left();
+        assert!(!field.has_selection());
+        assert_eq!(field.cursor_row(), (0, 4));
+    }
+
+    #[test]
+    fn shift_left_grows_the_selection() {
+        let mut field = field("fix the tests", 40);
+        field.end();
+        field.select_left();
+        field.select_left();
+        assert_eq!(field.selected_text().as_deref(), Some("ts"));
+    }
+
+    #[test]
+    fn select_all_covers_every_character() {
+        let mut field = field("fix\nthe tests", 40);
+        field.select_all();
+        assert_eq!(field.selected_text().as_deref(), Some("fix\nthe tests"));
+    }
+
+    #[test]
+    fn a_wrapped_selection_lights_only_the_characters_it_covers() {
+        let mut field = field("fix the failing tests", 10);
+        field.click(0, 4);
+        field.drag(1, 7);
+        assert_eq!(field.selected_text().as_deref(), Some("the failing"));
+        let rows = field.rows();
+        assert_eq!(field.selection_on_row(&rows[0]), Some((4, 7)));
+        assert_eq!(field.selection_on_row(&rows[1]), Some((0, 7)));
+        assert_eq!(field.selection_on_row(&rows[2]), None);
     }
 }

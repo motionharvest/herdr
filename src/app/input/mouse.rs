@@ -65,6 +65,10 @@ impl AppState {
             return None;
         }
 
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            self.composer.selecting = false;
+        }
+
         if self.mode == Mode::Terminal
             && self.clickable_toast_at(mouse.column, mouse.row)
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
@@ -167,8 +171,22 @@ impl AppState {
             && matches!(self.mode, Mode::Terminal | Mode::Navigate | Mode::Composer)
             && rect_contains(self.view.composer.area, mouse.column, mouse.row)
         {
-            self.click_composer(terminal_runtimes, mouse.column, mouse.row);
+            self.click_composer(terminal_runtimes, mouse.column, mouse.row, mouse.modifiers);
             return None;
+        }
+
+        if self.composer.selecting {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.drag_composer_task(mouse.column, mouse.row);
+                    return None;
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.release_composer_task();
+                    return None;
+                }
+                _ => {}
+            }
         }
 
         if self.mode == Mode::KeybindHelp {
@@ -1648,8 +1666,15 @@ impl AppState {
     /// a click on the folder or the agent opens its list there and then — the
     /// click is the asking to see the choices. A click on a control whose list
     /// is already open leaves it as it is. A click in the task puts the cursor
-    /// on the character clicked, the way any text field would.
-    fn click_composer(&mut self, terminal_runtimes: &TerminalRuntimeRegistry, col: u16, row: u16) {
+    /// on the character clicked, the way any text field would. A drag from
+    /// there selects; Shift-click extends an existing selection.
+    fn click_composer(
+        &mut self,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+        col: u16,
+        row: u16,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
         let was = self.mode;
         self.mode = Mode::Composer;
         let layout = &self.view.composer;
@@ -1664,6 +1689,7 @@ impl AppState {
         };
         let Some(which) = which else {
             self.composer.close_dropdown();
+            self.composer.task.clear_selection();
             if was != Mode::Composer {
                 self.composer.start_where_the_work_is();
             }
@@ -1675,18 +1701,52 @@ impl AppState {
         self.composer.close_dropdown();
         self.composer.focus = which;
         if which == crate::composer::Focus::Task {
-            let task = self.view.composer.task;
-            let lead = self.view.composer.task_lead;
-            self.composer.task.click(
-                row.saturating_sub(task.y + 1) as usize,
-                col.saturating_sub(task.x + lead) as usize,
-            );
+            let (text_row, text_col) = self.composer_task_pos(col, row);
+            if modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+                self.composer.task.extend(text_row, text_col);
+            } else {
+                self.composer.task.click(text_row, text_col);
+            }
+            self.composer.selecting = true;
             return;
         }
+        self.composer.task.clear_selection();
         if which == crate::composer::Focus::Folder {
             self.refresh_composer_folders(terminal_runtimes);
         }
         self.composer.open_dropdown(which);
+    }
+
+    fn composer_task_pos(&self, col: u16, row: u16) -> (usize, usize) {
+        let layout = &self.view.composer;
+        let last_row = layout
+            .value_row
+            .saturating_add(layout.task.height.saturating_sub(3));
+        let text_row = if row <= layout.value_row {
+            0
+        } else if row > last_row {
+            last_row.saturating_sub(layout.value_row) as usize
+        } else {
+            row.saturating_sub(layout.value_row) as usize
+        };
+        let text_col = col.saturating_sub(layout.task.x + layout.task_lead) as usize;
+        (text_row, text_col)
+    }
+
+    fn drag_composer_task(&mut self, col: u16, row: u16) {
+        let (text_row, text_col) = self.composer_task_pos(col, row);
+        self.composer.task.drag(text_row, text_col);
+    }
+
+    fn release_composer_task(&mut self) {
+        self.composer.selecting = false;
+        if self.composer.task.has_selection() {
+            if let Some(text) = self.composer.task.selected_text() {
+                self.request_clipboard_write = Some(text.into_bytes());
+            }
+        } else {
+            self.composer.task.clear_selection();
+        }
     }
 
     fn click_composer_dropdown(&mut self, row: u16) {
@@ -4663,6 +4723,47 @@ mod tests {
             (0, 4),
             "the cursor left the end of the text for the character clicked"
         );
+    }
+
+    #[tokio::test]
+    async fn dragging_in_the_task_field_selects_the_text_and_copies_it() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("space")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Composer;
+        app.state
+            .composer
+            .add_folder(std::path::PathBuf::from("/tmp"));
+        app.state.composer.task.set_text("fix the tests");
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+
+        let task = app.state.view.composer.task;
+        let lead = app.state.view.composer.task_lead;
+        let row = app.state.view.composer.value_row;
+        let start = task.x + lead + 4;
+        let end = task.x + lead + 7;
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), start, row));
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), end, row));
+
+        assert_eq!(
+            app.state.composer.task.selected_text().as_deref(),
+            Some("the")
+        );
+
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), end, row));
+
+        assert_eq!(
+            app.state.composer.task.selected_text().as_deref(),
+            Some("the"),
+            "the highlight stays after copy"
+        );
+        match app.event_rx.try_recv().expect("clipboard write event") {
+            crate::events::AppEvent::ClipboardWrite { content } => {
+                assert_eq!(content, b"the");
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
     }
 
     #[test]

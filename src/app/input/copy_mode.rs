@@ -19,15 +19,7 @@ impl App {
         self.state.update_dismissed = true;
         self.state
             .handle_copy_mode_key(&self.terminal_runtimes, key);
-        if let Some(content) = self.state.request_clipboard_write.take() {
-            if self
-                .event_tx
-                .try_send(crate::events::AppEvent::ClipboardWrite { content })
-                .is_err()
-            {
-                tracing::warn!("failed to queue clipboard write event");
-            }
-        }
+        self.flush_clipboard_write();
     }
 }
 
