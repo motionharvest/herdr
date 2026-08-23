@@ -1083,6 +1083,32 @@ pub const THEME_NAMES: &[&str] = &[
     "vesper",
 ];
 
+/// Human label for a built-in theme key. The key stays the config value.
+pub fn theme_display_name(name: &str) -> &'static str {
+    match name {
+        "catppuccin" => "catppuccin mocha",
+        "catppuccin-latte" => "catppuccin latte",
+        "tokyo-night" => "tokyo night",
+        "tokyo-night-day" => "tokyo night day",
+        "gruvbox-light" => "gruvbox light",
+        "one-dark" => "one dark",
+        "one-light" => "one light",
+        "solarized-light" => "solarized light",
+        "kanagawa-lotus" => "kanagawa lotus",
+        "rose-pine" => "rose pine",
+        "rose-pine-dawn" => "rose pine dawn",
+        "terminal" => "terminal",
+        "dracula" => "dracula",
+        "synthwave" => "synthwave",
+        "nord" => "nord",
+        "gruvbox" => "gruvbox",
+        "solarized" => "solarized",
+        "kanagawa" => "kanagawa",
+        "vesper" => "vesper",
+        _ => "custom",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuListState {
     pub highlighted: usize,
@@ -2240,6 +2266,22 @@ mod tests {
                 Palette::from_name(name).is_some(),
                 "theme should resolve: {name}"
             );
+        }
+    }
+
+    #[test]
+    fn catppuccin_latte_panel_is_lighter_than_mocha() {
+        let mocha = Palette::catppuccin().panel_bg;
+        let latte = Palette::catppuccin_latte().panel_bg;
+        assert!(luma(latte) > luma(mocha));
+        assert_eq!(theme_display_name("catppuccin"), "catppuccin mocha");
+        assert_eq!(theme_display_name("catppuccin-latte"), "catppuccin latte");
+    }
+
+    fn luma(color: Color) -> u16 {
+        match color {
+            Color::Rgb(r, g, b) => u16::from(r) + u16::from(g) + u16::from(b),
+            _ => 0,
         }
     }
 

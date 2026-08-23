@@ -392,7 +392,10 @@ fn render_settings_theme(app: &AppState, frame: &mut Frame, area: Rect) {
                 == app.theme_name.to_lowercase().replace([' ', '_'], "-");
             let marker = if is_current { " ✓" } else { "" };
             ListItem::new(Line::from(vec![
-                Span::styled(*name, Style::default().fg(p.subtext0)),
+                Span::styled(
+                    crate::app::state::theme_display_name(name),
+                    Style::default().fg(p.subtext0),
+                ),
                 Span::styled(marker, Style::default().fg(p.green)),
             ]))
         })

@@ -891,7 +891,7 @@ fn fill_sidebar_background(app: &AppState, frame: &mut Frame, area: Rect) {
         for x in area.x..area.x + area.width {
             let cell = &mut buf[(x, y)];
             cell.set_symbol(" ");
-            cell.set_style(Style::default());
+            cell.set_style(Style::default().bg(app.palette.panel_bg));
         }
         if area.width > 1 {
             let cell = &mut buf[(divider_x, y)];
