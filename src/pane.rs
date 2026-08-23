@@ -2417,13 +2417,13 @@ impl PaneRuntime {
         let mut terminal =
             crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes).unwrap();
         terminal.write(bytes);
+        let pane_terminal = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        pane_terminal.observe_terminal_bytes(bytes);
 
         (
             Self {
                 pane_id: PaneId::from_raw(0),
-                terminal: Arc::new(PaneTerminal::new(
-                    GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap(),
-                )),
+                terminal: Arc::new(PaneTerminal::new(pane_terminal)),
                 io: PaneRuntimeIo::TestChannel {
                     sender: tx,
                     resize_tx,

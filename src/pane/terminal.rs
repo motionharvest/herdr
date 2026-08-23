@@ -397,6 +397,15 @@ impl GhosttyPaneTerminal {
         })
     }
 
+    /// Feed bytes the test constructor wrote straight into the terminal
+    /// through the keyboard tracker too, so seed sequences like
+    /// modifyOtherKeys are visible to the encode path.
+    #[cfg(test)]
+    pub fn observe_terminal_bytes(&self, bytes: &[u8]) {
+        let mut core = self.lock_core();
+        core.kitty_keyboard.observe(bytes);
+    }
+
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
         let mut core = self.lock_core();
         core.host_terminal_theme = theme;
@@ -700,6 +709,7 @@ impl GhosttyPaneTerminal {
         }
 
         if input_state.modify_other_keys {
+            core.kitty_keyboard.observe(b"\x1b[>4;2m");
             core.terminal.write(b"\x1b[>4;2m");
         }
 
@@ -934,11 +944,44 @@ impl GhosttyPaneTerminal {
         key: crate::input::TerminalKey,
         protocol: crate::input::KeyboardProtocol,
     ) -> Vec<u8> {
-        if ghostty_prefers_herdr_text_encoding(key) {
+        #[cfg(windows)]
+        {
+            // Legacy ConPTY panes never negotiated kitty or modifyOtherKeys, so
+            // re-encode native Windows keys as win32-input-mode sequences.
+            let legacy_conpty_pane = {
+                let core = self.lock_core();
+                core.kitty_keyboard.flags() == 0 && !core.kitty_keyboard.modify_other_keys_enabled()
+            };
+            if legacy_conpty_pane {
+                if let Some(bytes) = crate::platform::encode_windows_conpty_fallback(&key) {
+                    return bytes;
+                }
+            }
+        }
+
+        let repeat_count = key.repeat_count;
+        let first = key.with_repeat_count(1);
+        let mut bytes = self.encode_terminal_key_once(first.clone(), protocol);
+        if repeat_count > 1 && first.kind != crossterm::event::KeyEventKind::Release {
+            let repeated = first.with_kind(crossterm::event::KeyEventKind::Repeat);
+            let repeated_bytes = self.encode_terminal_key_once(repeated, protocol);
+            for _ in 1..repeat_count {
+                bytes.extend_from_slice(&repeated_bytes);
+            }
+        }
+        bytes
+    }
+
+    fn encode_terminal_key_once(
+        &self,
+        key: crate::input::TerminalKey,
+        protocol: crate::input::KeyboardProtocol,
+    ) -> Vec<u8> {
+        if ghostty_prefers_herdr_text_encoding(key.clone()) {
             return crate::input::encode_terminal_key(key, protocol);
         }
 
-        let Some(event) = ghostty_key_event_from_terminal_key(key) else {
+        let Some(event) = ghostty_key_event_from_terminal_key(key.clone()) else {
             return crate::input::encode_terminal_key(key, protocol);
         };
 
@@ -2257,7 +2300,7 @@ mod tests {
             crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
         );
 
-        let before = pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy);
+        let before = pane.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy);
         pane.process_pty_bytes(pane_id, 0, b"\x1b[>1u", &tx);
         let after = pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy);
 
@@ -2353,6 +2396,97 @@ mod tests {
         let encoded = pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy);
 
         assert_eq!(encoded, b"\x1b[127;3u");
+    }
+
+    #[test]
+    fn grouped_key_repeats_expand_at_the_destination() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+        let key = crate::input::TerminalKey::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::empty(),
+        )
+        .with_repeat_count(3);
+
+        assert_eq!(
+            pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy),
+            b"xxx"
+        );
+
+        #[cfg(not(windows))]
+        {
+            let shifted = crate::input::TerminalKey::new(
+                crossterm::event::KeyCode::Char('/'),
+                crossterm::event::KeyModifiers::SHIFT,
+            )
+            .with_generated_text(Some("/".to_owned()))
+            .with_windows_record(crate::input::WindowsKeyRecord {
+                key_down: true,
+                repeat_count: 3,
+                virtual_key_code: 0x37,
+                virtual_scan_code: 0x08,
+                unicode: u16::from(b'/'),
+                control_key_state: 0x0010,
+            });
+            assert_eq!(
+                pane.encode_terminal_key(shifted.clone(), crate::input::KeyboardProtocol::Legacy,),
+                b"///"
+            );
+            assert_eq!(
+                pane.encode_terminal_key(
+                    shifted,
+                    crate::input::KeyboardProtocol::Kitty { flags: 15 },
+                ),
+                b"\x1b[47;2:1u\x1b[47;2:2u\x1b[47;2:2u"
+            );
+        }
+
+        #[cfg(windows)]
+        {
+            // On Windows the legacy ConPTY hook re-encodes native records as
+            // win32-input-mode sequences; repeats stay grouped in one frame.
+            let shifted = crate::input::TerminalKey::new(
+                crossterm::event::KeyCode::Char('/'),
+                crossterm::event::KeyModifiers::SHIFT,
+            )
+            .with_generated_text(Some("/".to_owned()))
+            .with_windows_record(crate::input::WindowsKeyRecord {
+                key_down: true,
+                repeat_count: 3,
+                virtual_key_code: 0x37,
+                virtual_scan_code: 0x08,
+                unicode: u16::from(b'/'),
+                control_key_state: 0x0010,
+            });
+            assert_eq!(
+                pane.encode_terminal_key(shifted, crate::input::KeyboardProtocol::Legacy),
+                b"\x1b[55;8;47;1;16;3_"
+            );
+        }
+    }
+
+    #[test]
+    fn grouped_release_is_encoded_once() {
+        let (tx, _rx) = mpsc::channel(4);
+        let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        terminal.write(b"\x1b[>11u");
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+        let protocol = pane.keyboard_protocol().unwrap();
+        let release = crate::input::TerminalKey::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::empty(),
+        )
+        .with_kind(crossterm::event::KeyEventKind::Release);
+        let expected = pane.encode_terminal_key(release.clone(), protocol);
+
+        assert!(!expected.is_empty());
+        let mut malformed_release = release;
+        malformed_release.repeat_count = 3;
+        assert_eq!(
+            pane.encode_terminal_key(malformed_release, protocol),
+            expected
+        );
     }
 
     #[test]

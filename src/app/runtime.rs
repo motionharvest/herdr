@@ -136,6 +136,10 @@ impl App {
                     }
                 }
             }
+            crate::raw_input::RawInputEvent::Text(text) => {
+                self.handle_text_commit(text).await;
+                true
+            }
             crate::raw_input::RawInputEvent::Paste(text) => {
                 self.handle_paste(text).await;
                 true

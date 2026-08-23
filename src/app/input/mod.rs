@@ -5,6 +5,7 @@ use tracing::warn;
 
 use crate::app::PaneClickState;
 use crate::input::TerminalKey;
+use bytes::Bytes;
 use ratatui::layout::Direction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +66,7 @@ use super::App;
 
 impl App {
     pub(super) async fn handle_key(&mut self, key: TerminalKey) {
-        if agent_table_delete_intercept(&mut self.state, key) {
+        if agent_table_delete_intercept(&mut self.state, key.clone()) {
             return;
         }
         match self.state.mode {
@@ -116,6 +117,32 @@ impl App {
                     }
                     Mode::Terminal => unreachable!(),
                 }
+            }
+        }
+    }
+
+    pub(super) async fn handle_text_commit(&mut self, text: crate::input::TextCommit) {
+        let text = text.into_string();
+        if text.is_empty() {
+            return;
+        }
+        if self.state.mode == Mode::Composer {
+            self.state.composer.task.insert_str(&text);
+            return;
+        }
+        if self.state.mode != Mode::Terminal {
+            return;
+        }
+
+        self.state.clear_selection();
+        self.selection_autoscroll_deadline = None;
+        self.state.update_dismissed = true;
+        if let Some(ws_idx) = self.state.active {
+            if let Some(rt) = self
+                .state
+                .focused_runtime_in_workspace(&self.terminal_runtimes, ws_idx)
+            {
+                let _ = rt.try_send_bytes(Bytes::copy_from_slice(text.as_bytes()));
             }
         }
     }

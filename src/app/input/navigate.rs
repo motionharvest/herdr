@@ -38,7 +38,7 @@ impl App {
         let key = raw_key.as_key_event();
         self.state.update_dismissed = true;
 
-        if self.state.is_prefix_key(raw_key) {
+        if self.state.is_prefix_key(&raw_key) {
             if !self.pass_through_key_to_focused_pane(raw_key) {
                 leave_command_mode(&mut self.state);
             }
@@ -50,7 +50,8 @@ impl App {
             return;
         }
 
-        if let Some(action) = action_for_key(&self.state, raw_key, BindingDispatch::Prefix) {
+        if let Some(action) = action_for_key(&self.state, raw_key.clone(), BindingDispatch::Prefix)
+        {
             if action == NavigateAction::EditScrollback {
                 let previous_mode = self.state.mode;
                 self.launch_focused_scrollback_editor();
@@ -79,16 +80,16 @@ impl App {
         let key = raw_key.as_key_event();
         self.state.update_dismissed = true;
 
-        if key.code == KeyCode::Esc || self.state.is_prefix_key(raw_key) {
+        if key.code == KeyCode::Esc || self.state.is_prefix_key(&raw_key) {
             leave_navigate_mode(&mut self.state);
             return;
         }
 
-        if handle_navigate_reserved_key(&mut self.state, raw_key) {
+        if handle_navigate_reserved_key(&mut self.state, raw_key.clone()) {
             return;
         }
 
-        if let Some(action) = navigate_mode_action_for_key(&self.state, raw_key) {
+        if let Some(action) = navigate_mode_action_for_key(&self.state, raw_key.clone()) {
             if action == NavigateAction::EditScrollback {
                 self.launch_focused_scrollback_editor();
             } else {
@@ -393,8 +394,8 @@ pub(crate) fn command_for_key(
         .custom_commands
         .iter()
         .find(|binding| match dispatch {
-            BindingDispatch::Direct => binding.bindings.matches_direct_key(key),
-            BindingDispatch::Prefix => binding.bindings.matches_prefix_key(key),
+            BindingDispatch::Direct => binding.bindings.matches_direct_key(&key),
+            BindingDispatch::Prefix => binding.bindings.matches_prefix_key(&key),
         })
         .cloned()
 }
@@ -438,7 +439,12 @@ pub(super) fn handle_navigate_reserved_key(state: &mut AppState, key: TerminalKe
         }
     }
 
-    if state.keybinds.navigate.workspace_up.matches_direct_key(key) {
+    if state
+        .keybinds
+        .navigate
+        .workspace_up
+        .matches_direct_key(&key)
+    {
         state.move_selected_workspace_by_visible_delta(-1);
         return true;
     }
@@ -446,24 +452,24 @@ pub(super) fn handle_navigate_reserved_key(state: &mut AppState, key: TerminalKe
         .keybinds
         .navigate
         .workspace_down
-        .matches_direct_key(key)
+        .matches_direct_key(&key)
     {
         state.move_selected_workspace_by_visible_delta(1);
         return true;
     }
-    if state.keybinds.navigate.pane_left.matches_direct_key(key) {
+    if state.keybinds.navigate.pane_left.matches_direct_key(&key) {
         state.navigate_pane(NavDirection::Left);
         return true;
     }
-    if state.keybinds.navigate.pane_down.matches_direct_key(key) {
+    if state.keybinds.navigate.pane_down.matches_direct_key(&key) {
         state.navigate_pane(NavDirection::Down);
         return true;
     }
-    if state.keybinds.navigate.pane_up.matches_direct_key(key) {
+    if state.keybinds.navigate.pane_up.matches_direct_key(&key) {
         state.navigate_pane(NavDirection::Up);
         return true;
     }
-    if state.keybinds.navigate.pane_right.matches_direct_key(key) {
+    if state.keybinds.navigate.pane_right.matches_direct_key(&key) {
         state.navigate_pane(NavDirection::Right);
         return true;
     }
@@ -477,12 +483,12 @@ pub(crate) fn handle_navigate_key(state: &mut AppState, key: KeyEvent) {
     state.update_dismissed = true;
     let terminal_key = TerminalKey::from(key);
 
-    if state.is_prefix_key(terminal_key) || key.code == KeyCode::Esc {
+    if state.is_prefix_key(&terminal_key) || key.code == KeyCode::Esc {
         leave_navigate_mode(state);
         return;
     }
 
-    if handle_navigate_reserved_key(state, terminal_key) {
+    if handle_navigate_reserved_key(state, terminal_key.clone()) {
         return;
     }
 
@@ -542,7 +548,7 @@ pub(crate) enum NavigateAction {
 
 fn indexed_navigation_action(
     state: &AppState,
-    key: TerminalKey,
+    key: &TerminalKey,
     dispatch: BindingDispatch,
 ) -> Option<NavigateAction> {
     let kb = &state.keybinds;
@@ -571,7 +577,7 @@ fn indexed_navigation_action(
 
 fn action_matches(
     bindings: &crate::config::ActionKeybinds,
-    key: TerminalKey,
+    key: &TerminalKey,
     dispatch: BindingDispatch,
 ) -> bool {
     match dispatch {
@@ -585,7 +591,7 @@ fn action_for_key(
     key: TerminalKey,
     dispatch: BindingDispatch,
 ) -> Option<NavigateAction> {
-    if let Some(action) = indexed_navigation_action(state, key, dispatch) {
+    if let Some(action) = indexed_navigation_action(state, &key, dispatch) {
         return Some(action);
     }
 
@@ -633,7 +639,7 @@ fn action_for_key(
         (&kb.composer, NavigateAction::OpenComposer),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
     ] {
-        if action_matches(bindings, key, dispatch) {
+        if action_matches(bindings, &key, dispatch) {
             return Some(action);
         }
     }

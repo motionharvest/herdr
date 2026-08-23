@@ -94,7 +94,7 @@ pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
 use std::os::fd::AsRawFd;
 use tokio::sync::mpsc;
 
-use crate::input::{parse_terminal_key_sequence, TerminalKey};
+use crate::input::{parse_terminal_key_sequence, TerminalKey, TextCommit};
 use crate::terminal_theme::{parse_default_color_response, DefaultColorKind, RgbColor};
 
 const ESC: u8 = 0x1b;
@@ -104,6 +104,7 @@ const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 #[derive(Debug)]
 pub enum RawInputEvent {
     Key(TerminalKey),
+    Text(TextCommit),
     Paste(String),
     Mouse(MouseEvent),
     OuterFocusGained,
@@ -121,6 +122,13 @@ pub(crate) struct RawInputFramer {
 }
 
 impl RawInputFramer {
+    #[allow(dead_code)] // used by the Windows reader port (upstream WP6)
+    pub(crate) fn for_host_input() -> Self {
+        Self {
+            byte_framer: RawInputByteFramer::for_host_input(),
+        }
+    }
+
     pub(crate) fn push(&mut self, data: &[u8]) -> Vec<RawInputEvent> {
         Self::events_from_chunks(self.byte_framer.push(data))
     }
@@ -129,15 +137,26 @@ impl RawInputFramer {
         Self::events_from_chunks(self.byte_framer.flush_timeout())
     }
 
+    #[allow(dead_code)] // used by the Windows reader port (upstream WP6)
+    pub(crate) fn has_pending_input(&self) -> bool {
+        self.byte_framer.has_pending_input()
+    }
+
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port (upstream WP6)
+    pub(crate) fn has_pending_bracketed_paste(&self) -> bool {
+        self.byte_framer.has_pending_bracketed_paste()
+    }
+
     fn events_from_chunks(chunks: Vec<Vec<u8>>) -> Vec<RawInputEvent> {
         chunks
             .into_iter()
             .filter_map(|chunk| {
                 if chunk.as_slice() == [ESC] {
-                    return Some(RawInputEvent::Key(TerminalKey::new(
-                        crossterm::event::KeyCode::Esc,
-                        KeyModifiers::empty(),
-                    )));
+                    return Some(RawInputEvent::Key(
+                        TerminalKey::new(crossterm::event::KeyCode::Esc, KeyModifiers::empty())
+                            .with_vt_bytes(chunk),
+                    ));
                 }
                 extract_one_event(&chunk).map(|(event, _consumed)| {
                     tracing::debug!(raw_bytes = ?chunk, event = ?event, "raw input event parsed");
@@ -156,9 +175,28 @@ pub(crate) struct RawInputByteFramer {
 }
 
 impl RawInputByteFramer {
+    /// Host-input framing keeps the fork's default policy; the fork has no
+    /// `platform::capabilities()` capability table to consult.
+    #[allow(dead_code)] // used by the Windows reader port (upstream WP6)
+    pub(crate) fn for_host_input() -> Self {
+        Self::default()
+    }
+
     pub(crate) fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         self.buffer.extend_from_slice(data);
         self.drain_available_chunks()
+    }
+
+    #[allow(dead_code)] // used by the Windows reader port (upstream WP6)
+    pub(crate) fn has_pending_input(&self) -> bool {
+        !self.buffer.is_empty()
+    }
+
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port (upstream WP6)
+    pub(crate) fn has_pending_bracketed_paste(&self) -> bool {
+        self.buffer.starts_with(BRACKETED_PASTE_START)
+            && find_subsequence(&self.buffer, BRACKETED_PASTE_END).is_none()
     }
 
     pub(crate) fn flush_timeout(&mut self) -> Vec<Vec<u8>> {
@@ -484,7 +522,9 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
 
     let consumed = first_complete_utf8_char_len(buffer)?;
     let text = std::str::from_utf8(&buffer[..consumed]).ok()?;
-    let key = parse_terminal_key_sequence(text)?;
+    let key = parse_terminal_key_sequence(text)?
+        .with_text_commit()
+        .with_vt_bytes(buffer[..consumed].to_vec());
     Some((RawInputEvent::Key(key), consumed))
 }
 

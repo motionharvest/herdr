@@ -1329,33 +1329,55 @@ impl App {
         for event in events {
             let previous_mode = self.state.mode;
             match event {
-                crate::raw_input::RawInputEvent::Key(key) => {
-                    let key_id = repeat_key_identity(&key);
-                    match key.kind {
-                        crossterm::event::KeyEventKind::Press => {
-                            if input::agent_table_delete_intercept(&mut self.state, key) {
-                                self.suppressed_repeat_keys.insert(key_id);
-                            } else if self.state.mode == Mode::Terminal {
+                crate::raw_input::RawInputEvent::Key(first) => {
+                    let key_id = repeat_key_identity(&first);
+                    // A grouped event with repeat_count > 1 expands into one
+                    // press followed by repeat events so terminal and
+                    // non-terminal routing see the same per-press semantics.
+                    let grouped = if first.kind == crossterm::event::KeyEventKind::Press {
+                        usize::from(first.repeat_count.max(1))
+                    } else {
+                        1
+                    };
+                    let first = first.with_repeat_count(1);
+                    for index in 0..grouped {
+                        let key = if index == 0 {
+                            first.clone()
+                        } else {
+                            first
+                                .clone()
+                                .with_kind(crossterm::event::KeyEventKind::Repeat)
+                        };
+                        match key.kind {
+                            crossterm::event::KeyEventKind::Press => {
+                                if input::agent_table_delete_intercept(&mut self.state, key.clone())
+                                {
+                                    self.suppressed_repeat_keys.insert(key_id);
+                                } else if self.state.mode == Mode::Terminal {
+                                    self.suppressed_repeat_keys.remove(&key_id);
+                                    self.handle_terminal_key_headless(key);
+                                } else {
+                                    self.suppressed_repeat_keys.insert(key_id);
+                                    self.handle_non_terminal_key(key);
+                                }
+                            }
+                            crossterm::event::KeyEventKind::Repeat => {
+                                if self.state.mode == Mode::Terminal
+                                    && !self.suppressed_repeat_keys.contains(&key_id)
+                                {
+                                    self.handle_terminal_key_headless(key);
+                                }
+                                // Repeats in non-terminal modes are ignored
+                                // (same as monolithic behavior).
+                            }
+                            crossterm::event::KeyEventKind::Release => {
                                 self.suppressed_repeat_keys.remove(&key_id);
-                                self.handle_terminal_key_headless(key);
-                            } else {
-                                self.suppressed_repeat_keys.insert(key_id);
-                                self.handle_non_terminal_key(key);
                             }
-                        }
-                        crossterm::event::KeyEventKind::Repeat => {
-                            if self.state.mode == Mode::Terminal
-                                && !self.suppressed_repeat_keys.contains(&key_id)
-                            {
-                                self.handle_terminal_key_headless(key);
-                            }
-                            // Repeats in non-terminal modes are ignored
-                            // (same as monolithic behavior).
-                        }
-                        crossterm::event::KeyEventKind::Release => {
-                            self.suppressed_repeat_keys.remove(&key_id);
                         }
                     }
+                }
+                crate::raw_input::RawInputEvent::Text(text) => {
+                    self.handle_text_commit_headless(text.as_str());
                 }
                 crate::raw_input::RawInputEvent::Mouse(mouse) => {
                     if self.state.mouse_capture {
@@ -1396,6 +1418,34 @@ impl App {
                 crate::raw_input::RawInputEvent::Unsupported => {}
             }
             self.sync_prefix_input_source(previous_mode);
+        }
+    }
+
+    /// Handles committed text (IME output or grouped key text) for the headless
+    /// server. Committed text skips key routing and lands as raw bytes in the
+    /// focused terminal, or as inserted text in the active composer input.
+    fn handle_text_commit_headless(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if self.state.mode == Mode::Composer {
+            self.state.composer.task.insert_str(text);
+            return;
+        }
+        if self.state.mode != Mode::Terminal {
+            return;
+        }
+
+        self.state.clear_selection();
+        self.selection_autoscroll_deadline = None;
+        self.state.update_dismissed = true;
+        if let Some(ws_idx) = self.state.active {
+            if let Some(runtime) = self
+                .state
+                .focused_runtime_in_workspace(&self.terminal_runtimes, ws_idx)
+            {
+                let _ = runtime.try_send_bytes(bytes::Bytes::copy_from_slice(text.as_bytes()));
+            }
         }
     }
 
@@ -3413,6 +3463,120 @@ last_pane = "prefix+tab"
         app.route_client_input(vec![0x0c]);
         assert_eq!(app.state.mode, Mode::Terminal);
         assert_eq!(rx.recv().await.unwrap(), bytes::Bytes::from(vec![0x0c]));
+    }
+
+    #[tokio::test]
+    async fn route_client_events_expand_grouped_key_repeats_to_focused_pane() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("test");
+        let focused = workspace.focused_pane_id().unwrap();
+        let (runtime, mut rx) = TerminalRuntime::test_with_channel(80, 24);
+        workspace.tabs[0].runtimes.insert(focused, runtime);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        let grouped = crate::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
+            .with_repeat_count(3);
+        app.route_client_events(vec![crate::raw_input::RawInputEvent::Key(grouped)], true);
+
+        let mut sent = Vec::new();
+        sent.extend_from_slice(&rx.recv().await.unwrap());
+        while let Ok(chunk) = rx.try_recv() {
+            sent.extend_from_slice(&chunk);
+        }
+        assert_eq!(sent, b"xxx");
+    }
+
+    #[tokio::test]
+    async fn route_client_events_grouped_release_is_routed_once() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("test");
+        let focused = workspace.focused_pane_id().unwrap();
+        let (runtime, mut rx) = TerminalRuntime::test_with_channel(80, 24);
+        workspace.tabs[0].runtimes.insert(focused, runtime);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        let grouped_release =
+            crate::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
+                .with_kind(crossterm::event::KeyEventKind::Release)
+                .with_repeat_count(3);
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Key(grouped_release)],
+            true,
+        );
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn route_client_events_grouped_repeats_fire_per_press_in_navigate_mode() {
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Navigate;
+
+        // Pane focus movement keys fire once per expanded repeat; asserting on
+        // the suppressed-repeat bookkeeping keeps this a pure state test.
+        let grouped = crate::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
+            .with_repeat_count(2);
+        app.route_client_events(vec![crate::raw_input::RawInputEvent::Key(grouped)], true);
+
+        let key_id = (KeyCode::Char('x'), KeyModifiers::empty());
+        assert!(app.suppressed_repeat_keys.contains(&key_id));
+
+        let release = crate::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
+            .with_kind(crossterm::event::KeyEventKind::Release);
+        app.route_client_events(vec![crate::raw_input::RawInputEvent::Key(release)], true);
+        assert!(!app.suppressed_repeat_keys.contains(&key_id));
+    }
+
+    #[test]
+    fn route_client_events_commit_text_into_composer_task() {
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Composer;
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("你好"),
+            )],
+            true,
+        );
+
+        assert_eq!(app.state.composer.task.text(), "你好");
+    }
+
+    #[tokio::test]
+    async fn route_client_events_commit_text_bytes_to_focused_pane() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("test");
+        let focused = workspace.focused_pane_id().unwrap();
+        let (runtime, mut rx) = TerminalRuntime::test_with_channel(80, 24);
+        workspace.tabs[0].runtimes.insert(focused, runtime);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("λ"),
+            )],
+            true,
+        );
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            bytes::Bytes::from_static(b"\xce\xbb")
+        );
     }
 
     #[tokio::test]

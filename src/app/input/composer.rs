@@ -50,7 +50,7 @@ pub(crate) fn handle_composer_key(
 ) -> ComposerKeyOutcome {
     // The prefix works from the band the way it works from a pane, so the rest
     // of herdr stays one keystroke away from a half-typed task.
-    if state.is_prefix_key(raw_key) {
+    if state.is_prefix_key(&raw_key) {
         state.mode = Mode::Prefix;
         return ComposerKeyOutcome::Edited;
     }

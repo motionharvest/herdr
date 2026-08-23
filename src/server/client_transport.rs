@@ -14,9 +14,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::protocol::{
-    self, AttachScrollDirection, AttachScrollSource, ClientKeybindings, ClientLaunchMode,
-    ClientMessage, RenderEncoding, ServerMessage, MAX_CLIPBOARD_IMAGE_PAYLOAD, MAX_FRAME_SIZE,
-    MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
+    self, AttachScrollDirection, AttachScrollSource, ClientInputEvent, ClientKeybindings,
+    ClientLaunchMode, ClientMessage, RenderEncoding, ServerMessage, MAX_CLIPBOARD_IMAGE_PAYLOAD,
+    MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
 };
 
 /// Minimum accepted attached client size.
@@ -35,6 +35,9 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Maximum input payload size (bytes) for a single `ClientMessage::Input`.
 const MAX_INPUT_PAYLOAD: usize = 1024 * 1024; // 1 MB
+
+/// Maximum number of expanded input events per `ClientMessage::InputEvents` batch.
+const MAX_INPUT_EVENT_BATCH: usize = 4096;
 
 /// Channels owned by the server side of a client writer thread.
 #[derive(Clone, Debug)]
@@ -62,6 +65,17 @@ pub(crate) enum ServerEvent {
     },
     /// A client sent an input message.
     ClientInput { client_id: u64, data: Vec<u8> },
+    /// A client sent structured input events.
+    ClientInputEvents {
+        client_id: u64,
+        events: Vec<crate::protocol::ClientInputEvent>,
+    },
+    /// A fully decoded interactive paste exceeded the text-input limit.
+    ClientPasteRejected {
+        client_id: u64,
+        size: usize,
+        max: usize,
+    },
     /// A client sent local clipboard image bytes to paste into a remote pane.
     ClientClipboardImage {
         client_id: u64,
@@ -107,6 +121,70 @@ pub(crate) fn clamp_terminal_size(cols: u16, rows: u16) -> (u16, u16) {
     let clamped_cols = cols.max(MIN_CLIENT_COLS);
     let clamped_rows = rows.max(MIN_CLIENT_ROWS);
     (clamped_cols, clamped_rows)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputEventLimit {
+    WithinLimits,
+    TooManyEvents,
+    PasteTooLarge { size: usize },
+    InputPayloadTooLarge { size: usize },
+}
+
+fn input_event_limit(events: &[ClientInputEvent]) -> InputEventLimit {
+    let mut expanded_events = 0usize;
+    let mut paste_bytes = 0usize;
+    let mut input_bytes = 0usize;
+    for event in events {
+        expanded_events = expanded_events.saturating_add(match event {
+            ClientInputEvent::Key { repeat_count, .. } => usize::from((*repeat_count).max(1)),
+            _ => 1,
+        });
+        match event {
+            ClientInputEvent::Key {
+                repeat_count,
+                generated_text,
+                source,
+                ..
+            } => {
+                if let Some(text) = generated_text {
+                    input_bytes = input_bytes.saturating_add(
+                        text.len()
+                            .saturating_mul(usize::from((*repeat_count).max(1))),
+                    );
+                }
+                if let crate::protocol::ClientKeySource::Vt { bytes } = source {
+                    input_bytes = input_bytes.saturating_add(bytes.len());
+                }
+            }
+            ClientInputEvent::TextCommit(text) => {
+                input_bytes = input_bytes.saturating_add(text.len());
+            }
+            ClientInputEvent::Paste { text } => {
+                paste_bytes = paste_bytes.saturating_add(text.len());
+            }
+            ClientInputEvent::Mouse { .. }
+            | ClientInputEvent::FocusGained
+            | ClientInputEvent::FocusLost => {}
+        }
+    }
+
+    if expanded_events > MAX_INPUT_EVENT_BATCH {
+        return InputEventLimit::TooManyEvents;
+    }
+
+    let payload_bytes = paste_bytes.saturating_add(input_bytes);
+    if payload_bytes <= MAX_INPUT_PAYLOAD {
+        InputEventLimit::WithinLimits
+    } else if input_bytes == 0 {
+        InputEventLimit::PasteTooLarge {
+            size: payload_bytes,
+        }
+    } else {
+        InputEventLimit::InputPayloadTooLarge {
+            size: payload_bytes,
+        }
+    }
 }
 
 fn parse_client_keybindings(
@@ -411,6 +489,45 @@ fn client_read_loop(
                     ServerEvent::ClientInput { client_id, data }
                 }
             }
+            ClientMessage::InputEvents { events } => match input_event_limit(&events) {
+                InputEventLimit::WithinLimits => {
+                    ServerEvent::ClientInputEvents { client_id, events }
+                }
+                InputEventLimit::TooManyEvents => {
+                    warn!(
+                        client_id,
+                        count = events.len(),
+                        "oversized input event batch from client, closing"
+                    );
+                    let _ = server_event_tx
+                        .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                    break;
+                }
+                InputEventLimit::PasteTooLarge { size } => {
+                    warn!(
+                        client_id,
+                        size,
+                        max = MAX_INPUT_PAYLOAD,
+                        "oversized structured paste from client, rejecting"
+                    );
+                    ServerEvent::ClientPasteRejected {
+                        client_id,
+                        size,
+                        max: MAX_INPUT_PAYLOAD,
+                    }
+                }
+                InputEventLimit::InputPayloadTooLarge { size } => {
+                    warn!(
+                        client_id,
+                        size,
+                        max = MAX_INPUT_PAYLOAD,
+                        "oversized structured input payload from client, closing"
+                    );
+                    let _ = server_event_tx
+                        .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                    break;
+                }
+            },
             ClientMessage::ClipboardImage { extension, data } => {
                 if data.len() > MAX_CLIPBOARD_IMAGE_PAYLOAD {
                     warn!(
@@ -687,6 +804,228 @@ mod tests {
             .join()
             .expect("read thread join")
             .expect("read thread result");
+    }
+
+    #[test]
+    fn client_read_loop_forwards_input_events() {
+        let (mut client_stream, server_stream) = UnixStream::pair().expect("socket pair");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let read_quit = should_quit.clone();
+        let handle = std::thread::spawn(move || {
+            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+        });
+        let events = vec![
+            ClientInputEvent::Key {
+                code: crate::protocol::ClientKeyCode::Enter,
+                modifiers: 0,
+                kind: crate::protocol::ClientKeyKind::Press,
+                repeat_count: 1,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Synthesized,
+            },
+            ClientInputEvent::FocusGained,
+        ];
+
+        protocol::write_message(
+            &mut client_stream,
+            &ClientMessage::InputEvents {
+                events: events.clone(),
+            },
+        )
+        .expect("write input events");
+
+        match server_event_rx
+            .blocking_recv()
+            .expect("client input events event")
+        {
+            ServerEvent::ClientInputEvents {
+                client_id,
+                events: actual,
+            } => {
+                assert_eq!(client_id, 7);
+                assert_eq!(actual, events);
+            }
+            other => panic!("expected ClientInputEvents, got {other:?}"),
+        }
+
+        drop(client_stream);
+        should_quit.store(true, Ordering::Release);
+        handle
+            .join()
+            .expect("read thread join")
+            .expect("read thread result");
+    }
+
+    #[test]
+    fn client_read_loop_rejects_oversized_input_event_batch() {
+        let (mut client_stream, server_stream) = UnixStream::pair().expect("socket pair");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let read_quit = should_quit.clone();
+        let handle = std::thread::spawn(move || {
+            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+        });
+
+        protocol::write_message(
+            &mut client_stream,
+            &ClientMessage::InputEvents {
+                events: vec![ClientInputEvent::FocusGained; MAX_INPUT_EVENT_BATCH + 1],
+            },
+        )
+        .expect("write oversized input events");
+
+        match server_event_rx
+            .blocking_recv()
+            .expect("client disconnected event")
+        {
+            ServerEvent::ClientDisconnected { client_id } => assert_eq!(client_id, 7),
+            other => panic!("expected ClientDisconnected, got {other:?}"),
+        }
+
+        drop(client_stream);
+        should_quit.store(true, Ordering::Release);
+        handle
+            .join()
+            .expect("read thread join")
+            .expect("read thread result");
+    }
+
+    #[test]
+    fn client_read_loop_rejects_oversized_input_event_paste() {
+        let (mut client_stream, server_stream) = UnixStream::pair().expect("socket pair");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let read_quit = should_quit.clone();
+        let handle = std::thread::spawn(move || {
+            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+        });
+
+        let maximum = vec![
+            ClientInputEvent::Paste {
+                text: "x".repeat(MAX_INPUT_PAYLOAD / 2),
+            },
+            ClientInputEvent::Paste {
+                text: "y".repeat(MAX_INPUT_PAYLOAD - (MAX_INPUT_PAYLOAD / 2)),
+            },
+        ];
+        protocol::write_message(
+            &mut client_stream,
+            &ClientMessage::InputEvents {
+                events: maximum.clone(),
+            },
+        )
+        .expect("write maximum-size structured paste");
+
+        match server_event_rx
+            .blocking_recv()
+            .expect("maximum-size structured paste event")
+        {
+            ServerEvent::ClientInputEvents { client_id, events } => {
+                assert_eq!(client_id, 7);
+                assert_eq!(events, maximum);
+            }
+            other => panic!("expected maximum-size ClientInputEvents, got {other:?}"),
+        }
+
+        let oversized = vec![
+            ClientInputEvent::FocusGained,
+            ClientInputEvent::Paste {
+                text: "x".repeat(MAX_INPUT_PAYLOAD / 2),
+            },
+            ClientInputEvent::Paste {
+                text: "y".repeat(MAX_INPUT_PAYLOAD - (MAX_INPUT_PAYLOAD / 2) + 1),
+            },
+            ClientInputEvent::FocusLost,
+            ClientInputEvent::Paste {
+                text: "tail".to_owned(),
+            },
+        ];
+        protocol::write_message(
+            &mut client_stream,
+            &ClientMessage::InputEvents { events: oversized },
+        )
+        .expect("write oversized structured paste");
+
+        match server_event_rx
+            .blocking_recv()
+            .expect("oversized structured paste rejection")
+        {
+            ServerEvent::ClientPasteRejected {
+                client_id,
+                size,
+                max,
+            } => {
+                assert_eq!(client_id, 7);
+                assert_eq!(size, MAX_INPUT_PAYLOAD + 5);
+                assert_eq!(max, MAX_INPUT_PAYLOAD);
+            }
+            other => panic!("expected ClientPasteRejected, got {other:?}"),
+        }
+
+        let valid = vec![ClientInputEvent::FocusGained];
+        protocol::write_message(
+            &mut client_stream,
+            &ClientMessage::InputEvents {
+                events: valid.clone(),
+            },
+        )
+        .expect("write valid structured input after rejection");
+
+        match server_event_rx
+            .blocking_recv()
+            .expect("structured input after rejection")
+        {
+            ServerEvent::ClientInputEvents { client_id, events } => {
+                assert_eq!(client_id, 7);
+                assert_eq!(events, valid);
+            }
+            other => panic!("expected ClientInputEvents after rejection, got {other:?}"),
+        }
+
+        drop(client_stream);
+        should_quit.store(true, Ordering::Release);
+        handle
+            .join()
+            .expect("read thread join")
+            .expect("read thread result");
+    }
+
+    #[test]
+    fn structured_input_limits_charge_grouped_repeats_and_text_payloads() {
+        let grouped = ClientInputEvent::Key {
+            code: crate::protocol::ClientKeyCode::Char('x'),
+            modifiers: 0,
+            kind: crate::protocol::ClientKeyKind::Press,
+            repeat_count: (MAX_INPUT_EVENT_BATCH + 1) as u16,
+            generated_text: None,
+            source: crate::protocol::ClientKeySource::Synthesized,
+        };
+        assert_eq!(
+            input_event_limit(&[grouped]),
+            InputEventLimit::TooManyEvents
+        );
+
+        let repeated_text = ClientInputEvent::Key {
+            code: crate::protocol::ClientKeyCode::Char('x'),
+            modifiers: 0,
+            kind: crate::protocol::ClientKeyKind::Press,
+            repeat_count: MAX_INPUT_EVENT_BATCH as u16,
+            generated_text: Some("x".repeat((MAX_INPUT_PAYLOAD / MAX_INPUT_EVENT_BATCH) + 1)),
+            source: crate::protocol::ClientKeySource::Synthesized,
+        };
+        assert!(matches!(
+            input_event_limit(&[repeated_text]),
+            InputEventLimit::InputPayloadTooLarge { size } if size > MAX_INPUT_PAYLOAD
+        ));
+
+        let text = ClientInputEvent::TextCommit("x".repeat(MAX_INPUT_PAYLOAD + 1));
+        assert_eq!(
+            input_event_limit(&[text]),
+            InputEventLimit::InputPayloadTooLarge {
+                size: MAX_INPUT_PAYLOAD + 1
+            }
+        );
     }
 
     #[test]

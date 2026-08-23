@@ -17,7 +17,7 @@ fn is_modifier_only_key(code: &KeyCode) -> bool {
     matches!(code, KeyCode::Modifier(_))
 }
 
-fn is_ctrl_q(key: TerminalKey) -> bool {
+fn is_ctrl_q(key: &TerminalKey) -> bool {
     key.code == KeyCode::Char('q') && key.modifiers == crossterm::event::KeyModifiers::CONTROL
 }
 
@@ -38,7 +38,7 @@ impl App {
 
         let key_event = key.as_key_event();
 
-        if is_ctrl_q(key) {
+        if is_ctrl_q(&key) {
             if key_event.kind == crossterm::event::KeyEventKind::Release {
                 return None;
             }
@@ -48,7 +48,9 @@ impl App {
                 return None;
             }
             self.state.arm_detach_confirm(now);
-        } else if let Some(action) = super::terminal_direct_navigation_action(&self.state, key) {
+        } else if let Some(action) =
+            super::terminal_direct_navigation_action(&self.state, key.clone())
+        {
             if action == super::navigate::NavigateAction::Detach
                 && key_event.kind == crossterm::event::KeyEventKind::Release
             {
@@ -84,13 +86,13 @@ impl App {
             }
             return None;
         }
-        if !is_ctrl_q(key) {
+        if !is_ctrl_q(&key) {
             self.state.clear_detach_confirm();
         }
 
         if let Some(binding) = super::navigate::command_for_key(
             &self.state,
-            key,
+            key.clone(),
             super::navigate::BindingDispatch::Direct,
         ) {
             debug!(
@@ -104,7 +106,7 @@ impl App {
             return None;
         }
 
-        if self.state.is_prefix_key(key) {
+        if self.state.is_prefix_key(&key) {
             self.state.mode = Mode::Prefix;
             return None;
         }
@@ -166,7 +168,7 @@ impl App {
 
         rt.scroll_reset();
         let protocol = rt.keyboard_protocol();
-        let bytes = rt.encode_terminal_key(key);
+        let bytes = rt.encode_terminal_key(key.clone());
 
         if matches!(key_event.code, KeyCode::Esc)
             || key_event
@@ -211,7 +213,7 @@ impl App {
     }
 
     pub(super) async fn handle_terminal_key(&mut self, key: TerminalKey) {
-        if self.try_bridge_clipboard_image_from_key(key).await {
+        if self.try_bridge_clipboard_image_from_key(key.clone()).await {
             return;
         }
 
@@ -909,7 +911,7 @@ mod tests {
         app.state.keybinds.detach = crate::config::ActionKeybinds::direct("ctrl+q");
 
         let ctrl_q = TerminalKey::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
-        app.handle_terminal_key_headless(ctrl_q);
+        app.handle_terminal_key_headless(ctrl_q.clone());
         let _ = rx.try_recv().expect("first ctrl+q should reach pane");
 
         app.handle_terminal_key_headless(ctrl_q);

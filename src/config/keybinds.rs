@@ -118,7 +118,7 @@ impl ResolvedBinding {
         key_event_matches_combo(key, self.trigger.combo())
     }
 
-    fn matches_terminal_key(&self, key: TerminalKey) -> bool {
+    fn matches_terminal_key(&self, key: &TerminalKey) -> bool {
         terminal_key_matches_combo(key, self.trigger.combo())
     }
 }
@@ -167,13 +167,13 @@ impl ActionKeybinds {
             .any(|binding| binding.trigger.is_prefix() && binding.matches_key_event(key))
     }
 
-    pub fn matches_prefix_key(&self, key: TerminalKey) -> bool {
+    pub fn matches_prefix_key(&self, key: &TerminalKey) -> bool {
         self.bindings
             .iter()
             .any(|binding| binding.trigger.is_prefix() && binding.matches_terminal_key(key))
     }
 
-    pub fn matches_direct_key(&self, key: TerminalKey) -> bool {
+    pub fn matches_direct_key(&self, key: &TerminalKey) -> bool {
         self.bindings
             .iter()
             .any(|binding| binding.trigger.is_direct() && binding.matches_terminal_key(key))
@@ -223,7 +223,7 @@ pub struct IndexedKeybind {
 }
 
 impl IndexedKeybind {
-    pub fn matched_index(&self, key: TerminalKey) -> Option<usize> {
+    pub fn matched_index(&self, key: &TerminalKey) -> Option<usize> {
         let KeyCode::Char(c @ '1'..='9') = key.code else {
             return None;
         };
@@ -1052,7 +1052,7 @@ pub fn key_event_matches_combo(key: &KeyEvent, combo: KeyCombo) -> bool {
     key_parts_match_combo(key.code, key.modifiers, None, combo)
 }
 
-pub fn terminal_key_matches_combo(key: TerminalKey, combo: KeyCombo) -> bool {
+pub fn terminal_key_matches_combo(key: &TerminalKey, combo: KeyCombo) -> bool {
     key_parts_match_combo(key.code, key.modifiers, key.shifted_codepoint, combo)
 }
 
@@ -1310,20 +1310,20 @@ prefix = "ö"
     fn shifted_letter_binding_matches_legacy_uppercase_key_event() {
         let bindings = ActionKeybinds::prefix("shift+n");
         assert!(bindings
-            .matches_prefix_key(TerminalKey::new(KeyCode::Char('N'), KeyModifiers::empty(),)));
+            .matches_prefix_key(&TerminalKey::new(KeyCode::Char('N'), KeyModifiers::empty(),)));
     }
 
     #[test]
     fn shifted_letter_direct_binding_matches_legacy_uppercase_key_event() {
         let bindings = ActionKeybinds::direct("shift+n");
         assert!(bindings
-            .matches_direct_key(TerminalKey::new(KeyCode::Char('N'), KeyModifiers::empty(),)));
+            .matches_direct_key(&TerminalKey::new(KeyCode::Char('N'), KeyModifiers::empty(),)));
     }
 
     #[test]
     fn shifted_letter_binding_matches_modern_modified_key_event() {
         let bindings = ActionKeybinds::direct("cmd+shift+j");
-        assert!(bindings.matches_direct_key(TerminalKey::new(
+        assert!(bindings.matches_direct_key(&TerminalKey::new(
             KeyCode::Char('J'),
             KeyModifiers::SUPER | KeyModifiers::SHIFT,
         )));
@@ -1333,32 +1333,32 @@ prefix = "ö"
     fn legacy_uppercase_key_event_does_not_match_unshifted_letter_binding() {
         let bindings = ActionKeybinds::prefix("n");
         assert!(!bindings
-            .matches_prefix_key(TerminalKey::new(KeyCode::Char('N'), KeyModifiers::empty(),)));
+            .matches_prefix_key(&TerminalKey::new(KeyCode::Char('N'), KeyModifiers::empty(),)));
     }
 
     #[test]
     fn legacy_uppercase_shift_fallback_is_limited_to_ascii_letters() {
         let shifted_number = ActionKeybinds::prefix("shift+1");
         assert!(!shifted_number
-            .matches_prefix_key(TerminalKey::new(KeyCode::Char('!'), KeyModifiers::empty(),)));
+            .matches_prefix_key(&TerminalKey::new(KeyCode::Char('!'), KeyModifiers::empty(),)));
 
         let shifted_non_ascii = ActionKeybinds::prefix("shift+ö");
         assert!(!shifted_non_ascii
-            .matches_prefix_key(TerminalKey::new(KeyCode::Char('Ö'), KeyModifiers::empty(),)));
+            .matches_prefix_key(&TerminalKey::new(KeyCode::Char('Ö'), KeyModifiers::empty(),)));
     }
 
     #[test]
     fn shifted_tab_inputs_match_backtab_canonical_binding() {
         let bindings = ActionKeybinds::prefix("shift+tab");
         assert!(
-            bindings.matches_prefix_key(TerminalKey::new(KeyCode::BackTab, KeyModifiers::empty()))
+            bindings.matches_prefix_key(&TerminalKey::new(KeyCode::BackTab, KeyModifiers::empty()))
         );
         assert!(
-            bindings.matches_prefix_key(TerminalKey::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+            bindings.matches_prefix_key(&TerminalKey::new(KeyCode::BackTab, KeyModifiers::SHIFT))
         );
-        assert!(bindings.matches_prefix_key(TerminalKey::new(KeyCode::Tab, KeyModifiers::SHIFT)));
+        assert!(bindings.matches_prefix_key(&TerminalKey::new(KeyCode::Tab, KeyModifiers::SHIFT)));
         assert!(!ActionKeybinds::prefix("tab")
-            .matches_prefix_key(TerminalKey::new(KeyCode::Tab, KeyModifiers::SHIFT)));
+            .matches_prefix_key(&TerminalKey::new(KeyCode::Tab, KeyModifiers::SHIFT)));
         assert_eq!(
             normalize_key_combo((KeyCode::Tab, KeyModifiers::CONTROL | KeyModifiers::SHIFT)),
             (KeyCode::BackTab, KeyModifiers::CONTROL)
@@ -1380,15 +1380,15 @@ prefix = "ö"
     #[test]
     fn shifted_punctuation_matches_enhanced_input() {
         let help = ActionKeybinds::prefix("?");
-        assert!(help.matches_prefix_key(TerminalKey::new(KeyCode::Char('?'), KeyModifiers::SHIFT)));
+        assert!(help.matches_prefix_key(&TerminalKey::new(KeyCode::Char('?'), KeyModifiers::SHIFT)));
         assert!(help.matches_prefix_key(
-            TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
+            &TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
                 .with_shifted_codepoint('?' as u32)
         ));
 
         let bang = ActionKeybinds::prefix("!");
         assert!(bang.matches_prefix_key(
-            TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
+            &TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
                 .with_shifted_codepoint('!' as u32)
         ));
     }
@@ -1439,12 +1439,12 @@ navigate_pane_down = "ctrl+j"
         assert!(keybinds
             .navigate
             .workspace_up
-            .matches_direct_key(TerminalKey::new(KeyCode::Char('j'), KeyModifiers::empty())));
+            .matches_direct_key(&TerminalKey::new(KeyCode::Char('j'), KeyModifiers::empty())));
         assert!(keybinds.navigate.workspace_down.bindings.is_empty());
         assert!(keybinds
             .navigate
             .pane_down
-            .matches_direct_key(TerminalKey::new(KeyCode::Char('j'), KeyModifiers::CONTROL)));
+            .matches_direct_key(&TerminalKey::new(KeyCode::Char('j'), KeyModifiers::CONTROL)));
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("kept keys.navigate_workspace_up")
                 && diag.contains("disabled keys.navigate_workspace_down")
@@ -1490,7 +1490,7 @@ navigate_pane_down = "j"
         assert!(keybinds
             .navigate
             .pane_down
-            .matches_direct_key(TerminalKey::new(KeyCode::Char('j'), KeyModifiers::empty())));
+            .matches_direct_key(&TerminalKey::new(KeyCode::Char('j'), KeyModifiers::empty())));
     }
 
     #[test]

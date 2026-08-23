@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -59,6 +59,286 @@ pub enum ClientLaunchMode {
     App,
     /// Direct terminal attach client.
     TerminalAttach,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientKeyKind {
+    Press,
+    Repeat,
+    Release,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientKeyCode {
+    Backspace,
+    Enter,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Tab,
+    BackTab,
+    Delete,
+    Insert,
+    Esc,
+    Char(char),
+    F(u8),
+    Null,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientMouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientMouseKind {
+    Down(ClientMouseButton),
+    Up(ClientMouseButton),
+    Drag(ClientMouseButton),
+    Moved,
+    ScrollUp,
+    ScrollDown,
+    ScrollLeft,
+    ScrollRight,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientInputEvent {
+    Key {
+        code: ClientKeyCode,
+        modifiers: u8,
+        kind: ClientKeyKind,
+        repeat_count: u16,
+        generated_text: Option<String>,
+        source: ClientKeySource,
+    },
+    TextCommit(String),
+    Mouse {
+        kind: ClientMouseKind,
+        column: u16,
+        row: u16,
+        modifiers: u8,
+    },
+    Paste {
+        text: String,
+    },
+    FocusGained,
+    FocusLost,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientKeySource {
+    Synthesized,
+    Vt {
+        bytes: Vec<u8>,
+    },
+    WindowsConsole {
+        record: crate::input::WindowsKeyRecord,
+    },
+}
+
+impl ClientKeyKind {
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port; kept for the protocol tests
+    pub(crate) fn from_crossterm(kind: crossterm::event::KeyEventKind) -> Self {
+        match kind {
+            crossterm::event::KeyEventKind::Press => Self::Press,
+            crossterm::event::KeyEventKind::Repeat => Self::Repeat,
+            crossterm::event::KeyEventKind::Release => Self::Release,
+        }
+    }
+
+    pub(crate) fn to_crossterm(self) -> crossterm::event::KeyEventKind {
+        match self {
+            Self::Press => crossterm::event::KeyEventKind::Press,
+            Self::Repeat => crossterm::event::KeyEventKind::Repeat,
+            Self::Release => crossterm::event::KeyEventKind::Release,
+        }
+    }
+}
+
+impl ClientKeyCode {
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port; kept for the protocol tests
+    pub(crate) fn from_crossterm(code: crossterm::event::KeyCode) -> Option<Self> {
+        use crossterm::event::KeyCode;
+        Some(match code {
+            KeyCode::Backspace => Self::Backspace,
+            KeyCode::Enter => Self::Enter,
+            KeyCode::Left => Self::Left,
+            KeyCode::Right => Self::Right,
+            KeyCode::Up => Self::Up,
+            KeyCode::Down => Self::Down,
+            KeyCode::Home => Self::Home,
+            KeyCode::End => Self::End,
+            KeyCode::PageUp => Self::PageUp,
+            KeyCode::PageDown => Self::PageDown,
+            KeyCode::Tab => Self::Tab,
+            KeyCode::BackTab => Self::BackTab,
+            KeyCode::Delete => Self::Delete,
+            KeyCode::Insert => Self::Insert,
+            KeyCode::Esc => Self::Esc,
+            KeyCode::Char(ch) => Self::Char(ch),
+            KeyCode::F(n) => Self::F(n),
+            KeyCode::Null => Self::Null,
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn to_crossterm(&self) -> crossterm::event::KeyCode {
+        use crossterm::event::KeyCode;
+        match self {
+            Self::Backspace => KeyCode::Backspace,
+            Self::Enter => KeyCode::Enter,
+            Self::Left => KeyCode::Left,
+            Self::Right => KeyCode::Right,
+            Self::Up => KeyCode::Up,
+            Self::Down => KeyCode::Down,
+            Self::Home => KeyCode::Home,
+            Self::End => KeyCode::End,
+            Self::PageUp => KeyCode::PageUp,
+            Self::PageDown => KeyCode::PageDown,
+            Self::Tab => KeyCode::Tab,
+            Self::BackTab => KeyCode::BackTab,
+            Self::Delete => KeyCode::Delete,
+            Self::Insert => KeyCode::Insert,
+            Self::Esc => KeyCode::Esc,
+            Self::Char(ch) => KeyCode::Char(*ch),
+            Self::F(n) => KeyCode::F(*n),
+            Self::Null => KeyCode::Null,
+        }
+    }
+}
+
+impl ClientMouseButton {
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port; kept for the protocol tests
+    pub(crate) fn from_crossterm(button: crossterm::event::MouseButton) -> Self {
+        match button {
+            crossterm::event::MouseButton::Left => Self::Left,
+            crossterm::event::MouseButton::Right => Self::Right,
+            crossterm::event::MouseButton::Middle => Self::Middle,
+        }
+    }
+
+    pub(crate) fn to_crossterm(self) -> crossterm::event::MouseButton {
+        match self {
+            Self::Left => crossterm::event::MouseButton::Left,
+            Self::Right => crossterm::event::MouseButton::Right,
+            Self::Middle => crossterm::event::MouseButton::Middle,
+        }
+    }
+}
+
+impl ClientMouseKind {
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port; kept for the protocol tests
+    pub(crate) fn from_crossterm(kind: crossterm::event::MouseEventKind) -> Option<Self> {
+        use crossterm::event::MouseEventKind;
+        Some(match kind {
+            MouseEventKind::Down(button) => Self::Down(ClientMouseButton::from_crossterm(button)),
+            MouseEventKind::Up(button) => Self::Up(ClientMouseButton::from_crossterm(button)),
+            MouseEventKind::Drag(button) => Self::Drag(ClientMouseButton::from_crossterm(button)),
+            MouseEventKind::Moved => Self::Moved,
+            MouseEventKind::ScrollUp => Self::ScrollUp,
+            MouseEventKind::ScrollDown => Self::ScrollDown,
+            MouseEventKind::ScrollLeft => Self::ScrollLeft,
+            MouseEventKind::ScrollRight => Self::ScrollRight,
+        })
+    }
+
+    pub(crate) fn to_crossterm(self) -> crossterm::event::MouseEventKind {
+        use crossterm::event::MouseEventKind;
+        match self {
+            Self::Down(button) => MouseEventKind::Down(button.to_crossterm()),
+            Self::Up(button) => MouseEventKind::Up(button.to_crossterm()),
+            Self::Drag(button) => MouseEventKind::Drag(button.to_crossterm()),
+            Self::Moved => MouseEventKind::Moved,
+            Self::ScrollUp => MouseEventKind::ScrollUp,
+            Self::ScrollDown => MouseEventKind::ScrollDown,
+            Self::ScrollLeft => MouseEventKind::ScrollLeft,
+            Self::ScrollRight => MouseEventKind::ScrollRight,
+        }
+    }
+}
+
+impl ClientInputEvent {
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port; kept for the protocol tests
+    pub(crate) fn from_crossterm(event: crossterm::event::Event) -> Option<Self> {
+        match event {
+            crossterm::event::Event::Key(key) => Some(Self::Key {
+                code: ClientKeyCode::from_crossterm(key.code)?,
+                modifiers: key.modifiers.bits(),
+                kind: ClientKeyKind::from_crossterm(key.kind),
+                repeat_count: 1,
+                generated_text: None,
+                source: ClientKeySource::Synthesized,
+            }),
+            crossterm::event::Event::Mouse(mouse) => Some(Self::Mouse {
+                kind: ClientMouseKind::from_crossterm(mouse.kind)?,
+                column: mouse.column,
+                row: mouse.row,
+                modifiers: mouse.modifiers.bits(),
+            }),
+            crossterm::event::Event::Paste(text) => Some(Self::Paste { text }),
+            crossterm::event::Event::FocusGained => Some(Self::FocusGained),
+            crossterm::event::Event::FocusLost => Some(Self::FocusLost),
+            crossterm::event::Event::Resize(_, _) => None,
+        }
+    }
+
+    pub(crate) fn to_raw_input_event(&self) -> crate::raw_input::RawInputEvent {
+        match self {
+            Self::Key {
+                code,
+                modifiers,
+                kind,
+                repeat_count,
+                generated_text,
+                source,
+            } => {
+                let mut key = crate::input::TerminalKey::new(
+                    code.to_crossterm(),
+                    crossterm::event::KeyModifiers::from_bits_truncate(*modifiers),
+                )
+                .with_generated_text(generated_text.clone());
+                key = match source {
+                    ClientKeySource::Synthesized => key,
+                    ClientKeySource::Vt { bytes } => key.with_vt_bytes(bytes.clone()),
+                    ClientKeySource::WindowsConsole { record } => key.with_windows_record(*record),
+                };
+                key = key
+                    .with_repeat_count(*repeat_count)
+                    .with_kind(kind.to_crossterm());
+                crate::raw_input::RawInputEvent::Key(key)
+            }
+            Self::TextCommit(text) => {
+                crate::raw_input::RawInputEvent::Text(crate::input::TextCommit::new(text.clone()))
+            }
+            Self::Mouse {
+                kind,
+                column,
+                row,
+                modifiers,
+            } => crate::raw_input::RawInputEvent::Mouse(crossterm::event::MouseEvent {
+                kind: kind.to_crossterm(),
+                column: *column,
+                row: *row,
+                modifiers: crossterm::event::KeyModifiers::from_bits_truncate(*modifiers),
+            }),
+            Self::Paste { text } => crate::raw_input::RawInputEvent::Paste(text.clone()),
+            Self::FocusGained => crate::raw_input::RawInputEvent::OuterFocusGained,
+            Self::FocusLost => crate::raw_input::RawInputEvent::OuterFocusLost,
+        }
+    }
 }
 
 /// Messages sent from the client to the server over the client protocol socket.
@@ -136,6 +416,9 @@ pub enum ClientMessage {
         /// Crossterm-compatible modifier bits for forwarded mouse wheel events.
         modifiers: u8,
     },
+
+    /// Structured input events from platform clients that do not expose Unix-style raw bytes.
+    InputEvents { events: Vec<ClientInputEvent> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -679,6 +962,90 @@ mod tests {
         let (decoded, _): (ClientMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn client_input_events_roundtrip() {
+        let msg = ClientMessage::InputEvents {
+            events: vec![
+                ClientInputEvent::Key {
+                    code: ClientKeyCode::Char('N'),
+                    modifiers: crossterm::event::KeyModifiers::SHIFT.bits(),
+                    kind: ClientKeyKind::Press,
+                    repeat_count: 1,
+                    generated_text: None,
+                    source: ClientKeySource::Synthesized,
+                },
+                ClientInputEvent::Key {
+                    code: ClientKeyCode::Backspace,
+                    modifiers: 0,
+                    kind: ClientKeyKind::Press,
+                    repeat_count: 3,
+                    generated_text: None,
+                    source: ClientKeySource::Vt {
+                        bytes: b"\x1b[127;1u".to_vec(),
+                    },
+                },
+                ClientInputEvent::Key {
+                    code: ClientKeyCode::Esc,
+                    modifiers: 0,
+                    kind: ClientKeyKind::Release,
+                    repeat_count: 1,
+                    generated_text: None,
+                    source: ClientKeySource::WindowsConsole {
+                        record: crate::input::WindowsKeyRecord {
+                            key_down: false,
+                            repeat_count: 1,
+                            virtual_key_code: 27,
+                            virtual_scan_code: 1,
+                            unicode: 27,
+                            control_key_state: 0,
+                        },
+                    },
+                },
+                ClientInputEvent::TextCommit("你🙂".to_owned()),
+                ClientInputEvent::Mouse {
+                    kind: ClientMouseKind::Down(ClientMouseButton::Left),
+                    column: 3,
+                    row: 4,
+                    modifiers: 0,
+                },
+            ],
+        };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        // Freeze the input envelope tag before it is published: InputEvents is tag 7.
+        assert_eq!(
+            encoded,
+            vec![
+                7, 5, 0, 15, 78, 1, 0, 1, 0, 0, 0, 0, 0, 0, 3, 0, 1, 8, 27, 91, 49, 50, 55, 59, 49,
+                117, 0, 14, 0, 2, 1, 0, 2, 0, 1, 27, 1, 27, 0, 1, 7, 228, 189, 160, 240, 159, 153,
+                130, 2, 0, 0, 3, 4, 0,
+            ]
+        );
+        let (decoded, _): (ClientMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn wire_release_cannot_restore_a_grouped_repeat_count() {
+        let event = ClientInputEvent::Key {
+            code: ClientKeyCode::Esc,
+            modifiers: 0,
+            kind: ClientKeyKind::Release,
+            repeat_count: 3,
+            generated_text: Some("ignored".to_owned()),
+            source: ClientKeySource::Synthesized,
+        };
+
+        match event.to_raw_input_event() {
+            crate::raw_input::RawInputEvent::Key(key) => {
+                assert_eq!(key.kind, crossterm::event::KeyEventKind::Release);
+                assert_eq!(key.repeat_count, 1);
+                assert_eq!(key.generated_text, None);
+            }
+            other => panic!("expected key event, got {other:?}"),
+        }
     }
 
     #[test]
