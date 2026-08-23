@@ -32,6 +32,19 @@ const CF_UNICODETEXT: u32 = 13;
 const CF_DIB: u32 = 8;
 const GMEM_MOVEABLE: u32 = 0x0002;
 
+/// Upper bound on a clipboard global allocation Herdr copies from the
+/// clipboard. Matches the official Windows clipboard-image allocation cap
+/// (64 MiB); anything larger is rejected before the slice/copy.
+const MAX_CLIPBOARD_GLOBAL_BYTES: usize = 64 * 1024 * 1024;
+
+/// Clamps a clipboard `GlobalSize` result to a copyable length.
+///
+/// Zero-size and over-cap handles yield `None` so the caller skips the
+/// slice/copy entirely instead of allocating attacker-chosen sizes.
+fn clipboard_copy_len(global_size: usize, max_bytes: usize) -> Option<usize> {
+    (global_size > 0 && global_size <= max_bytes).then_some(global_size)
+}
+
 /// Windows has no per-process file-descriptor soft limit to raise.
 pub fn raise_server_nofile_limit() {}
 
@@ -278,7 +291,15 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
             if data.is_null() {
                 return None;
             }
-            let len = GlobalSize(handle);
+            // Cap the allocation size before building the slice: a clipboard
+            // handle is foreign memory, and its size is not trusted.
+            let len = match clipboard_copy_len(GlobalSize(handle), MAX_CLIPBOARD_GLOBAL_BYTES) {
+                Some(len) => len,
+                None => {
+                    GlobalUnlock(handle);
+                    return None;
+                }
+            };
             let dib = std::slice::from_raw_parts(data, len).to_vec();
             GlobalUnlock(handle);
 
@@ -370,6 +391,26 @@ pub(crate) fn encode_windows_conpty_fallback(key: &crate::input::TerminalKey) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clipboard_copy_len_rejects_zero_and_over_cap_sizes() {
+        use super::{clipboard_copy_len, MAX_CLIPBOARD_GLOBAL_BYTES};
+
+        assert_eq!(clipboard_copy_len(0, MAX_CLIPBOARD_GLOBAL_BYTES), None);
+        assert_eq!(clipboard_copy_len(1, MAX_CLIPBOARD_GLOBAL_BYTES), Some(1));
+        assert_eq!(
+            clipboard_copy_len(MAX_CLIPBOARD_GLOBAL_BYTES, MAX_CLIPBOARD_GLOBAL_BYTES),
+            Some(MAX_CLIPBOARD_GLOBAL_BYTES)
+        );
+        assert_eq!(
+            clipboard_copy_len(MAX_CLIPBOARD_GLOBAL_BYTES + 1, MAX_CLIPBOARD_GLOBAL_BYTES),
+            None
+        );
+        assert_eq!(
+            clipboard_copy_len(usize::MAX, MAX_CLIPBOARD_GLOBAL_BYTES),
+            None
+        );
+    }
+
     #[test]
     fn windows_conpty_native_encoder_uses_canonical_phase_and_repeat_count() {
         let key = crate::input::TerminalKey::new(

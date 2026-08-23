@@ -3,7 +3,7 @@ use std::io;
 
 #[cfg(any(not(windows), test))]
 use crossterm::event::KeyboardEnhancementFlags;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers};
 #[cfg(not(windows))]
 use crossterm::event::{PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,47 @@ impl TextCommit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PhysicalKeyId(u32);
+
+/// Whether crossterm's Windows mouse-capture disable failed because no
+/// enable ran in this process yet. Crossterm restores a saved console mode
+/// on disable, and that saved mode only exists after an enable in the same
+/// process, so this specific cold-disable error is a no-op, not a failure.
+fn is_windows_cold_mouse_disable_error(err: &std::io::Error) -> bool {
+    err.to_string() == "Initial console modes not set"
+}
+
+/// Sets host-terminal mouse capture, tolerating a Windows cold disable.
+///
+/// Unix terminals treat both directions as plain escape-sequence writes. A
+/// Windows console that never enabled capture cannot restore a mode on
+/// disable, so that one error is swallowed; every other error propagates.
+pub fn set_host_mouse_capture(enabled: bool) -> std::io::Result<()> {
+    if enabled {
+        crossterm::execute!(std::io::stdout(), EnableMouseCapture)
+    } else {
+        match crossterm::execute!(std::io::stdout(), DisableMouseCapture) {
+            Ok(()) => Ok(()),
+            #[cfg(windows)]
+            Err(err) if is_windows_cold_mouse_disable_error(&err) => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+#[cfg(test)]
+mod host_mouse_capture_tests {
+    #[test]
+    fn cold_disable_error_is_recognized_verbatim() {
+        let err = std::io::Error::other("Initial console modes not set");
+        assert!(super::is_windows_cold_mouse_disable_error(&err));
+    }
+
+    #[test]
+    fn other_io_errors_are_not_cold_disable_errors() {
+        let err = std::io::Error::other("Access is denied. (os error 5)");
+        assert!(!super::is_windows_cold_mouse_disable_error(&err));
+    }
+}
 
 /// Reserved for physical-key tracking in the Windows reader port; the
 /// protocol and encoder only need `has_physical_identity` today.

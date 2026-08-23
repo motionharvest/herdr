@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 use crate::protocol::{
     self, AttachScrollDirection, AttachScrollSource, ClientInputEvent, ClientKeybindings,
     ClientLaunchMode, ClientMessage, RenderEncoding, ServerMessage, MAX_CLIPBOARD_IMAGE_PAYLOAD,
-    MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
+    MAX_INPUT_EVENT_BATCH, PROTOCOL_VERSION,
 };
 
 /// Minimum accepted attached client size.
@@ -35,9 +35,6 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Maximum input payload size (bytes) for a single `ClientMessage::Input`.
 const MAX_INPUT_PAYLOAD: usize = 1024 * 1024; // 1 MB
-
-/// Maximum number of expanded input events per `ClientMessage::InputEvents` batch.
-const MAX_INPUT_EVENT_BATCH: usize = 4096;
 
 /// Channels owned by the server side of a client writer thread.
 #[derive(Clone, Debug)]
@@ -222,7 +219,7 @@ pub(crate) fn handle_client_handshake(
     stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
     // Read the Hello message.
-    let hello: ClientMessage = match protocol::read_message(&mut stream, MAX_FRAME_SIZE) {
+    let hello: ClientMessage = match protocol::read_client_message(&mut stream) {
         Ok(msg) => msg,
         Err(protocol::FramingError::UnexpectedEof) => {
             debug!(client_id, "client disconnected before handshake");
@@ -447,8 +444,7 @@ fn client_read_loop(
     should_quit: &Arc<AtomicBool>,
 ) -> io::Result<()> {
     while !should_quit.load(Ordering::Acquire) {
-        let msg: ClientMessage = match protocol::read_message(&mut stream, MAX_GRAPHICS_FRAME_SIZE)
-        {
+        let msg: ClientMessage = match protocol::read_client_message(&mut stream) {
             Ok(msg) => msg,
             Err(protocol::FramingError::UnexpectedEof) => {
                 // Client disconnected.
@@ -604,6 +600,7 @@ fn client_read_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::MAX_FRAME_SIZE;
 
     #[test]
     fn clamp_terminal_size_zero_zero() {

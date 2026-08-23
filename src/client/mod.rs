@@ -21,13 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture,
-};
 #[cfg(unix)]
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
-use crossterm::execute;
 use tracing::{debug, info, warn};
 
 use crate::protocol::render_ansi;
@@ -316,66 +311,81 @@ fn setup_terminal_with_capabilities(
 ) -> io::Result<TerminalGuard> {
     ratatui::init();
 
-    if enable_client_protocols {
-        set_mouse_capture(mouse_capture)?;
-        execute!(io::stdout(), EnableBracketedPaste, EnableFocusChange)?;
-        push_keyboard_enhancement_flags()?;
-    } else {
-        set_mouse_capture(mouse_capture)?;
+    // Every protocol applied after ratatui::init runs through one
+    // transaction whose rollback always finishes, so no setup error leaves
+    // raw mode, the alternate screen, or the Windows VTI mode on.
+    let mut protocols = crate::terminal_setup::HostProtocolSetup::default();
+    match apply_client_protocols(&mut protocols, enable_client_protocols, mouse_capture) {
+        Ok(()) => Ok(TerminalGuard {
+            protocols,
+            restored: false,
+        }),
+        Err(err) => Err(protocols.rollback().unwrap_or(err)),
     }
+}
 
+/// Applies the client host-terminal protocols on top of ratatui's init.
+/// Every step is part of the caller's transaction, so a failure anywhere
+/// rolls the earlier steps back through [`HostProtocolSetup::rollback`].
+fn apply_client_protocols(
+    protocols: &mut crate::terminal_setup::HostProtocolSetup,
+    enable_client_protocols: bool,
+    mouse_capture: bool,
+) -> io::Result<()> {
     #[cfg(windows)]
-    let windows_virtual_terminal_input =
-        if enable_client_protocols && windows_vti_input_backend_enabled() {
+    {
+        // Enable Windows VT input BEFORE the first mouse-capture operation:
+        // crossterm caches the console input mode it sees at the first
+        // capture enable/disable and restores that cached mode on every
+        // later toggle, so a mouse write first would cache a mode without
+        // the VT input bit. The saved restore mode is therefore the true
+        // pre-mouse mode. When mouse capture starts disabled at startup,
+        // the cold disable still caches the now-VTI-enabled mode, so the
+        // re-enable below is needed either way.
+        let vti = if windows_vti_input_backend_enabled() {
             enable_windows_virtual_terminal_input()
         } else {
             WindowsVirtualTerminalInputSetup::default()
         };
-
-    #[cfg(windows)]
-    if enable_client_protocols
-        && windows_vti_input_backend_enabled()
-        && windows_virtual_terminal_input.active
-        && windows_win32_input_mode_enabled()
-    {
-        if let Err(err) = enable_windows_win32_input_mode(&mut io::stdout()) {
-            if let Some(mode) = windows_virtual_terminal_input.restore_mode {
-                restore_windows_input_mode_value(mode);
-            }
-            return Err(err);
+        // The shared slot hands the saved mode to rollback and the panic
+        // hook, and taking it there means it is restored exactly once.
+        record_windows_vti_restore_mode(vti.restore_mode);
+        if vti.active && windows_win32_input_mode_enabled() {
+            protocols.enable_win32_input_mode()?;
         }
     }
 
-    let modify_other_keys_mode = enable_client_protocols
-        .then(|| {
-            crate::input::host_modify_other_keys_mode(
-                std::env::var("TMUX").is_ok(),
-                std::env::var("TERM_PROGRAM").ok().as_deref(),
-                std::env::var_os("WEZTERM_PANE").is_some(),
-            )
-        })
-        .flatten();
-    if let Some(mode) = modify_other_keys_mode {
-        io::stdout().write_all(mode.set_sequence())?;
-        io::stdout().flush()?;
+    protocols.set_mouse_capture(mouse_capture)?;
+
+    // The mouse write above dropped the VT input bit (enable replaces the
+    // mode; cold disable caches it for later restores). Re-apply it. When
+    // the bit already stuck, this returns a None restore mode and leaves
+    // the saved pre-mouse slot untouched.
+    #[cfg(windows)]
+    if windows_vti_input_backend_enabled() {
+        let _ = enable_windows_virtual_terminal_input();
     }
 
-    Ok(TerminalGuard {
-        reset_modify_other_keys: modify_other_keys_mode.is_some(),
-        restored: false,
-        #[cfg(windows)]
-        restore_windows_input_mode: windows_virtual_terminal_input.restore_mode,
-    })
+    if !enable_client_protocols {
+        return Ok(());
+    }
+    protocols.enable_paste_focus()?;
+    push_keyboard_enhancement_flags(protocols)?;
+
+    if let Some(mode) = crate::input::host_modify_other_keys_mode(
+        std::env::var("TMUX").is_ok(),
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var_os("WEZTERM_PANE").is_some(),
+    ) {
+        protocols.enable_modify_other_keys(mode)?;
+    }
+    Ok(())
 }
 
 /// Guard that restores the terminal when dropped.
 struct TerminalGuard {
-    reset_modify_other_keys: bool,
+    protocols: crate::terminal_setup::HostProtocolSetup,
     restored: bool,
-    /// Console input mode captured before Windows VT input was enabled, if
-    /// Herdr changed it.
-    #[cfg(windows)]
-    restore_windows_input_mode: Option<u32>,
 }
 
 fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io::Result<()> {
@@ -385,71 +395,38 @@ fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io::Result<()
 }
 
 fn set_mouse_capture(enabled: bool) -> io::Result<()> {
-    if enabled {
-        execute!(io::stdout(), EnableMouseCapture)
-    } else {
-        match execute!(io::stdout(), DisableMouseCapture) {
-            Ok(()) => Ok(()),
-            #[cfg(windows)]
-            Err(err) if err.to_string() == "Initial console modes not set" => Ok(()),
-            Err(err) => Err(err),
-        }
-    }
+    crate::input::set_host_mouse_capture(enabled)
 }
 
-fn restore_terminal_state(
-    reset_modify_other_keys: bool,
-    #[cfg(windows)] restore_windows_input_mode: Option<u32>,
+fn restore_terminal_state(protocols: crate::terminal_setup::HostProtocolSetup) -> io::Result<()> {
+    let mut first_error: Option<io::Error> = None;
+
+    // Client-drawn kitty graphics are output state; clear them first.
+    if let Err(err) = clear_received_kitty_graphics(&mut io::stdout()) {
+        first_error.get_or_insert(err);
+    }
+    let rollback_error = protocols.rollback();
+    // A visible cursor and the default DECSCUSR come last, after every
+    // protocol and ratatui's own restore have run.
+    let postlude_error = write_terminal_restore_postlude(&mut io::stdout()).err();
+
+    first_error
+        .or(rollback_error)
+        .or(postlude_error)
+        .map_or(Ok(()), Err)
+}
+
+#[cfg(not(windows))]
+fn push_keyboard_enhancement_flags(
+    protocols: &mut crate::terminal_setup::HostProtocolSetup,
 ) -> io::Result<()> {
-    let _ = clear_received_kitty_graphics(&mut io::stdout());
-
-    // Reset modifyOtherKeys if we enabled it.
-    if reset_modify_other_keys {
-        let _ = io::stdout().write_all(b"\x1b[>4;0m");
-        let _ = io::stdout().flush();
-    }
-
-    let _ = pop_keyboard_enhancement_flags();
-
-    let _ = execute!(
-        io::stdout(),
-        DisableFocusChange,
-        DisableBracketedPaste,
-        DisableMouseCapture
-    );
-    #[cfg(windows)]
-    if let Some(mode) = restore_windows_input_mode {
-        restore_windows_input_mode_value(mode);
-    }
-
-    let restore_result = ratatui::try_restore();
-    let postlude_result = write_terminal_restore_postlude(&mut io::stdout());
-
-    #[cfg(windows)]
-    if windows_vti_input_backend_enabled() && windows_win32_input_mode_enabled() {
-        let _ = disable_windows_win32_input_mode(&mut io::stdout());
-    }
-
-    restore_result.and(postlude_result)
-}
-
-#[cfg(not(windows))]
-fn push_keyboard_enhancement_flags() -> io::Result<()> {
-    crate::input::push_keyboard_enhancement()
+    protocols.push_keyboard_enhancement()
 }
 
 #[cfg(windows)]
-fn push_keyboard_enhancement_flags() -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn pop_keyboard_enhancement_flags() -> io::Result<()> {
-    crate::input::pop_keyboard_enhancement()
-}
-
-#[cfg(windows)]
-fn pop_keyboard_enhancement_flags() -> io::Result<()> {
+fn push_keyboard_enhancement_flags(
+    _protocols: &mut crate::terminal_setup::HostProtocolSetup,
+) -> io::Result<()> {
     Ok(())
 }
 
@@ -458,6 +435,19 @@ fn pop_keyboard_enhancement_flags() -> io::Result<()> {
 pub(crate) struct WindowsVirtualTerminalInputSetup {
     pub(crate) active: bool,
     pub(crate) restore_mode: Option<u32>,
+}
+
+#[cfg(windows)]
+/// Whether this process has Windows VT input active. Crossterm's mouse
+/// capture toggles restore the console mode they saved, which may not carry
+/// the VT input bit, so callers re-apply VTI after a toggle only when VTI
+/// was actually on.
+static WINDOWS_VTI_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+pub(crate) fn vti_mode_was_enabled_in_process() -> bool {
+    WINDOWS_VTI_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
 }
 
 #[cfg(windows)]
@@ -482,6 +472,7 @@ pub(crate) fn enable_windows_virtual_terminal_input() -> WindowsVirtualTerminalI
 
     let desired = windows_virtual_terminal_input_mode(mode);
     if desired == mode {
+        WINDOWS_VTI_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
         return WindowsVirtualTerminalInputSetup {
             active: true,
             restore_mode: None,
@@ -505,14 +496,47 @@ pub(crate) fn enable_windows_virtual_terminal_input() -> WindowsVirtualTerminalI
         return WindowsVirtualTerminalInputSetup::default();
     }
 
+    WINDOWS_VTI_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
     WindowsVirtualTerminalInputSetup {
         active: true,
         restore_mode: Some(mode),
     }
 }
 
+/// Console input mode saved before Windows VT input was enabled, shared
+/// between setup transactions, normal teardown, and the panic hooks in both
+/// the monolithic launcher and the client.
+///
+/// The panic hooks are installed before VTI setup runs, so they cannot
+/// capture the mode up front; they take the mode from this slot instead.
+/// Normal teardown takes the mode too, so a later panic cannot restore a
+/// mode that teardown already restored.
 #[cfg(windows)]
-fn windows_vti_input_backend_enabled() -> bool {
+static WINDOWS_VTI_RESTORE_MODE: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+
+/// Records the console input mode to restore when this process stops using
+/// Windows VT input. `None` means nothing needs restoring; recording it
+/// clears any previously saved mode.
+#[cfg(windows)]
+pub(crate) fn record_windows_vti_restore_mode(mode: Option<u32>) {
+    let mut slot = WINDOWS_VTI_RESTORE_MODE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *slot = mode;
+}
+
+/// Takes the saved console input mode for the panic hook and normal teardown,
+/// clearing the slot so it is restored exactly once.
+#[cfg(windows)]
+pub(crate) fn take_windows_vti_restore_mode() -> Option<u32> {
+    let mut slot = WINDOWS_VTI_RESTORE_MODE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    slot.take()
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_vti_input_backend_enabled() -> bool {
     std::env::var("HERDR_WINDOWS_INPUT_BACKEND")
         .map(|backend| !backend.eq_ignore_ascii_case("crossterm"))
         .unwrap_or(true)
@@ -527,6 +551,13 @@ fn windows_virtual_terminal_input_mode(mode: u32) -> u32 {
 pub(crate) fn restore_windows_input_mode_value(mode: u32) {
     use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Console::{GetStdHandle, SetConsoleMode, STD_INPUT_HANDLE};
+
+    // A restore means this process stops claiming VT input, so clear the
+    // flag even when the console calls below fail or no console is attached.
+    // Otherwise a repeated setup/restore cycle in one process could leave a
+    // stale "VTI active" flag that re-enables a restored mode after a later
+    // mouse-capture toggle.
+    WINDOWS_VTI_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
 
     let handle: HANDLE = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
     if handle.is_null() || handle == INVALID_HANDLE_VALUE {
@@ -544,37 +575,17 @@ fn windows_win32_input_mode_enabled() -> bool {
         .unwrap_or(true)
 }
 
-#[cfg(windows)]
-fn enable_windows_win32_input_mode(writer: &mut impl std::io::Write) -> io::Result<()> {
-    writer.write_all(b"\x1b[?9001h")?;
-    writer.flush()
-}
-
-#[cfg(windows)]
-fn disable_windows_win32_input_mode(writer: &mut impl std::io::Write) -> io::Result<()> {
-    writer.write_all(b"\x1b[?9001l")?;
-    writer.flush()
-}
-
 impl TerminalGuard {
     fn restore(mut self) -> io::Result<()> {
         self.restored = true;
-        restore_terminal_state(
-            self.reset_modify_other_keys,
-            #[cfg(windows)]
-            self.restore_windows_input_mode,
-        )
+        restore_terminal_state(self.protocols)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         if !self.restored {
-            let _ = restore_terminal_state(
-                self.reset_modify_other_keys,
-                #[cfg(windows)]
-                self.restore_windows_input_mode,
-            );
+            let _ = restore_terminal_state(self.protocols);
         }
     }
 }
@@ -800,16 +811,10 @@ fn run_client_with_mode(
     })?;
 
     // Install a panic hook to restore the terminal on panic (same as monolithic).
-    let panic_resets_modify_other_keys = terminal_guard.reset_modify_other_keys;
-    #[cfg(windows)]
-    let panic_restore_windows_input_mode = terminal_guard.restore_windows_input_mode;
+    let panic_protocols = terminal_guard.protocols;
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = restore_terminal_state(
-            panic_resets_modify_other_keys,
-            #[cfg(windows)]
-            panic_restore_windows_input_mode,
-        );
+        let _ = restore_terminal_state(panic_protocols);
         original_hook(info);
     }));
 
@@ -1195,9 +1200,11 @@ async fn run_client_loop(
                     if enabled != state.mouse_capture_active {
                         set_mouse_capture(enabled).map_err(ClientError::ConnectionFailed)?;
                         #[cfg(windows)]
-                        if enabled && windows_vti_input_backend_enabled() {
-                            // crossterm's Windows mouse capture overwrites the
-                            // console input mode, dropping the VT input bit.
+                        if windows_vti_input_backend_enabled() {
+                            // Crossterm's Windows mouse capture writes back the
+                            // console mode it saved before the capture, so both
+                            // directions drop the VT input bit the byte reader
+                            // depends on. Re-apply it either way.
                             let _ = enable_windows_virtual_terminal_input();
                         }
                         state.mouse_capture_active = enabled;
@@ -2249,5 +2256,44 @@ mod tests {
         unsafe {
             std::env::remove_var("SSH_CONNECTION");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_vti_active_flag_clears_on_restore() {
+        use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE};
+
+        // Skip when a real console is attached so the restore cannot change
+        // the developer's terminal input mode.
+        let handle: HANDLE = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        let mut mode = 0u32;
+        let stdin_is_console = !handle.is_null()
+            && handle != INVALID_HANDLE_VALUE
+            && unsafe { GetConsoleMode(handle, &mut mode) } != 0;
+        if stdin_is_console {
+            return;
+        }
+
+        WINDOWS_VTI_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+        restore_windows_input_mode_value(0);
+        assert!(!vti_mode_was_enabled_in_process());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_vti_restore_mode_slot_records_and_clears() {
+        assert_eq!(take_windows_vti_restore_mode(), None);
+
+        record_windows_vti_restore_mode(Some(0x01f7));
+        assert_eq!(take_windows_vti_restore_mode(), Some(0x01f7));
+        // Taking clears the slot, so a panic after normal teardown cannot
+        // restore the same mode a second time.
+        assert_eq!(take_windows_vti_restore_mode(), None);
+
+        // Recording None overwrites a stale mode instead of leaving it.
+        record_windows_vti_restore_mode(Some(0x0007));
+        record_windows_vti_restore_mode(None);
+        assert_eq!(take_windows_vti_restore_mode(), None);
     }
 }

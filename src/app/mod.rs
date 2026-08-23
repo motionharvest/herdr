@@ -961,12 +961,17 @@ impl App {
         }
         if desired {
             crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
-            #[cfg(windows)]
-            // crossterm's Windows mouse capture overwrites the console input
-            // mode, dropping the VT input bit the byte reader depends on.
-            let _ = crate::client::enable_windows_virtual_terminal_input();
         } else {
             crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
+        }
+        #[cfg(windows)]
+        // Crossterm's Windows mouse capture writes back the console mode it
+        // saved before the capture, so both directions drop the VT input bit
+        // the byte reader depends on. Re-apply it after either change.
+        if crate::client::windows_vti_input_backend_enabled()
+            && crate::client::vti_mode_was_enabled_in_process()
+        {
+            let _ = crate::client::enable_windows_virtual_terminal_input();
         }
         *active = desired;
         Ok(())
@@ -1433,10 +1438,11 @@ impl App {
             return;
         }
         if self.state.mode == Mode::Composer {
-            self.state.composer.task.insert_str(text);
+            self.commit_text_to_composer_focus(text);
             return;
         }
         if self.state.mode != Mode::Terminal {
+            self.paste_into_active_text_input(text);
             return;
         }
 
@@ -3556,6 +3562,229 @@ last_pane = "prefix+tab"
         );
 
         assert_eq!(app.state.composer.task.text(), "你好");
+    }
+
+    #[test]
+    fn route_client_events_commit_text_into_composer_folder_starts_a_path() {
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Composer;
+        app.state
+            .composer
+            .add_folder(std::path::PathBuf::from("/tmp"));
+        app.state.composer.focus = crate::composer::Focus::Folder;
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("/home/λ"),
+            )],
+            true,
+        );
+
+        assert_eq!(
+            app.state.composer.open,
+            Some(crate::composer::Focus::Folder),
+            "the commit opened the folder list"
+        );
+        assert_eq!(
+            app.state.composer.path().text(),
+            "/home/λ",
+            "the commit replaced the seeded folder label"
+        );
+    }
+
+    #[test]
+    fn route_client_events_commit_text_appends_to_an_open_folder_path() {
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Composer;
+        app.state
+            .composer
+            .add_folder(std::path::PathBuf::from("/tmp"));
+        app.state.composer.focus = crate::composer::Focus::Folder;
+        app.state
+            .composer
+            .open_dropdown(crate::composer::Focus::Folder);
+        app.state.composer.edit_path(|path| path.set_text("/ho"));
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("me"),
+            )],
+            true,
+        );
+
+        assert_eq!(app.state.composer.path().text(), "/home");
+    }
+
+    #[test]
+    fn route_client_events_commit_text_types_at_the_agent_control() {
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Composer;
+        app.state
+            .composer
+            .add_folder(std::path::PathBuf::from("/tmp"));
+        app.state.composer.use_harnesses(
+            ["Auto", "Claude Code", "Codex"]
+                .into_iter()
+                .map(|name| crate::harness::named(name).unwrap())
+                .collect(),
+        );
+        app.state.composer.focus = crate::composer::Focus::Agent;
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("co"),
+            )],
+            true,
+        );
+
+        assert_eq!(app.state.composer.agent, "Codex");
+        assert_eq!(
+            app.state.composer.open, None,
+            "typing keeps the agent list closed"
+        );
+    }
+
+    #[test]
+    fn route_client_events_commit_text_into_rename_input_replacing_seed() {
+        let mut app = test_app();
+        app.state.mode = Mode::RenamePane;
+        app.state.name_input = "seed".into();
+        app.state.name_input_replace_on_type = true;
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("Lambdaλ"),
+            )],
+            true,
+        );
+
+        assert_eq!(app.state.name_input, "Lambdaλ");
+        assert!(!app.state.name_input_replace_on_type);
+    }
+
+    #[test]
+    fn route_client_events_commit_text_appends_to_rename_input() {
+        let mut app = test_app();
+        app.state.mode = Mode::RenameWorkspace;
+        app.state.name_input = "fea".into();
+        app.state.name_input_replace_on_type = false;
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("tureλ"),
+            )],
+            true,
+        );
+
+        assert_eq!(app.state.name_input, "featureλ");
+    }
+
+    #[test]
+    fn route_client_events_commit_text_into_worktree_create_branch() {
+        let mut app = test_app();
+        app.state.mode = Mode::NewLinkedWorktree;
+        app.state.name_input = "generated".into();
+        app.state.name_input_replace_on_type = true;
+        app.state.worktree_directory = "/w".into();
+        app.state.worktree_create = Some(crate::app::state::WorktreeCreateState {
+            source_workspace_id: "source".into(),
+            source_checkout_path: "/repo/herdr".into(),
+            source_existing_membership: None,
+            source_repo_root: "/repo/herdr".into(),
+            repo_key: "repo-key".into(),
+            repo_name: "herdr".into(),
+            branch: "generated".into(),
+            checkout_path: "/w/herdr/generated".into(),
+            error: Some("old error".into()),
+            creating: false,
+        });
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("issue/42λ"),
+            )],
+            true,
+        );
+
+        let create = app.state.worktree_create.unwrap();
+        assert_eq!(create.branch, "issue/42λ");
+        assert_eq!(
+            create.checkout_path,
+            std::path::PathBuf::from("/w/herdr/issue-42")
+        );
+        assert_eq!(create.error, None);
+    }
+
+    #[test]
+    fn route_client_events_commit_text_into_focused_navigator_search_only() {
+        let mut app = test_app();
+        app.state.mode = Mode::Navigator;
+        app.state.navigator.search_focused = false;
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("a"),
+            )],
+            true,
+        );
+        assert_eq!(app.state.navigator.query, "");
+
+        app.state.navigator.search_focused = true;
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("你好"),
+            )],
+            true,
+        );
+        assert_eq!(app.state.navigator.query, "你好");
+        assert_eq!(app.state.navigator.state_filter, None);
+    }
+
+    #[test]
+    fn route_client_events_commit_text_into_focused_worktree_open_search_only() {
+        let mut app = test_app();
+        app.state.mode = Mode::OpenExistingWorktree;
+        app.state.worktree_open = Some(crate::app::state::WorktreeOpenState {
+            source_workspace_id: "source".into(),
+            source_existing_membership: None,
+            source_checkout_path: "/repo/herdr".into(),
+            source_repo_root: "/repo/herdr".into(),
+            repo_key: "repo-key".into(),
+            repo_name: "herdr".into(),
+            entries: vec![crate::app::state::WorktreeOpenEntry {
+                path: "/repo/herdr".into(),
+                branch: Some("main".into()),
+                is_linked_worktree: false,
+                already_open_ws_idx: None,
+            }],
+            selected: 0,
+            query: String::new(),
+            search_focused: false,
+            error: None,
+        });
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("x"),
+            )],
+            true,
+        );
+        assert_eq!(app.state.worktree_open.as_ref().unwrap().query, "");
+
+        app.state.worktree_open.as_mut().unwrap().search_focused = true;
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Text(
+                crate::input::TextCommit::new("feat"),
+            )],
+            true,
+        );
+        assert_eq!(app.state.worktree_open.as_ref().unwrap().query, "feat");
     }
 
     #[tokio::test]
