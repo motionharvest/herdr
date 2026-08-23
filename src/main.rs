@@ -1,9 +1,7 @@
 use std::io;
 
 use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
 };
 use crossterm::execute;
 
@@ -649,13 +647,10 @@ fn main() -> io::Result<()> {
         if crate::kitty_graphics::is_enabled() {
             let _ = crate::kitty_graphics::clear_all_host_graphics();
         }
-        let _ = execute!(
-            io::stdout(),
-            PopKeyboardEnhancementFlags,
-            DisableFocusChange,
-            DisableBracketedPaste,
-            DisableMouseCapture
-        );
+        let _ = crate::input::pop_keyboard_enhancement();
+        let _ = execute!(io::stdout(), DisableFocusChange, DisableBracketedPaste);
+        crate::input::deactivate_host_vt_input();
+        let _ = crate::input::disable_host_mouse_capture();
         ratatui::restore();
         original_hook(info);
     }));
@@ -676,16 +671,13 @@ fn main() -> io::Result<()> {
     let result = rt.block_on(async {
         let mut terminal = ratatui::init();
         if config.ui.mouse_capture {
-            execute!(io::stdout(), EnableMouseCapture)?;
+            crate::input::enable_host_mouse_capture()?;
         } else {
-            execute!(io::stdout(), DisableMouseCapture)?;
+            crate::input::disable_host_mouse_capture()?;
         }
-        execute!(
-            io::stdout(),
-            EnableBracketedPaste,
-            EnableFocusChange,
-            PushKeyboardEnhancementFlags(crate::input::ime_compatible_keyboard_enhancement_flags())
-        )?;
+        crate::input::activate_host_vt_input()?;
+        execute!(io::stdout(), EnableBracketedPaste, EnableFocusChange)?;
+        crate::input::push_keyboard_enhancement()?;
 
         // Some hosts do not honor Kitty keyboard enhancement pushes for
         // Shift+Enter. Enable xterm modifyOtherKeys only on hosts where we
@@ -715,13 +707,10 @@ fn main() -> io::Result<()> {
         if crate::kitty_graphics::is_enabled() {
             crate::kitty_graphics::clear_all_host_graphics()?;
         }
-        execute!(
-            io::stdout(),
-            PopKeyboardEnhancementFlags,
-            DisableFocusChange,
-            DisableBracketedPaste,
-            DisableMouseCapture
-        )?;
+        crate::input::pop_keyboard_enhancement()?;
+        execute!(io::stdout(), DisableFocusChange, DisableBracketedPaste)?;
+        crate::input::deactivate_host_vt_input();
+        crate::input::disable_host_mouse_capture()?;
         ratatui::restore();
 
         // Drop app (and all workspaces/panes) before runtime shuts down

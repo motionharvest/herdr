@@ -39,6 +39,7 @@ libc = "0.2"
 uds_windows = "1.2"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_System_Console",
     "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Memory",
