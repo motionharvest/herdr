@@ -4,6 +4,7 @@
 
 ### Added
 - The spaces and agents sidebar is back on the left of the frame. Composer, the agent table, and the panes keep their places to its right. Click a space to switch, click an agent to focus it, drag a pane onto `+ new` to fly it out, and `prefix+b` folds the sidebar to a strip.
+- Herdr now builds and runs natively on Windows 10 1809+ (experimental). Panes run through ConPTY with PowerShell 7 preferred and Windows PowerShell as the fallback shell, sessions persist under `%APPDATA%`, the socket API and CLI work end to end, clipboard text and image paste use the Windows clipboard, and agent process detection walks the pane's process tree via the Toolhelp API. Windows has no release binary yet, so it builds from source with the MSVC toolchain plus Zig 0.15.2; see the install docs. Live server handoff stays Unix-only and updates fall back to the normal restart flow.
 
 ### Fixed
 - Paste now goes to the peeked pane, including in `herdr server`. Typing already went there; paste used the last selected docked pane because the client paste path followed layout focus instead of the overlay.

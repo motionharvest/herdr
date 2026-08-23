@@ -2576,6 +2576,13 @@ fn is_toml_key(line: &str, key: &str) -> bool {
 }
 
 fn shell_single_quote(value: &str) -> String {
+    // Bash on Windows needs slash-separated paths. A backslash inside a
+    // single-quoted command is passed literally and does not name the file.
+    let value = if cfg!(windows) {
+        value.replace('\\', "/")
+    } else {
+        value.to_string()
+    };
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
@@ -2588,6 +2595,8 @@ fn make_executable(path: &Path) -> io::Result<()> {
         perms.set_mode(0o755);
         fs::set_permissions(path, perms)?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
 
     Ok(())
 }
@@ -2684,15 +2693,22 @@ pub(crate) fn grok_dir() -> io::Result<PathBuf> {
 }
 
 fn home_dir() -> io::Result<PathBuf> {
+    // HOME covers POSIX shells and MSYS/git-bash sessions; USERPROFILE is
+    // the native Windows home.
     std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
         .map(PathBuf::from)
-        .map_err(|_| io::Error::other("HOME is not set; cannot locate home directory"))
+        .map_err(|_| {
+            io::Error::other("HOME or USERPROFILE is not set; cannot locate home directory")
+        })
 }
 
 #[cfg(test)]
 pub(crate) fn integration_env_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -3184,10 +3200,10 @@ mod tests {
             claude_dir.join("settings.json"),
             format!(
                 r#"{{"hooks":{{"PostToolUse":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}},{{"type":"command","command":"echo keep-post","timeout":10}}]}}],"PostToolUseFailure":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}},{{"type":"command","command":"echo keep-failure","timeout":10}}]}}],"SubagentStop":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}},{{"type":"command","command":"echo keep-subagent","timeout":10}}]}}],"SessionEnd":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' release","timeout":10}},{{"type":"command","command":"echo keep-session-end","timeout":10}}]}}]}}}}"#,
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
             ),
         )
         .unwrap();
@@ -3296,14 +3312,14 @@ mod tests {
             claude_dir.join("settings.json"),
             format!(
                 r#"{{"hooks":{{"SessionStart":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' idle","timeout":10}}]}}],"UserPromptSubmit":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}},{{"type":"command","command":"echo keep","timeout":10}}]}}],"PermissionRequest":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' blocked","timeout":10}}]}}],"PostToolUse":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}}]}}],"PostToolUseFailure":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}}]}}],"SubagentStop":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}}]}}],"Stop":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' idle","timeout":10}}]}}],"SessionEnd":[{{"matcher":"*","hooks":[{{"type":"command","command":"bash '{}' release","timeout":10}}]}}]}}}}"#,
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
             ),
         )
         .unwrap();
@@ -3629,11 +3645,11 @@ mod tests {
             codex_dir.join("hooks.json"),
             format!(
                 r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"type":"command","command":"bash '{}' idle","timeout":10}}]}}],"UserPromptSubmit":[{{"hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}},{{"type":"command","command":"echo keep","timeout":10}}]}}],"PreToolUse":[{{"hooks":[{{"type":"command","command":"bash '{}' working","timeout":10}}]}}],"PermissionRequest":[{{"hooks":[{{"type":"command","command":"bash '{}' blocked","timeout":10}}]}}],"Stop":[{{"hooks":[{{"type":"command","command":"bash '{}' idle","timeout":10}}]}}]}}}}"#,
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
-                hook_path.display(),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
+                hook_path.display().to_string().replace('\\', "/"),
             ),
         )
         .unwrap();

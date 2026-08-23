@@ -121,6 +121,21 @@ impl App {
     }
 }
 
+fn normalize_composer_path(path: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return path;
+    }
+
+    let text = path.to_string_lossy().into_owned();
+    if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
+        PathBuf::from(format!("\\\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix("\\\\?\\") {
+        PathBuf::from(rest)
+    } else {
+        path
+    }
+}
+
 impl crate::app::AppState {
     /// The folders the composer offers: every folder something is working in,
     /// most recently used first, with the folder already on show kept where it
@@ -146,7 +161,9 @@ impl crate::app::AppState {
     ) {
         let mut folders: Vec<PathBuf> = Vec::new();
         let mut offer = |cwd: PathBuf| {
-            let Some(folder) = crate::workspace::composer_folder_path(&cwd) else {
+            let Some(folder) =
+                crate::workspace::composer_folder_path(&cwd).map(normalize_composer_path)
+            else {
                 return;
             };
             if !folders.contains(&folder) {
@@ -180,7 +197,9 @@ impl crate::app::AppState {
             offer(cwd);
         }
         if let Some(showing) = self.composer.folder_path() {
-            if let Some(folder) = crate::workspace::composer_folder_path(showing) {
+            if let Some(folder) =
+                crate::workspace::composer_folder_path(showing).map(normalize_composer_path)
+            {
                 folders.retain(|listed| listed != &folder);
                 folders.insert(0, folder);
             }
@@ -195,6 +214,15 @@ mod tests {
     use crate::app::AppState;
     use crate::terminal::{TerminalRuntimeRegistry, TerminalState};
     use crate::workspace::Workspace;
+
+    fn canonical_test_path(path: &std::path::Path) -> PathBuf {
+        let canonical = std::fs::canonicalize(path).expect("test path should canonicalize");
+        if let Some(stripped) = canonical.to_string_lossy().strip_prefix("\\\\?\\") {
+            PathBuf::from(stripped)
+        } else {
+            canonical
+        }
+    }
 
     fn committed_repo(name: &str) -> PathBuf {
         let unique = format!(
@@ -235,7 +263,7 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        std::fs::canonicalize(&repo).unwrap()
+        canonical_test_path(&repo)
     }
 
     fn add_worktree(repo: &std::path::Path, name: &str) -> PathBuf {
@@ -257,7 +285,7 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        std::fs::canonicalize(&checkout).unwrap()
+        canonical_test_path(&checkout)
     }
 
     fn state_working_in(cwd: PathBuf) -> AppState {

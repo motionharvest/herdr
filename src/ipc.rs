@@ -1,14 +1,19 @@
 use std::fs;
 use std::io;
-use std::os::unix::fs::MetadataExt;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
+
+use crate::net::UnixStream;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SocketFileIdentity {
+    #[cfg(unix)]
     dev: u64,
+    #[cfg(unix)]
     ino: u64,
+    #[cfg(windows)]
+    len: u64,
+    #[cfg(windows)]
+    modified_nanos: u64,
 }
 
 pub(crate) fn prepare_socket_path(
@@ -48,10 +53,30 @@ pub(crate) fn prepare_socket_path(
 
 pub(crate) fn socket_file_identity(path: &Path) -> io::Result<SocketFileIdentity> {
     let metadata = fs::metadata(path)?;
-    Ok(SocketFileIdentity {
-        dev: metadata.dev(),
-        ino: metadata.ino(),
-    })
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(SocketFileIdentity {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        // Windows socket files carry no POSIX dev/ino pair. Length plus
+        // last-modified nanos is a stable identity for the lifetime of a
+        // bound socket.
+        let modified_nanos = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|elapsed| elapsed.as_nanos() as u64)
+            .unwrap_or(0);
+        Ok(SocketFileIdentity {
+            len: metadata.len(),
+            modified_nanos,
+        })
+    }
 }
 
 pub(crate) fn remove_socket_file_if_owned(
@@ -76,7 +101,18 @@ pub(crate) fn remove_socket_file_if_owned(
 }
 
 pub(crate) fn restrict_socket_permissions(path: &Path, mode: u32) -> io::Result<()> {
-    let mut permissions = fs::metadata(path)?.permissions();
-    permissions.set_mode(mode);
-    fs::set_permissions(path, permissions)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(mode);
+        fs::set_permissions(path, permissions)
+    }
+    #[cfg(windows)]
+    {
+        // POSIX modes do not apply. Socket files live inside the user's
+        // profile directory, whose default ACL is already user-private.
+        let _ = (path, mode);
+        Ok(())
+    }
 }

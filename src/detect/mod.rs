@@ -593,6 +593,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn temp_detection_path(name: &str) -> std::path::PathBuf {
         let unique = format!(
             "herdr-detect-tests-{}-{}-{}",

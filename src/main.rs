@@ -39,6 +39,7 @@ mod ipc;
 mod kitty_graphics;
 mod layout;
 mod logging;
+mod net;
 mod pane;
 mod pane_names;
 mod persist;

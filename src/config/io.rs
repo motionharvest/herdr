@@ -13,22 +13,63 @@ pub fn app_dir_name() -> &'static str {
 }
 
 pub fn config_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(dir).join(app_dir_name())
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(format!(".config/{}", app_dir_name()))
-    } else {
-        PathBuf::from(format!("/tmp/{}", app_dir_name()))
+    #[cfg(windows)]
+    {
+        // Explicit XDG override first (tests and power users), then the
+        // standard Roaming profile, then the local profile, then temp.
+        if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+            if !dir.trim().is_empty() {
+                return PathBuf::from(dir).join(app_dir_name());
+            }
+        }
+        if let Ok(dir) = std::env::var("APPDATA") {
+            if !dir.trim().is_empty() {
+                return PathBuf::from(dir).join(app_dir_name());
+            }
+        }
+        if let Ok(dir) = std::env::var("LOCALAPPDATA") {
+            if !dir.trim().is_empty() {
+                return PathBuf::from(dir).join(app_dir_name());
+            }
+        }
+        std::env::temp_dir().join(app_dir_name())
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+            PathBuf::from(dir).join(app_dir_name())
+        } else if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home).join(format!(".config/{}", app_dir_name()))
+        } else {
+            PathBuf::from(format!("/tmp/{}", app_dir_name()))
+        }
     }
 }
 
 pub fn state_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
-        PathBuf::from(dir).join(app_dir_name())
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(format!(".local/state/{}", app_dir_name()))
-    } else {
-        PathBuf::from(format!("/tmp/{}-state", app_dir_name()))
+    #[cfg(windows)]
+    {
+        if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
+            if !dir.trim().is_empty() {
+                return PathBuf::from(dir).join(app_dir_name());
+            }
+        }
+        if let Ok(dir) = std::env::var("LOCALAPPDATA") {
+            if !dir.trim().is_empty() {
+                return PathBuf::from(dir).join(app_dir_name());
+            }
+        }
+        std::env::temp_dir().join(format!("{}-state", app_dir_name()))
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
+            PathBuf::from(dir).join(app_dir_name())
+        } else if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home).join(format!(".local/state/{}", app_dir_name()))
+        } else {
+            PathBuf::from(format!("/tmp/{}-state", app_dir_name()))
+        }
     }
 }
 

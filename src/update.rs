@@ -8,11 +8,11 @@
 
 #![allow(dead_code)] // Update handoff/restart path is staged but not yet wired in all flows.
 
+use crate::net::UnixStream;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -347,10 +347,13 @@ fn release_info_from_manifest(manifest: &UpdateManifest) -> Result<Option<Releas
 
     let (os, arch) = platform_target();
     let asset_key = format!("{os}-{arch}");
-    let asset = manifest
-        .assets
-        .get(&asset_key)
-        .ok_or_else(|| format!("no binary for {asset_key} in update manifest"))?;
+    let Some(asset) = manifest.assets.get(&asset_key) else {
+        if os == "windows" {
+            tracing::info!(asset = %asset_key, "skipping update because this release has no Windows asset");
+            return Ok(None);
+        }
+        return Err(format!("no binary for {asset_key} in update manifest"));
+    };
     let download_url = asset.url.clone();
 
     Ok(Some(ReleaseInfo {
@@ -425,16 +428,18 @@ fn release_info_from_preview_manifest(
             );
         }
     }
-    let asset = manifest
-        .assets
-        .get(&asset_key)
-        .or_else(|| {
-            manifest
-                .builds
-                .get(build_id)
-                .and_then(|build| build.assets.get(&asset_key))
-        })
-        .ok_or_else(|| format!("no binary for {asset_key} in preview manifest"))?;
+    let Some(asset) = manifest.assets.get(&asset_key).or_else(|| {
+        manifest
+            .builds
+            .get(build_id)
+            .and_then(|build| build.assets.get(&asset_key))
+    }) else {
+        if os == "windows" {
+            tracing::info!(asset = %asset_key, "skipping preview update because this release has no Windows asset");
+            return Ok(None);
+        }
+        return Err(format!("no binary for {asset_key} in preview manifest"));
+    };
     let download_url = asset.url.clone();
 
     Ok(Some(ReleaseInfo {
@@ -599,6 +604,22 @@ fn install_downloaded_update(mut update: DownloadedUpdate) -> Result<(), String>
         .tmp_path
         .take()
         .ok_or("downloaded update temp file is missing")?;
+
+    #[cfg(windows)]
+    {
+        // Windows refuses to replace a running executable, but it does
+        // allow renaming one. Move the current binary aside so the new
+        // binary can take its place; a stale `.old` copy is expected and
+        // cleaned up best-effort on later updates.
+        let old_path = update.current_exe.with_extension("exe.old");
+        let _ = fs::remove_file(&old_path);
+        if update.current_exe.exists() {
+            if let Err(e) = fs::rename(&update.current_exe, &old_path) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(format!("failed to move current binary aside: {e}"));
+            }
+        }
+    }
 
     // Atomic replace — rename over the current binary.
     // On Linux, the running process keeps its fd to the old inode.
@@ -1994,6 +2015,8 @@ fn platform_target() -> (&'static str, &'static str) {
         "linux"
     } else if cfg!(target_os = "macos") {
         "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
     } else {
         "unknown"
     };
@@ -2016,7 +2039,7 @@ fn platform_target() -> (&'static str, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixListener;
+    use crate::net::UnixListener;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -2942,8 +2965,48 @@ mod tests {
     #[test]
     fn platform_target_is_known() {
         let (os, arch) = platform_target();
-        assert!(os == "linux" || os == "macos", "os: {os}");
+        assert!(
+            os == "linux" || os == "macos" || os == "windows",
+            "os: {os}"
+        );
         assert!(arch == "x86_64" || arch == "aarch64", "arch: {arch}");
+
+        if os == "windows" {
+            let manifest: UpdateManifest = serde_json::from_str(
+                r####"{
+                    "version": "99.99.99",
+                    "notes": "### Fixed\n- No Windows asset yet",
+                    "assets": {}
+                }"####,
+            )
+            .unwrap();
+            assert!(manifest.download_url_for(os, arch).is_none());
+            assert!(release_info_from_manifest(&manifest).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn preview_update_without_windows_asset_is_skipped() {
+        let (os, _) = platform_target();
+        if os != "windows" {
+            return;
+        }
+
+        let manifest = PreviewManifest {
+            channel: "preview".into(),
+            base_version: "99.99.99".into(),
+            build_id: "test-windows-missing-asset".into(),
+            commit: "abcdef1234567890".into(),
+            built_at: "2026-06-02T03:00:00Z".into(),
+            protocol: 77,
+            notes: "### Fixed\n- No Windows asset yet".into(),
+            assets: BTreeMap::new(),
+            builds: BTreeMap::new(),
+        };
+
+        assert!(release_info_from_preview_manifest(&manifest)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Integration tests for thin client mode.
 
 mod support;

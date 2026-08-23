@@ -258,6 +258,29 @@ mod tests {
         (app, info)
     }
 
+    fn marker_command(path: &std::path::Path, value: &str) -> String {
+        if cfg!(windows) {
+            format!(
+                "powershell -NoProfile -Command [IO.File]::WriteAllText('{}', '{}')",
+                path.display(),
+                value
+            )
+        } else {
+            format!("printf {value} > '{}'", path.display())
+        }
+    }
+
+    fn editor_command(path: &std::path::Path) -> String {
+        if cfg!(windows) {
+            format!(
+                "powershell -NoProfile -Command [IO.File]::Copy($env:HERDR_SCROLLBACK_FILE, '{}'); #",
+                path.display()
+            )
+        } else {
+            format!("sh -c 'cp \"$1\" {}' sh", path.display())
+        }
+    }
+
     fn double_click(app: &mut App, col: u16, row: u16) {
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), col, row));
@@ -1035,10 +1058,7 @@ mod tests {
 
         let output_path = unique_temp_path("direct-edit-scrollback");
         let previous_editor = std::env::var_os("EDITOR");
-        std::env::set_var(
-            "EDITOR",
-            format!("sh -c 'cp \"$1\" {}' sh", output_path.display()),
-        );
+        std::env::set_var("EDITOR", editor_command(&output_path));
         app.state.keybinds.edit_scrollback = crate::config::ActionKeybinds::direct("ctrl+alt+e");
 
         app.handle_terminal_key(TerminalKey::new(
@@ -1076,7 +1096,7 @@ mod tests {
         app.state.mode = Mode::Terminal;
 
         let output_path = unique_temp_path("direct-custom-command");
-        let command = format!("printf direct > '{}'", output_path.display());
+        let command = marker_command(&output_path, "direct");
         app.state.keybinds.custom_commands = vec![crate::config::CustomCommandKeybind {
             bindings: crate::config::ActionKeybinds::direct("ctrl+alt+g"),
             label: "ctrl+alt+g".into(),
@@ -1106,7 +1126,7 @@ mod tests {
             api_rx,
             crate::api::EventHub::default(),
         );
-        app.state.default_shell = "/usr/bin/true".into();
+        app.state.default_shell = crate::pane::test_shell_program().into();
         let (workspace, terminal, runtime) = Workspace::new(
             std::env::current_dir().unwrap_or_else(|_| "/".into()),
             24,

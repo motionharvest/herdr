@@ -607,8 +607,8 @@ fn ghost_after(typed: &str, label: &str) -> Option<String> {
     if let Some(rest) = strip_prefix_ignore_ascii_case(label, typed) {
         return (!rest.is_empty()).then(|| rest.to_string());
     }
-    let typed_name = typed.rsplit('/').next().unwrap_or(typed);
-    let label_name = label.rsplit('/').next().unwrap_or(label);
+    let typed_name = typed.rsplit(['/', '\\']).next().unwrap_or(typed);
+    let label_name = label.rsplit(['/', '\\']).next().unwrap_or(label);
     let rest = strip_prefix_ignore_ascii_case(label_name, typed_name)?;
     (!rest.is_empty()).then(|| rest.to_string())
 }

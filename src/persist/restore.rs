@@ -74,6 +74,20 @@ struct PaneRestoreFailure {
     was_imported: bool,
 }
 
+fn restore_home_directory() -> PathBuf {
+    // HOME covers POSIX shells; USERPROFILE is the native Windows home.
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .filter(|path| path.is_dir())
+        })
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
 /// Restore workspaces from a snapshot. Each pane gets a fresh shell in its saved cwd.
 pub fn restore(
     snapshot: &SessionSnapshot,
@@ -605,7 +619,7 @@ fn restore_pane(
 ) -> Result<RestoredPane, PaneRestoreFailure> {
     let saved_cwd = saved_pane
         .map(|p| p.cwd.clone())
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+        .unwrap_or_else(restore_home_directory);
 
     let cwd = if saved_cwd.exists() {
         saved_cwd
@@ -614,14 +628,7 @@ fn restore_pane(
             cwd = %saved_cwd.display(),
             "saved pane cwd does not exist, falling back to HOME"
         );
-        let home = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/"));
-        if home.exists() {
-            home
-        } else {
-            PathBuf::from("/")
-        }
+        restore_home_directory()
     };
 
     // Reuse the saved terminal identity so everything derived from it
@@ -714,7 +721,8 @@ fn restore_pane(
             .as_ref()
             .is_some_and(|argv| !argv.is_empty());
     let restart_argv = restart_argv(saved_launch_argv.as_deref(), restarted_saved_command);
-    let runtime_result = if let Some(imported) = imported_runtime {
+    #[cfg(unix)]
+    let imported_runtime_result = imported_runtime.map(|imported| {
         TerminalRuntime::from_handoff_fd(
             crate::handoff_runtime::ImportedHandoffRuntime {
                 master_fd: imported.master_fd,
@@ -726,6 +734,11 @@ fn restore_pane(
             runtime_context.render_notify.clone(),
             runtime_context.render_dirty.clone(),
         )
+    });
+    #[cfg(not(unix))]
+    let imported_runtime_result: Option<std::io::Result<TerminalRuntime>> = None;
+    let runtime_result = if let Some(imported) = imported_runtime_result {
+        imported
     } else if restarted_saved_command {
         TerminalRuntime::spawn_argv_command(
             pane_id,
@@ -1314,7 +1327,7 @@ mod tests {
             24,
             80,
             0,
-            "/usr/bin/true",
+            crate::pane::test_shell_program(),
             crate::config::ShellModeConfig::NonLogin,
             false,
             events,
@@ -1342,7 +1355,7 @@ mod tests {
     async fn restore_restarts_a_set_down_agent_without_a_native_session() {
         let cwd = std::env::current_dir().unwrap();
         let terminal_id = TerminalId::alloc();
-        let launch_argv = vec!["/bin/sleep".into(), "30".into()];
+        let launch_argv = crate::pane::test_true_argv();
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             workspaces: Vec::new(),
@@ -1377,7 +1390,7 @@ mod tests {
             24,
             80,
             0,
-            "/usr/bin/true",
+            crate::pane::test_shell_program(),
             crate::config::ShellModeConfig::NonLogin,
             true,
             events,
@@ -1403,7 +1416,7 @@ mod tests {
     async fn restore_restarts_a_docked_agent_without_a_native_session() {
         let cwd = std::env::current_dir().unwrap();
         let terminal_id = TerminalId::alloc();
-        let launch_argv = vec!["/bin/sleep".into(), "30".into()];
+        let launch_argv = crate::pane::test_true_argv();
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             workspaces: vec![WorkspaceSnapshot {
@@ -1451,7 +1464,7 @@ mod tests {
             24,
             80,
             0,
-            "/usr/bin/true",
+            crate::pane::test_shell_program(),
             crate::config::ShellModeConfig::NonLogin,
             true,
             events,
@@ -1537,7 +1550,7 @@ mod tests {
             24,
             80,
             0,
-            "/usr/bin/true",
+            crate::pane::test_shell_program(),
             crate::config::ShellModeConfig::NonLogin,
             false,
             events,
@@ -1646,7 +1659,7 @@ mod tests {
             24,
             80,
             0,
-            "/usr/bin/true",
+            crate::pane::test_shell_program(),
             crate::config::ShellModeConfig::NonLogin,
             false,
             events,
@@ -1727,7 +1740,7 @@ mod tests {
             24,
             80,
             0,
-            "/bin/sh",
+            crate::pane::test_shell_program(),
             crate::config::ShellModeConfig::NonLogin,
             true,
             events,
@@ -1756,7 +1769,7 @@ mod tests {
             restore_handoff(
                 &snapshot,
                 0,
-                "/bin/sh",
+                crate::pane::test_shell_program(),
                 crate::config::ShellModeConfig::NonLogin,
                 &mut imports,
                 mpsc::channel(4).0,
@@ -1791,7 +1804,7 @@ mod tests {
             5,
             40,
             4096,
-            "/bin/sh",
+            crate::pane::test_shell_program(),
             crate::config::ShellModeConfig::NonLogin,
             false,
             events,
@@ -1830,7 +1843,7 @@ mod tests {
             5,
             40,
             4096,
-            "/bin/sh",
+            crate::pane::test_shell_program(),
             crate::config::ShellModeConfig::NonLogin,
             false,
             events,
@@ -1973,7 +1986,7 @@ mod tests {
             24,
             80,
             0,
-            "/usr/bin/true",
+            crate::pane::test_shell_program(),
             crate::config::ShellModeConfig::NonLogin,
             false,
             events,

@@ -660,6 +660,7 @@ mod tests {
     use super::*;
     use crate::detect::{Agent, AgentState};
 
+    #[cfg(unix)]
     fn init_repo(path: &std::path::Path) {
         let status = std::process::Command::new("git")
             .args(["init", "-q"])
@@ -669,6 +670,7 @@ mod tests {
         assert!(status.success(), "git init failed for {}", path.display());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn herdr_toast_context_uses_live_root_runtime_cwd_label() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -716,7 +718,10 @@ mod tests {
             live_cwd.clone(),
             0,
             crate::terminal_theme::TerminalTheme::default(),
-            crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
+            crate::pane::PaneShellConfig::new(
+                crate::pane::test_shell_program(),
+                crate::config::ShellModeConfig::NonLogin,
+            ),
             events,
             std::sync::Arc::new(tokio::sync::Notify::new()),
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

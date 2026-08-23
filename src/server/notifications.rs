@@ -63,6 +63,7 @@ fn toast_event_text(kind: app::state::ToastKind) -> &'static str {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::detect::Agent;
@@ -77,6 +78,7 @@ mod tests {
         assert!(status.success(), "git init failed for {}", path.display());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn toast_message_uses_live_root_runtime_cwd_label() {
         let mut state = AppState::test_new();

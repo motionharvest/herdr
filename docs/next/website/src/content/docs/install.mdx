@@ -128,6 +128,57 @@ chmod +x herdr-linux-x86_64
 mv herdr-linux-x86_64 ~/.local/bin/herdr
 ```
 
+## Windows (experimental)
+
+Herdr builds and runs natively on Windows 10 version 1809 and newer. This
+support is experimental: panes run through ConPTY with PowerShell or cmd,
+sessions, the socket API, and the CLI work end to end, while a few Unix-only
+features are not available yet (listed under *Windows limitations* below).
+
+There is no Windows release binary yet, so build from source:
+
+1. Install [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022)
+   with the *Desktop development with C++* workload.
+2. Install the Rust MSVC toolchain:
+
+   ```powershell
+   winget install Rustlang.Rustup
+   rustup default stable-x86_64-pc-windows-msvc
+   ```
+
+3. Install [Zig 0.15.2](https://ziglang.org/download/) (used to build the
+   embedded terminal engine) and either put `zig.exe` on `PATH` or point the
+   `ZIG` environment variable at it.
+4. Build:
+
+   ```powershell
+   git clone https://github.com/ogulcancelik/herdr
+   cd herdr
+   cargo build --release --locked
+   .\target\release\herdr.exe --version
+   ```
+
+The first build downloads Herdr's terminal-engine dependencies once.
+
+### Windows shell defaults
+
+With no `terminal.default_shell` configured, new panes prefer PowerShell 7
+(`pwsh.exe`) when installed and fall back to Windows PowerShell
+(`powershell.exe`). Set `terminal.default_shell` to `cmd.exe`, a full shell
+path, or a Git Bash path to use something else.
+
+### Windows limitations
+
+- Live server handoff (`herdr update --handoff`) is Unix-only; updates fall
+  back to the normal stop-and-restart flow.
+- Foreground-agent detection uses the pane's process tree instead of Unix
+  process groups, so some wrapper-based agents may report less detail.
+- Agent integrations that install Bash hooks assume a POSIX shell; install
+  them from Git Bash if you use those agents on Windows.
+- `herdr update` does not yet find Windows release assets because no Windows
+  builds are published; update by rebuilding from source for now.
+
 ## Requirements
 
-Herdr supports Linux and macOS. Native Windows support is not available yet; use Herdr inside WSL for now.
+Herdr supports Linux and macOS with released binaries, and Windows 10 1809+
+experimentally from source as described above.

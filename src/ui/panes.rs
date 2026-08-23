@@ -1484,7 +1484,10 @@ mod tests {
                 std::path::Path::new("/repo/herdr/.claude/worktrees/eich/website"),
                 &status
             ),
-            "/repo/herdr/website"
+            std::path::PathBuf::from("/repo/herdr")
+                .join("website")
+                .display()
+                .to_string()
         );
     }
 

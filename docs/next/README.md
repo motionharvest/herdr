@@ -58,7 +58,7 @@ cargo build --release
 ./target/release/herdr
 ```
 
-requires linux or macos. full install, update, Homebrew, mise, and Nix details live in the [install docs](website/src/content/docs/install.mdx).
+requires linux or macos, or windows 10 1809+ experimentally from source. full install, update, Homebrew, mise, and Nix details live in the [install docs](website/src/content/docs/install.mdx).
 
 ## quick start
 

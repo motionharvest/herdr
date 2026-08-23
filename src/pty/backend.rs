@@ -1,49 +1,109 @@
-use std::os::fd::{FromRawFd, OwnedFd};
+#[cfg(unix)]
+mod imp {
+    use std::os::fd::{FromRawFd, OwnedFd};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
+    use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 
-use crate::pty::fd;
+    use crate::pty::fd;
 
-pub(crate) struct SpawnedPty {
-    pub master_fd: OwnedFd,
-    pub child: Box<dyn Child + Send + Sync>,
-}
+    pub(crate) struct SpawnedPty {
+        pub master_fd: OwnedFd,
+        pub child: Box<dyn Child + Send + Sync>,
+    }
 
-pub(crate) fn spawn_with_portable_pty(
-    rows: u16,
-    cols: u16,
-    cmd: CommandBuilder,
-) -> std::io::Result<SpawnedPty> {
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
+    pub(crate) fn spawn_with_portable_pty(
+        rows: u16,
+        cols: u16,
+        cmd: CommandBuilder,
+    ) -> std::io::Result<SpawnedPty> {
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        let master_fd = pair
+            .master
+            .as_raw_fd()
+            .ok_or_else(|| std::io::Error::other("pty master fd is unavailable"))?;
+        let actor_fd = fd::duplicate_cloexec_fd(master_fd)?;
+        let actor_fd = unsafe { OwnedFd::from_raw_fd(actor_fd) };
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        drop(pair);
+
+        Ok(SpawnedPty {
+            master_fd: actor_fd,
+            child,
         })
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
-    let master_fd = pair
-        .master
-        .as_raw_fd()
-        .ok_or_else(|| std::io::Error::other("pty master fd is unavailable"))?;
-    let actor_fd = fd::duplicate_cloexec_fd(master_fd)?;
-    let actor_fd = unsafe { OwnedFd::from_raw_fd(actor_fd) };
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
-    drop(pair);
-
-    Ok(SpawnedPty {
-        master_fd: actor_fd,
-        child,
-    })
+    }
 }
+
+#[cfg(unix)]
+pub(crate) use imp::*;
+
+#[cfg(windows)]
+mod imp {
+    use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+
+    pub(crate) struct SpawnedPty {
+        pub master: Box<dyn MasterPty + Send>,
+        pub reader: Box<dyn std::io::Read + Send>,
+        pub writer: Box<dyn std::io::Write + Send>,
+        pub child: Box<dyn Child + Send + Sync>,
+    }
+
+    pub(crate) fn spawn_with_portable_pty(
+        rows: u16,
+        cols: u16,
+        cmd: CommandBuilder,
+    ) -> std::io::Result<SpawnedPty> {
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        let master = pair.master;
+        drop(pair.slave);
+        // The master must outlive the reader/writer pipes, so it moves
+        // into the spawned handle and from there into the PTY actor.
+        Ok(SpawnedPty {
+            master,
+            reader,
+            writer,
+            child,
+        })
+    }
+}
+
+#[cfg(windows)]
+pub(crate) use imp::*;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use portable_pty::CommandBuilder;
     use std::sync::{Mutex, OnceLock};
 
     fn pty_fd_test_lock() -> &'static Mutex<()> {

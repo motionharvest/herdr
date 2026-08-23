@@ -3326,6 +3326,7 @@ mod tests {
         )));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn navigator_rows_match_live_root_runtime_cwd_workspace_label() {
         let unique = format!(
@@ -3360,7 +3361,10 @@ mod tests {
             live_cwd.clone(),
             0,
             crate::terminal_theme::TerminalTheme::default(),
-            crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
+            crate::pane::PaneShellConfig::new(
+                crate::pane::test_shell_program(),
+                crate::config::ShellModeConfig::NonLogin,
+            ),
             events,
             std::sync::Arc::new(tokio::sync::Notify::new()),
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -4739,6 +4743,21 @@ mod tests {
         let mut state = app_with_workspaces(&["active"]);
         let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
 
+        let first_session = crate::agent_resume::AgentSessionRef::path(
+            std::env::temp_dir()
+                .join("herdr-actions-one.jsonl")
+                .display()
+                .to_string(),
+        )
+        .expect("the temporary session path should be absolute");
+        let second_session = crate::agent_resume::AgentSessionRef::path(
+            std::env::temp_dir()
+                .join("herdr-actions-two.jsonl")
+                .display()
+                .to_string(),
+        )
+        .expect("the temporary session path should be absolute");
+
         let first_updates = state.handle_app_event(AppEvent::HookStateReported {
             pane_id,
             source: "herdr:pi".into(),
@@ -4747,7 +4766,7 @@ mod tests {
             message: None,
             custom_status: None,
             seq: Some(20),
-            session_ref: crate::agent_resume::AgentSessionRef::path("/tmp/one.jsonl"),
+            session_ref: Some(first_session),
         });
         assert_eq!(first_updates.len(), 1);
         state.session_dirty = false;
@@ -4760,7 +4779,7 @@ mod tests {
             message: None,
             custom_status: None,
             seq: Some(21),
-            session_ref: crate::agent_resume::AgentSessionRef::path("/tmp/two.jsonl"),
+            session_ref: Some(second_session),
         });
 
         assert!(second_updates.is_empty());

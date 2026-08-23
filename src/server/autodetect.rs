@@ -8,8 +8,9 @@
 //! The `--no-session` flag bypasses server/client entirely and runs monolithically
 //! (escape hatch for users who want the traditional single-process behavior).
 
+use crate::net::UnixStream;
 use std::io;
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -149,13 +150,26 @@ fn build_server_daemon_command(exe: PathBuf) -> Command {
     let mut command = Command::new(&exe);
     command
         .arg("server")
-        // Create a new process group so the server survives the parent's exit
-        // and doesn't receive SIGHUP when the client's terminal closes.
-        .process_group(0)
-        // Redirect stdio to /dev/null
+        // Redirect stdio to the null device.
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Create a new process group so the server survives the parent's
+        // exit and doesn't receive SIGHUP when the client's terminal
+        // closes.
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // Keep the daemon off any visible console window.
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
 
     if crate::session::explicit_session_requested() {
         command
@@ -235,9 +249,9 @@ pub fn auto_detect_launch() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::UnixListener;
     use std::ffi::OsStr;
     use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {

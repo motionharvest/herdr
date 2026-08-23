@@ -14,9 +14,9 @@
 //! - Handles stale socket cleanup, explicit server stop, minimum terminal size,
 //!   and pane spawn failure during restore
 
+use crate::net::UnixListener;
 use std::collections::HashMap;
 use std::io;
-use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -162,7 +162,10 @@ const CLIENT_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// The headless server — runs the herdr event loop without a real terminal.
 pub struct HeadlessServer {
     app: app::App,
+    // Consumed by the Unix live-handoff path when it runs.
+    #[cfg_attr(not(unix), allow(dead_code))]
     api_tx: Option<api::ApiRequestSender>,
+    #[cfg_attr(not(unix), allow(dead_code))]
     api_server: Option<api::ServerHandle>,
     client_listener: UnixListener,
     client_socket_path: PathBuf,
@@ -189,6 +192,7 @@ pub struct HeadlessServer {
     /// Flag set while exporting live PTYs to a replacement server.
     handoff_in_progress: bool,
     /// Imported panes get one app-safe resize nudge after the first client attaches.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pending_handoff_repaint_nudge: bool,
     /// Flag set by Ctrl+C or `server stop` signal.
     should_quit: Arc<AtomicBool>,
@@ -321,6 +325,7 @@ impl HeadlessServer {
             effective_size: (MIN_COLS, MIN_ROWS),
             shutting_down: false,
             handoff_in_progress: false,
+            #[cfg_attr(not(unix), allow(dead_code))]
             pending_handoff_repaint_nudge: false,
             should_quit,
             server_event_rx,
@@ -1748,6 +1753,7 @@ impl HeadlessServer {
         }
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn disconnect_all_clients_for_handoff(&mut self) {
         let client_ids = self.clients.keys().copied().collect::<Vec<_>>();
         for client_id in client_ids {
@@ -3332,7 +3338,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
 
 #[cfg(unix)]
 fn wait_for_old_public_sockets_to_close(timeout: Duration) -> io::Result<()> {
-    use std::os::unix::net::UnixStream;
+    use crate::net::UnixStream;
 
     let deadline = Instant::now() + timeout;
     let api_socket = api::socket_path();
@@ -3430,6 +3436,7 @@ mod tests {
             effective_size: (MIN_COLS, MIN_ROWS),
             shutting_down: false,
             handoff_in_progress: false,
+            #[cfg_attr(not(unix), allow(dead_code))]
             pending_handoff_repaint_nudge: false,
             should_quit: Arc::new(AtomicBool::new(false)),
             server_event_rx,

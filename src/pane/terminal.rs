@@ -284,6 +284,7 @@ impl PaneTerminal {
         self.ghostty.keyboard_protocol().unwrap_or(fallback)
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn kitty_keyboard_state_ansi(&self) -> Option<String> {
         self.ghostty
             .kitty_keyboard_state_ansi()
@@ -637,6 +638,7 @@ impl GhosttyPaneTerminal {
             .set_from_terminal(&core.terminal);
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn seed_handoff_input_state(&self, input_state: InputState) {
         let mut core = self.lock_core();
 
@@ -707,6 +709,7 @@ impl GhosttyPaneTerminal {
             .set_from_terminal(&core.terminal);
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn seed_keyboard_protocol_flags(&self, flags: u16) {
         if flags == 0 {
             return;
@@ -714,6 +717,7 @@ impl GhosttyPaneTerminal {
         self.seed_keyboard_protocol_ansi(&format!("\x1b[>{flags}u"));
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn seed_keyboard_protocol_ansi(&self, ansi: &str) {
         if ansi.is_empty() {
             return;

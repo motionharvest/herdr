@@ -207,6 +207,8 @@ impl TerminalRuntime {
         self.0.resize(rows, cols, cell_width_px, cell_height_px);
     }
 
+    // Unix-handoff redraw nudge; unreachable on Windows.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn nudge_child_redraw_after_handoff(&self) {
         self.0.nudge_child_redraw_after_handoff();
     }
