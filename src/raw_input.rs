@@ -513,7 +513,10 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
         }
 
         if let Some(key) = parse_terminal_key_sequence(seq) {
-            return Some((RawInputEvent::Key(key), seq_len));
+            return Some((
+                RawInputEvent::Key(key.with_vt_bytes(buffer[..seq_len].to_vec())),
+                seq_len,
+            ));
         }
 
         tracing::debug!(sequence = ?seq, "dropping unsupported escape sequence");

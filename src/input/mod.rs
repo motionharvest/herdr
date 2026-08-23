@@ -7,9 +7,9 @@ pub use encode::{
     encode_cursor_key, encode_mouse_button, encode_mouse_scroll, encode_terminal_key,
 };
 pub use model::{
-    activate_host_vt_input, deactivate_host_vt_input, disable_host_mouse_capture,
-    enable_host_mouse_capture, host_modify_other_keys_mode, pop_keyboard_enhancement,
-    push_keyboard_enhancement, KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode,
+    host_modify_other_keys_mode, KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode,
     TerminalKey, TextCommit, WindowsKeyRecord,
 };
+#[cfg(not(windows))]
+pub use model::{pop_keyboard_enhancement, push_keyboard_enhancement};
 pub use parse::parse_terminal_key_sequence;

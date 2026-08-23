@@ -960,9 +960,13 @@ impl App {
             return Ok(());
         }
         if desired {
-            crate::input::enable_host_mouse_capture()?;
+            crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
+            #[cfg(windows)]
+            // crossterm's Windows mouse capture overwrites the console input
+            // mode, dropping the VT input bit the byte reader depends on.
+            let _ = crate::client::enable_windows_virtual_terminal_input();
         } else {
-            crate::input::disable_host_mouse_capture()?;
+            crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
         }
         *active = desired;
         Ok(())

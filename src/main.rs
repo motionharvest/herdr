@@ -1,7 +1,8 @@
 use std::io;
 
 use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture,
 };
 use crossterm::execute;
 
@@ -639,6 +640,8 @@ fn main() -> io::Result<()> {
 
     let original_hook = std::panic::take_hook();
     let panic_resets_modify_other_keys = modify_other_keys_mode.is_some();
+    #[cfg(windows)]
+    let panic_restore_windows_input_mode = None;
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!("PANIC: {info}");
         if panic_resets_modify_other_keys {
@@ -647,10 +650,18 @@ fn main() -> io::Result<()> {
         if crate::kitty_graphics::is_enabled() {
             let _ = crate::kitty_graphics::clear_all_host_graphics();
         }
+        #[cfg(not(windows))]
         let _ = crate::input::pop_keyboard_enhancement();
-        let _ = execute!(io::stdout(), DisableFocusChange, DisableBracketedPaste);
-        crate::input::deactivate_host_vt_input();
-        let _ = crate::input::disable_host_mouse_capture();
+        let _ = execute!(
+            io::stdout(),
+            DisableFocusChange,
+            DisableBracketedPaste,
+            DisableMouseCapture
+        );
+        #[cfg(windows)]
+        if let Some(mode) = panic_restore_windows_input_mode {
+            crate::client::restore_windows_input_mode_value(mode);
+        }
         ratatui::restore();
         original_hook(info);
     }));
@@ -671,12 +682,14 @@ fn main() -> io::Result<()> {
     let result = rt.block_on(async {
         let mut terminal = ratatui::init();
         if config.ui.mouse_capture {
-            crate::input::enable_host_mouse_capture()?;
+            execute!(io::stdout(), EnableMouseCapture)?;
         } else {
-            crate::input::disable_host_mouse_capture()?;
+            execute!(io::stdout(), DisableMouseCapture)?;
         }
-        crate::input::activate_host_vt_input()?;
+        #[cfg(windows)]
+        let windows_vti_setup = crate::client::enable_windows_virtual_terminal_input();
         execute!(io::stdout(), EnableBracketedPaste, EnableFocusChange)?;
+        #[cfg(not(windows))]
         crate::input::push_keyboard_enhancement()?;
 
         // Some hosts do not honor Kitty keyboard enhancement pushes for
@@ -707,10 +720,18 @@ fn main() -> io::Result<()> {
         if crate::kitty_graphics::is_enabled() {
             crate::kitty_graphics::clear_all_host_graphics()?;
         }
+        #[cfg(not(windows))]
         crate::input::pop_keyboard_enhancement()?;
-        execute!(io::stdout(), DisableFocusChange, DisableBracketedPaste)?;
-        crate::input::deactivate_host_vt_input();
-        crate::input::disable_host_mouse_capture()?;
+        execute!(
+            io::stdout(),
+            DisableFocusChange,
+            DisableBracketedPaste,
+            DisableMouseCapture
+        )?;
+        #[cfg(windows)]
+        if let Some(mode) = windows_vti_setup.restore_mode {
+            crate::client::restore_windows_input_mode_value(mode);
+        }
         ratatui::restore();
 
         // Drop app (and all workspaces/panes) before runtime shuts down

@@ -519,6 +519,9 @@ You can also toggle it from Settings > Experiments > switch to ascii input sourc
 | `HERDR_SOCKET_PATH` | Low-level socket path override. |
 | `HERDR_LOG` | Set log filtering, for example `HERDR_LOG=herdr=debug`. |
 | `HERDR_DISABLE_SOUND` | Disable sound playback even when `[ui.sound] enabled = true`. |
+| `HERDR_WINDOWS_INPUT_BACKEND` | Windows only: `crossterm` switches the terminal client to the crossterm input reader instead of the default console input-record reader. |
+| `HERDR_WINDOWS_INPUT_PROBE` | Windows only: `win32` (the default) lets the terminal client report win32-input-mode key sequences to ConPTY panes; any other value disables that probe. |
+| `HERDR_WINDOWS_INPUT_TRACE` | Windows only: set to any value to log every console key record and translated input event from the terminal client. |
 
 ## Logs
 
