@@ -391,7 +391,11 @@ fn render_settings_theme(app: &AppState, frame: &mut Frame, area: Rect) {
             let is_current = name.to_lowercase().replace([' ', '_'], "-")
                 == app.theme_name.to_lowercase().replace([' ', '_'], "-");
             let marker = if is_current { " ✓" } else { "" };
+            let swatch = crate::app::state::Palette::from_name(name)
+                .map(|theme| theme.accent)
+                .unwrap_or(p.subtext0);
             ListItem::new(Line::from(vec![
+                Span::styled("■ ", Style::default().fg(swatch)),
                 Span::styled(
                     crate::app::state::theme_display_name(name),
                     Style::default().fg(p.subtext0),
