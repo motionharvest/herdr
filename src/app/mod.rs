@@ -48,10 +48,7 @@ const PANE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_COPY_HIGHLIGHT_DURATION: Duration = Duration::from_millis(500);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
 
-use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
-    execute, terminal,
-};
+use crossterm::terminal;
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 use tokio::sync::{mpsc, Notify};
@@ -963,9 +960,9 @@ impl App {
             return Ok(());
         }
         if desired {
-            execute!(io::stdout(), EnableMouseCapture)?;
+            crate::input::enable_host_mouse_capture()?;
         } else {
-            execute!(io::stdout(), DisableMouseCapture)?;
+            crate::input::disable_host_mouse_capture()?;
         }
         *active = desired;
         Ok(())

@@ -1,4 +1,10 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags};
+use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers,
+    KeyboardEnhancementFlags,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +82,40 @@ pub fn host_modify_other_keys_mode(
     }
 
     None
+}
+
+/// Whether this process currently has crossterm mouse capture enabled.
+///
+/// crossterm's Windows implementation restores a saved console mode when
+/// disabling mouse capture, and that saved mode only exists after an enable
+/// in the same process. A disable before any enable is therefore a hard
+/// error on Windows while staying a harmless escape-sequence no-op on Unix.
+/// The flag keeps the disable a no-op on Windows until something was really
+/// enabled, without changing Unix behavior.
+static HOST_MOUSE_CAPTURED: AtomicBool = AtomicBool::new(false);
+
+/// Enable host-terminal mouse capture for Herdr's own mouse UI.
+pub fn enable_host_mouse_capture() -> io::Result<()> {
+    let mut stdout = io::stdout();
+    crossterm::execute!(stdout, EnableMouseCapture)?;
+    HOST_MOUSE_CAPTURED.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Disable host-terminal mouse capture. Cold disables are a no-op on
+/// Windows because there is no saved console mode to restore yet.
+pub fn disable_host_mouse_capture() -> io::Result<()> {
+    let was_captured = HOST_MOUSE_CAPTURED.load(Ordering::Acquire);
+    let result = if cfg!(windows) && !was_captured {
+        Ok(())
+    } else {
+        let mut stdout = io::stdout();
+        crossterm::execute!(stdout, DisableMouseCapture)
+    };
+    if result.is_ok() {
+        HOST_MOUSE_CAPTURED.store(false, Ordering::Release);
+    }
+    result
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

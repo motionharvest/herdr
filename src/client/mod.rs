@@ -22,9 +22,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, KeyCode,
+    KeyEventKind, KeyModifiers, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use tracing::{debug, info, warn};
@@ -304,9 +304,9 @@ fn setup_terminal_with_capabilities(
 
     if enable_client_protocols {
         if mouse_capture {
-            execute!(io::stdout(), EnableMouseCapture)?;
+            crate::input::enable_host_mouse_capture()?;
         } else {
-            execute!(io::stdout(), DisableMouseCapture)?;
+            crate::input::disable_host_mouse_capture()?;
         }
         execute!(
             io::stdout(),
@@ -315,9 +315,9 @@ fn setup_terminal_with_capabilities(
             PushKeyboardEnhancementFlags(crate::input::ime_compatible_keyboard_enhancement_flags())
         )?;
     } else if mouse_capture {
-        execute!(io::stdout(), EnableMouseCapture)?;
+        crate::input::enable_host_mouse_capture()?;
     } else {
-        execute!(io::stdout(), DisableMouseCapture)?;
+        crate::input::disable_host_mouse_capture()?;
     }
 
     let modify_other_keys_mode = enable_client_protocols
@@ -352,9 +352,9 @@ fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io::Result<()
 
 fn set_mouse_capture(enabled: bool) -> io::Result<()> {
     if enabled {
-        execute!(io::stdout(), EnableMouseCapture)
+        crate::input::enable_host_mouse_capture()
     } else {
-        execute!(io::stdout(), DisableMouseCapture)
+        crate::input::disable_host_mouse_capture()
     }
 }
 
@@ -371,9 +371,9 @@ fn restore_terminal_state(reset_modify_other_keys: bool) {
         io::stdout(),
         PopKeyboardEnhancementFlags,
         DisableFocusChange,
-        DisableBracketedPaste,
-        DisableMouseCapture
+        DisableBracketedPaste
     );
+    let _ = crate::input::disable_host_mouse_capture();
     ratatui::restore();
     let _ = write_terminal_restore_postlude(&mut io::stdout());
 }
