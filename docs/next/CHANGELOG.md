@@ -8,7 +8,7 @@
 - Pane titles can show more than the agent name again. Settings → pane labels now has independent toggles for agent name, working directory, parent directory, git branch, and git status. Off, a pane still writes only its name. On, the top edge writes those fields in that order — `Olivia lab/herdr (main !)` — the way it did before titles were reduced to the name. The same keys live under `[ui.pane_header]` in the config file. Existing installs keep name-only titles until those toggles are turned on.
 
 ### Fixed
-- Escape now leaves a peeked pane. It used to go to the agent, so the overlay stayed up unless you hit BACK or HIDE.
+- Escape now leaves a peeked pane. It used to go to the agent, so the overlay stayed up unless you hit EXIT.
 - Dragging in the Task field now selects the text under the pointer, copies it on release, and keeps the highlight. A click still only moves the cursor. Shift-arrows, Ctrl-A, Ctrl-C, and Ctrl-X work the same way they do in a text field. The field used to ignore the drag, so nothing could be highlighted or copied from it.
 - Paste now goes to the peeked pane, including in `herdr server`. Typing already went there; paste used the last selected docked pane because the client paste path followed layout focus instead of the overlay.
 - Wheel scroll now reaches the peeked pane. Mouse and host-scroll lookups used the workspace layout, so a set-down agent shown in peek could not be scrolled.
@@ -16,6 +16,7 @@
 - Git Status no longer writes `Landed` when a linked worktree has uncommitted files. The label used to follow the dirty marker whenever that checkout's latest commit was already on the parent, so a dirty tree still looked finished.
 
 ### Changed
+- A peeked pane's chrome now says `EXIT` instead of `BACK  HIDE`. Clicking it still leaves the overlay. A zoomed pane still says `BACK` and `HIDE`.
 - A hidden agent's name matches Summary until that row is selected, then it uses the accent. A selected name still in a space uses the focus color. Selected docked names used the default foreground, so on synthwave the agent you had clicked stayed white instead of turning pink. Hidden names used the accent while unselected, so every set-down agent read as cyan.
 - A Grok agent's Summary now follows the latest typed prompt, as a short headline of the part that asks for work, not the whole message. Grok still writes `generated_title` after the first reply and then freezes it, so the column used to stay on that first name. A rambling follow-up is folded the same way: a quoted imperative is used when the user named the task, otherwise the sentence that looks like a request. `generated_title` still fills it when no prompt has been parsed yet, and the model read from `summary.json` is unchanged.
 - An agent's assigned name is the first-name word list again (`Olivia`, `Olivia-2` on collision). Session titles used to become job-title slugs (`yellow-banner-hider`), which made the Agent Name column hard to match to a person. A manual rename still wins. The session title stays in the summary.

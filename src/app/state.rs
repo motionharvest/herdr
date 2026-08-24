@@ -1702,8 +1702,8 @@ pub struct AppState {
     /// The row a click picked out, until the next key releases it.
     pub(crate) agent_table_focus: Option<AgentTableFocus>,
     /// An agent shown full-pane over the current layout. The splits underneath
-    /// do not change, so a shell that was on screen keeps running. BACK and HIDE
-    /// clear it. Clicking this row again leaves it showing.
+    /// do not change, so a shell that was on screen keeps running. EXIT
+    /// clears it. Clicking this row again leaves it showing.
     pub(crate) agent_peek: Option<PaneId>,
     /// The agent the delete key has asked about, until enter or escape answers.
     pub(crate) confirm_close_agent: Option<PendingAgentClose>,

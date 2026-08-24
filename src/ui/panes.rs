@@ -20,7 +20,15 @@ use unicode_width::UnicodeWidthStr;
 
 const PANE_BORDER_SET: ratatui::symbols::border::Set = ratatui::symbols::border::ROUNDED;
 const PANE_CLOSE_CONTROL_SUFFIX: &str = " ✕ ";
+const PANE_PEEK_CONTROLS: &str = " ◱ EXIT ";
 const PANE_INNER_PADDING: u16 = 0;
+
+#[derive(Clone, Copy)]
+enum PaneTitleMode {
+    Normal,
+    Zoomed,
+    Peeking,
+}
 
 struct PaneTitleChromeLayout {
     /// Width of the pane name/path details section (before the horizontal rule glyphs).
@@ -31,10 +39,10 @@ struct PaneTitleChromeLayout {
 fn pane_title_chrome_layout(
     title_width: u16,
     title: &PaneChromeTitle,
-    maximized: bool,
+    mode: PaneTitleMode,
     hide: bool,
 ) -> PaneTitleChromeLayout {
-    let (_, controls_width) = pane_controls_text(title_width, maximized, hide);
+    let (_, controls_width) = pane_controls_text(title_width, mode, hide);
     let title_prefix_width = "╭─ ".chars().count();
     let text_available = title_width
         .saturating_sub(title_prefix_width as u16)
@@ -52,9 +60,15 @@ fn pane_title_chrome_layout(
     }
 }
 
-fn pane_controls_text(title_width: u16, maximized: bool, hide: bool) -> (&'static str, u16) {
-    let text = if title_width >= 24 {
-        match (maximized, hide) {
+fn pane_controls_text(title_width: u16, mode: PaneTitleMode, hide: bool) -> (&'static str, u16) {
+    let text = if matches!(mode, PaneTitleMode::Peeking) {
+        if title_width >= 12 {
+            PANE_PEEK_CONTROLS
+        } else {
+            ""
+        }
+    } else if title_width >= 24 {
+        match (matches!(mode, PaneTitleMode::Zoomed), hide) {
             (true, true) => " ◱ BACK  HIDE ",
             (true, false) => " ◱ BACK  ✕ ",
             (false, true) => " ⛶ FOCUS HIDE ",
@@ -73,7 +87,9 @@ fn pane_controls_text(title_width: u16, maximized: bool, hide: bool) -> (&'stati
 }
 
 fn pane_close_suffix(controls_text: &str) -> &str {
-    if controls_text.ends_with("HIDE ") {
+    if controls_text.ends_with("EXIT ") {
+        controls_text
+    } else if controls_text.ends_with("HIDE ") {
         " HIDE "
     } else {
         PANE_CLOSE_CONTROL_SUFFIX
@@ -346,13 +362,13 @@ fn compute_hidden_right_edge_ranges(
 fn pane_title_hit_area(
     area: Rect,
     title: &PaneChromeTitle,
-    maximized: bool,
+    mode: PaneTitleMode,
     hide: bool,
 ) -> Option<Rect> {
     if area.width < 4 || area.height == 0 {
         return None;
     }
-    let layout = pane_title_chrome_layout(area.width, title, maximized, hide);
+    let layout = pane_title_chrome_layout(area.width, title, mode, hide);
     Some(Rect::new(
         area.x,
         area.y,
@@ -545,18 +561,24 @@ fn pane_chrome_controls(
     }
 
     let controls_x = pane_chrome_controls_x(area, controls_width);
-    vec![
-        PaneChromeControl {
-            pane_id,
-            action: PaneChromeAction::Close,
-            rect: pane_close_control_rect(area, controls_x, controls_text),
-        },
-        PaneChromeControl {
-            pane_id,
-            action: PaneChromeAction::Focus,
-            rect: pane_focus_control_rect(area, controls_x, controls_text),
-        },
-    ]
+    let close = PaneChromeControl {
+        pane_id,
+        action: PaneChromeAction::Close,
+        rect: pane_close_control_rect(area, controls_x, controls_text),
+    };
+    let focus_rect = pane_focus_control_rect(area, controls_x, controls_text);
+    if focus_rect.width == 0 {
+        vec![close]
+    } else {
+        vec![
+            close,
+            PaneChromeControl {
+                pane_id,
+                action: PaneChromeAction::Focus,
+                rect: focus_rect,
+            },
+        ]
+    }
 }
 
 pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
@@ -650,7 +672,7 @@ fn render_code_ui_pane_chrome(
     pane_id: crate::layout::PaneId,
     focused: bool,
     highlighted: bool,
-    maximized: bool,
+    mode: PaneTitleMode,
     hide: bool,
     exposed: ExposedSides,
     hidden_right_edge_y: Option<(u16, u16)>,
@@ -704,8 +726,8 @@ fn render_code_ui_pane_chrome(
     }
 
     let title_width = area.width;
-    let layout = pane_title_chrome_layout(title_width, &title, maximized, hide);
-    let (controls_text, controls_width) = pane_controls_text(title_width, maximized, hide);
+    let layout = pane_title_chrome_layout(title_width, &title, mode, hide);
+    let (controls_text, controls_width) = pane_controls_text(title_width, mode, hide);
 
     let rule_glyph = '─';
     let unfocused_style = Style::default().fg(app.palette.overlay0).bg(Color::Reset);
@@ -1091,7 +1113,13 @@ pub(super) fn render_panes(
                     info.id,
                     info.is_focused,
                     is_swap_preview,
-                    peeking || ws.zoomed,
+                    if peeking {
+                        PaneTitleMode::Peeking
+                    } else if ws.zoomed {
+                        PaneTitleMode::Zoomed
+                    } else {
+                        PaneTitleMode::Normal
+                    },
                     pane_hides_instead_of_closing(app, ws, info.id),
                     info.exposed,
                     hidden_right_edges.get(&info.id).copied(),
@@ -1163,14 +1191,21 @@ pub(super) fn compute_pane_chrome_controls(app: &AppState) -> Vec<PaneChromeCont
         return Vec::new();
     }
 
-    let zoomed = app.agent_peek.is_some() || ws.active_tab().map(|tab| tab.zoomed).unwrap_or(false);
+    let peeking = app.agent_peek.is_some();
+    let mode = if peeking {
+        PaneTitleMode::Peeking
+    } else if ws.active_tab().map(|tab| tab.zoomed).unwrap_or(false) {
+        PaneTitleMode::Zoomed
+    } else {
+        PaneTitleMode::Normal
+    };
 
     app.view
         .pane_infos
         .iter()
         .flat_map(|info| {
             let hide = pane_hides_instead_of_closing(app, ws, info.id);
-            let (controls_text, controls_width) = pane_controls_text(info.rect.width, zoomed, hide);
+            let (controls_text, controls_width) = pane_controls_text(info.rect.width, mode, hide);
             if controls_width == 0 || info.rect.height == 0 {
                 return Vec::new();
             }
@@ -1195,9 +1230,11 @@ pub(super) fn compute_pane_title_hit_areas(app: &AppState) -> Vec<PaneTitleHitAr
             .and_then(|info| {
                 let title = pane_chrome_title_for_pane(app, ws, info.id);
                 let hide = pane_hides_instead_of_closing(app, ws, info.id);
-                pane_title_hit_area(info.rect, &title, true, hide).map(|rect| PaneTitleHitArea {
-                    pane_id: info.id,
-                    rect,
+                pane_title_hit_area(info.rect, &title, PaneTitleMode::Peeking, hide).map(|rect| {
+                    PaneTitleHitArea {
+                        pane_id: info.id,
+                        rect,
+                    }
                 })
             })
             .into_iter()
@@ -1218,9 +1255,11 @@ pub(super) fn compute_pane_title_hit_areas(app: &AppState) -> Vec<PaneTitleHitAr
         .filter_map(|info| {
             let title = pane_chrome_title_for_pane(app, ws, info.id);
             let hide = pane_hides_instead_of_closing(app, ws, info.id);
-            pane_title_hit_area(info.rect, &title, zoomed, hide).map(|rect| PaneTitleHitArea {
-                pane_id: info.id,
-                rect,
+            pane_title_hit_area(info.rect, &title, PaneTitleMode::Normal, hide).map(|rect| {
+                PaneTitleHitArea {
+                    pane_id: info.id,
+                    rect,
+                }
             })
         })
         .collect()
@@ -1768,23 +1807,60 @@ mod tests {
 
     #[test]
     fn an_agent_pane_says_hide_instead_of_close() {
-        let (full, _) = pane_controls_text(40, false, true);
+        let (full, _) = pane_controls_text(40, PaneTitleMode::Normal, true);
         assert!(full.contains("HIDE"), "{full:?}");
         assert!(!full.contains('✕'), "{full:?}");
 
-        let (compact, _) = pane_controls_text(12, false, true);
+        let (compact, _) = pane_controls_text(12, PaneTitleMode::Normal, true);
         assert!(compact.contains("HIDE"), "{compact:?}");
         assert!(!compact.contains('✕'), "{compact:?}");
 
-        let (shell, _) = pane_controls_text(40, false, false);
+        let (shell, _) = pane_controls_text(40, PaneTitleMode::Normal, false);
         assert!(shell.contains('✕'), "{shell:?}");
         assert!(!shell.contains("HIDE"), "{shell:?}");
     }
 
     #[test]
+    fn a_peeked_pane_says_exit_instead_of_back_and_hide() {
+        let (full, _) = pane_controls_text(40, PaneTitleMode::Peeking, true);
+        assert!(full.contains("EXIT"), "{full:?}");
+        assert!(!full.contains("BACK"), "{full:?}");
+        assert!(!full.contains("HIDE"), "{full:?}");
+        assert!(!full.contains('✕'), "{full:?}");
+
+        let (compact, _) = pane_controls_text(12, PaneTitleMode::Peeking, true);
+        assert!(compact.contains("EXIT"), "{compact:?}");
+        assert!(!compact.contains("HIDE"), "{compact:?}");
+
+        let (zoomed, _) = pane_controls_text(40, PaneTitleMode::Zoomed, true);
+        assert!(zoomed.contains("BACK"), "{zoomed:?}");
+        assert!(zoomed.contains("HIDE"), "{zoomed:?}");
+        assert!(!zoomed.contains("EXIT"), "{zoomed:?}");
+    }
+
+    #[test]
+    fn pane_close_control_rect_covers_exit_on_a_peeked_pane() {
+        let area = Rect::new(10, 2, 40, 5);
+        let (controls_text, controls_width) =
+            pane_controls_text(area.width, PaneTitleMode::Peeking, true);
+        let controls_x = pane_chrome_controls_x(area, controls_width);
+        let close = pane_close_control_rect(area, controls_x, controls_text);
+        let suffix = pane_close_suffix(controls_text);
+        let controls =
+            pane_chrome_controls(area, PaneId::from_raw(1), controls_text, controls_width);
+
+        assert_eq!(suffix, " ◱ EXIT ");
+        assert_eq!(controls.len(), 1);
+        assert!(matches!(controls[0].action, PaneChromeAction::Close));
+        assert!(rect_contains(close, controls_x, area.y));
+        assert!(rect_contains(close, area.x + area.width - 2, area.y));
+    }
+
+    #[test]
     fn pane_close_control_rect_covers_hide_word_on_an_agent_pane() {
         let area = Rect::new(10, 2, 40, 5);
-        let (controls_text, controls_width) = pane_controls_text(area.width, false, true);
+        let (controls_text, controls_width) =
+            pane_controls_text(area.width, PaneTitleMode::Normal, true);
         let controls_x = pane_chrome_controls_x(area, controls_width);
         let close = pane_close_control_rect(area, controls_x, controls_text);
         let suffix = pane_close_suffix(controls_text);
@@ -1799,7 +1875,8 @@ mod tests {
     #[test]
     fn pane_close_control_rect_covers_close_suffix_and_padding() {
         let area = Rect::new(10, 2, 24, 5);
-        let (controls_text, controls_width) = pane_controls_text(area.width, false, false);
+        let (controls_text, controls_width) =
+            pane_controls_text(area.width, PaneTitleMode::Normal, false);
         let controls_x = pane_chrome_controls_x(area, controls_width);
         let close = pane_close_control_rect(area, controls_x, controls_text);
         let suffix_start =
@@ -1818,8 +1895,9 @@ mod tests {
     fn pane_title_hit_area_excludes_rule_glyphs() {
         let area = Rect::new(0, 0, 80, 10);
         let title = PaneChromeTitle::name_only("Agent Work");
-        let layout = pane_title_chrome_layout(area.width, &title, false, false);
-        let hit = pane_title_hit_area(area, &title, false, false).expect("title hit area");
+        let layout = pane_title_chrome_layout(area.width, &title, PaneTitleMode::Normal, false);
+        let hit = pane_title_hit_area(area, &title, PaneTitleMode::Normal, false)
+            .expect("title hit area");
 
         assert!(layout.rule_width > 0, "expected decorative rule glyphs");
         assert_eq!(hit.width, layout.details_width);
@@ -1848,7 +1926,7 @@ mod tests {
                     PaneId::from_raw(1),
                     true,
                     false,
-                    false,
+                    PaneTitleMode::Normal,
                     true,
                     ExposedSides::all(),
                     None,
@@ -1864,12 +1942,57 @@ mod tests {
         let hide_col = (0..area.width)
             .find(|x| buffer[(*x, 0)].symbol() == "H")
             .expect("HIDE should render in pane chrome");
-        let (controls_text, controls_width) = pane_controls_text(area.width, false, true);
+        let (controls_text, controls_width) =
+            pane_controls_text(area.width, PaneTitleMode::Normal, true);
         let controls_x = pane_chrome_controls_x(area, controls_width);
         let close = pane_close_control_rect(area, controls_x, controls_text);
         assert!(
             rect_contains(close, hide_col, area.y),
             "hide rect {close:?} should cover rendered HIDE at column {hide_col}"
+        );
+    }
+
+    #[test]
+    fn rendered_peek_control_covers_exit_word() {
+        let app = AppState::test_new();
+        let area = Rect::new(0, 0, 40, 5);
+        let backend = ratatui::backend::TestBackend::new(40, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_code_ui_pane_chrome(
+                    &app,
+                    frame,
+                    area,
+                    PaneChromeTitle::name_only("panel"),
+                    PaneId::from_raw(1),
+                    true,
+                    false,
+                    PaneTitleMode::Peeking,
+                    true,
+                    ExposedSides::all(),
+                    None,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let top_row: String = (0..area.width).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(top_row.contains("EXIT"), "{top_row:?}");
+        assert!(!top_row.contains("BACK"), "{top_row:?}");
+        assert!(!top_row.contains("HIDE"), "{top_row:?}");
+
+        let exit_col = (0..area.width)
+            .find(|x| buffer[(*x, 0)].symbol() == "E")
+            .expect("EXIT should render in pane chrome");
+        let (controls_text, controls_width) =
+            pane_controls_text(area.width, PaneTitleMode::Peeking, true);
+        let controls_x = pane_chrome_controls_x(area, controls_width);
+        let close = pane_close_control_rect(area, controls_x, controls_text);
+        assert!(
+            rect_contains(close, exit_col, area.y),
+            "exit rect {close:?} should cover rendered EXIT at column {exit_col}"
         );
     }
 
@@ -1890,7 +2013,7 @@ mod tests {
                     PaneId::from_raw(1),
                     true,
                     false,
-                    false,
+                    PaneTitleMode::Normal,
                     false,
                     ExposedSides::all(),
                     None,
@@ -1902,7 +2025,8 @@ mod tests {
         let cross_col = (0..area.width)
             .find(|x| buffer[(*x, 0)].symbol() == "✕")
             .expect("cross glyph should render in pane chrome");
-        let (controls_text, controls_width) = pane_controls_text(area.width, false, false);
+        let (controls_text, controls_width) =
+            pane_controls_text(area.width, PaneTitleMode::Normal, false);
         let controls_x = pane_chrome_controls_x(area, controls_width);
         let close = pane_close_control_rect(area, controls_x, controls_text);
 
@@ -2024,7 +2148,7 @@ mod tests {
                         PaneId::from_raw(1),
                         true,
                         false,
-                        false,
+                        PaneTitleMode::Normal,
                         false,
                         ExposedSides::all(),
                         None,
@@ -2060,7 +2184,7 @@ mod tests {
                     PaneId::from_raw(1),
                     true,
                     false,
-                    false,
+                    PaneTitleMode::Normal,
                     false,
                     ExposedSides::all(),
                     None,
@@ -2194,7 +2318,7 @@ mod tests {
                     PaneId::from_raw(2),
                     false,
                     false,
-                    false,
+                    PaneTitleMode::Normal,
                     false,
                     exposed,
                     None,
@@ -2247,7 +2371,7 @@ mod tests {
                     PaneId::from_raw(2),
                     true,
                     false,
-                    false,
+                    PaneTitleMode::Normal,
                     false,
                     exposed,
                     None,
@@ -2397,7 +2521,7 @@ mod tests {
                     PaneId::from_raw(1),
                     true,
                     false,
-                    false,
+                    PaneTitleMode::Normal,
                     false,
                     ExposedSides::all(),
                     None,
@@ -2430,7 +2554,7 @@ mod tests {
                     PaneId::from_raw(1),
                     false, // unfocused
                     false, // not highlighted
-                    false,
+                    PaneTitleMode::Normal,
                     false,
                     ExposedSides::all(),
                     None,

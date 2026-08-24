@@ -38,7 +38,7 @@ impl App {
 
         let key_event = key.as_key_event();
 
-        // Peek is an overlay. Escape dismisses it the same way BACK and HIDE
+        // Peek is an overlay. Escape dismisses it the same way EXIT
         // already do, instead of going through to the agent underneath.
         if self.state.agent_peek.is_some()
             && key_event.code == KeyCode::Esc
