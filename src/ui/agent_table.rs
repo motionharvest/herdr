@@ -25,7 +25,7 @@ use ratatui::{
     Frame,
 };
 
-use super::panes::mute_when_host_unfocused;
+use super::panes::{focus_accent, mute_when_host_unfocused};
 use crate::app::state::Palette;
 use crate::app::AppState;
 use crate::detect::AgentState;
@@ -1113,12 +1113,12 @@ fn cell_line<'a>(
     match column {
         COL_NAME => {
             // The name matches Summary until the row is selected. Then a
-            // docked name is the default foreground and a hidden name is
-            // the accent.
+            // docked name is the focus color and a hidden name is the
+            // accent.
             let style = if selected {
                 if entry.docked {
                     Style::default()
-                        .fg(app.palette.text)
+                        .fg(focus_accent(app))
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -1513,14 +1513,15 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_docked_agent_name_uses_the_primary_color() {
+    fn a_selected_docked_agent_name_uses_the_focus_color() {
         let state = state_with_agents(1);
         let pane_id = state.workspaces[0].tabs[0].root_pane;
         let row = row_of(&state, pane_id);
         let folders = FolderColors::new();
         let name = cell_line(&state, &row, COL_NAME, "x", 8, true, &folders);
         assert!(row.docked);
-        assert_eq!(name.style.fg, Some(state.palette.text));
+        assert_eq!(name.style.fg, Some(focus_accent(&state)));
+        assert_ne!(name.style.fg, Some(state.palette.text));
         assert!(name.style.add_modifier.contains(Modifier::BOLD));
     }
 
@@ -1539,6 +1540,22 @@ mod tests {
 
         let selected = cell_line(&state, &row, COL_NAME, "x", 8, true, &folders);
         assert_eq!(selected.style.fg, Some(state.palette.accent));
+    }
+
+    #[test]
+    fn a_synthwave_selected_docked_name_is_pink_not_white() {
+        let mut state = state_with_agents(1);
+        state.palette = Palette::synthwave();
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let row = row_of(&state, pane_id);
+        let folders = FolderColors::new();
+        let unselected = cell_line(&state, &row, COL_NAME, "x", 8, false, &folders);
+        let selected = cell_line(&state, &row, COL_NAME, "x", 8, true, &folders);
+        assert!(row.docked);
+        assert_eq!(unselected.style.fg, Some(state.palette.text));
+        assert_eq!(selected.style.fg, Some(state.palette.focused_pane_border()));
+        assert_ne!(selected.style.fg, Some(state.palette.text));
+        assert_ne!(selected.style.fg, Some(state.palette.accent));
     }
 
     fn state_with_a_set_down_agent_and_a_docked_agent() -> (AppState, PaneId, PaneId) {
