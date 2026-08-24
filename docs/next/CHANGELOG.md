@@ -8,6 +8,7 @@
 - Pane titles can show more than the agent name again. Settings → pane labels now has independent toggles for agent name, working directory, parent directory, git branch, and git status. Off, a pane still writes only its name. On, the top edge writes those fields in that order — `Olivia lab/herdr (main !)` — the way it did before titles were reduced to the name. The same keys live under `[ui.pane_header]` in the config file. Existing installs keep name-only titles until those toggles are turned on.
 
 ### Fixed
+- Clicks in Settings now land on the drawn tabs, toggles, and buttons. Hit testing centered the overlay in the main column, to the right of the sidebar, while the overlay itself was drawn on the whole frame, so the clickable area sat about half a sidebar to the left of what was on screen. Rename, keybinds, and the worktree dialogs used the same split.
 - Escape now leaves a peeked pane. It used to go to the agent, so the overlay stayed up unless you hit EXIT.
 - Dragging in the Task field now selects the text under the pointer, copies it on release, and keeps the highlight. A click still only moves the cursor. Shift-arrows, Ctrl-A, Ctrl-C, and Ctrl-X work the same way they do in a text field. The field used to ignore the drag, so nothing could be highlighted or copied from it.
 - Paste now goes to the peeked pane, including in `herdr server`. Typing already went there; paste used the last selected docked pane because the client paste path followed layout focus instead of the overlay.

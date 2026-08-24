@@ -1488,12 +1488,16 @@ impl AppState {
 
     /// The whole frame, worked back out of the surfaces laid out on it. Modals
     /// centre themselves in this rather than in the pane area, so a dialog does
-    /// not shift as the table above the panes grows and shrinks.
+    /// not shift as the table above the panes grows and shrinks. The sidebar is
+    /// part of that frame: without it, a popup drawn on `frame.area()` sits
+    /// left of the hit rects by half the sidebar width.
     pub(super) fn screen_rect(&self) -> Rect {
         let table = self.view.agent_table.area;
         let composer = self.view.composer.area;
         let terminal = self.view.terminal_area;
-        let bands = [composer, table, terminal];
+        let sidebar = self.view.sidebar_rect;
+        let mobile_header = self.view.mobile_header_rect;
+        let bands = [composer, table, terminal, sidebar, mobile_header];
         let placed: Vec<Rect> = bands
             .into_iter()
             .filter(|rect| rect.width > 0 && rect.height > 0)

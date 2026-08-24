@@ -922,6 +922,49 @@ mod tests {
     }
 
     #[test]
+    fn settings_clicks_hit_the_drawn_overlay_when_the_sidebar_is_open() {
+        let mut app = app_for_mouse_test();
+        app.state.pane_history_persistence = false;
+        let frame = Rect::new(0, 0, 120, 30);
+        crate::ui::compute_view(&mut app.state, frame);
+        open_settings_at(&mut app.state, SettingsSection::Experiments);
+
+        let drawn = crate::ui::centered_popup_rect(frame, 76, 22).expect("settings overlay fits");
+        assert_eq!(
+            app.state.settings_popup_rect(),
+            drawn,
+            "hit testing must use the same full-frame popup the overlay draws"
+        );
+
+        let inner = Rect::new(
+            drawn.x + 1,
+            drawn.y + 1,
+            drawn.width.saturating_sub(2),
+            drawn.height.saturating_sub(2),
+        );
+        let content = crate::ui::modal_stack_areas(inner, 3, 2, 0, 1).content;
+        let action = app.state.handle_settings_mouse(mouse(
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            content.x + 2,
+            content.y + 3,
+        ));
+
+        assert_eq!(action, Some(SettingsAction::SavePaneHistory(true)));
+        assert_eq!(app.state.mode, Mode::Settings);
+        assert_eq!(app.state.settings.list.selected, 0);
+
+        let show_primary = crate::ui::settings_show_primary_action(&app.state);
+        let (_apply, close) =
+            crate::ui::settings_button_rects(inner, SettingsSection::Experiments, show_primary);
+        app.state.handle_settings_mouse(mouse(
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            close.x + 1,
+            close.y,
+        ));
+        assert_ne!(app.state.mode, Mode::Settings);
+    }
+
+    #[test]
     fn settings_mouse_click_toggles_switch_ascii_input_source_row() {
         let mut app = app_for_mouse_test();
         app.state.switch_ascii_input_source_in_prefix = false;
