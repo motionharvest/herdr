@@ -891,7 +891,7 @@ fn fill_sidebar_background(app: &AppState, frame: &mut Frame, area: Rect) {
         for x in area.x..area.x + area.width {
             let cell = &mut buf[(x, y)];
             cell.set_symbol(" ");
-            cell.set_style(Style::default());
+            cell.set_style(Style::default().bg(app.palette.panel_bg));
         }
         if area.width > 1 {
             let cell = &mut buf[(divider_x, y)];
@@ -2926,6 +2926,11 @@ mod tests {
         app.agent_panel_scope = AgentPanelScope::AllWorkspaces;
 
         let (events, _) = tokio::sync::mpsc::channel(4);
+        let shell = if cfg!(windows) {
+            "powershell.exe"
+        } else {
+            "/bin/sh"
+        };
         let runtime = crate::terminal::TerminalRuntime::spawn(
             pane,
             24,
@@ -2933,7 +2938,7 @@ mod tests {
             live_cwd.clone(),
             0,
             crate::terminal_theme::TerminalTheme::default(),
-            crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
+            crate::pane::PaneShellConfig::new(shell, crate::config::ShellModeConfig::NonLogin),
             events,
             std::sync::Arc::new(tokio::sync::Notify::new()),
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

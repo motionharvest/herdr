@@ -38,7 +38,7 @@ impl App {
         let key = raw_key.as_key_event();
         self.state.update_dismissed = true;
 
-        if self.state.is_prefix_key(raw_key) {
+        if self.state.is_prefix_key(&raw_key) {
             if !self.pass_through_key_to_focused_pane(raw_key) {
                 leave_command_mode(&mut self.state);
             }
@@ -50,7 +50,8 @@ impl App {
             return;
         }
 
-        if let Some(action) = action_for_key(&self.state, raw_key, BindingDispatch::Prefix) {
+        if let Some(action) = action_for_key(&self.state, raw_key.clone(), BindingDispatch::Prefix)
+        {
             if action == NavigateAction::EditScrollback {
                 let previous_mode = self.state.mode;
                 self.launch_focused_scrollback_editor();
@@ -79,16 +80,16 @@ impl App {
         let key = raw_key.as_key_event();
         self.state.update_dismissed = true;
 
-        if key.code == KeyCode::Esc || self.state.is_prefix_key(raw_key) {
+        if key.code == KeyCode::Esc || self.state.is_prefix_key(&raw_key) {
             leave_navigate_mode(&mut self.state);
             return;
         }
 
-        if handle_navigate_reserved_key(&mut self.state, raw_key) {
+        if handle_navigate_reserved_key(&mut self.state, raw_key.clone()) {
             return;
         }
 
-        if let Some(action) = navigate_mode_action_for_key(&self.state, raw_key) {
+        if let Some(action) = navigate_mode_action_for_key(&self.state, raw_key.clone()) {
             if action == NavigateAction::EditScrollback {
                 self.launch_focused_scrollback_editor();
             } else {
@@ -204,10 +205,19 @@ impl App {
         &self,
         binding: &crate::config::CustomCommandKeybind,
     ) -> std::io::Result<()> {
-        let mut command = Command::new("/bin/sh");
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = Command::new("/bin/sh");
+            command.arg("-lc").arg(&binding.command);
+            command
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd.exe");
+            command.arg("/C").arg(&binding.command);
+            command
+        };
         command
-            .arg("-lc")
-            .arg(&binding.command)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -257,10 +267,24 @@ impl App {
 
         let path = write_scrollback_temp_file(&scrollback)?;
 
-        let quoted_path = shell_quote(&path.display().to_string());
-        let command = format!(
-            r#"scrollback_file={quoted_path}; eval "${{EDITOR:-vi}} \"\$scrollback_file\""; status=$?; rm -f "$scrollback_file"; exit $status"#
-        );
+        #[cfg(unix)]
+        let command = {
+            let quoted_path = shell_quote(&path.display().to_string());
+            format!(
+                r#"scrollback_file={quoted_path}; eval "${{EDITOR:-vi}} \"\$scrollback_file\""; status=$?; rm -f "$scrollback_file"; exit $status"#
+            )
+        };
+        #[cfg(windows)]
+        let command = {
+            // Command panes use cmd.exe on Windows, so the POSIX editor wrapper
+            // above cannot launch the configured editor there.
+            let editor = std::env::var("EDITOR")
+                .ok()
+                .filter(|editor| !editor.trim().is_empty())
+                .unwrap_or_else(|| "notepad.exe".to_string());
+            let path = path.display();
+            format!("set HERDR_SCROLLBACK_FILE={path}& call {editor} \"%HERDR_SCROLLBACK_FILE%\"")
+        };
         if let Err(err) = self.spawn_pane_command(&command, vec![path.clone()]) {
             let _ = fs::remove_file(&path);
             return Err(err);
@@ -370,8 +394,8 @@ pub(crate) fn command_for_key(
         .custom_commands
         .iter()
         .find(|binding| match dispatch {
-            BindingDispatch::Direct => binding.bindings.matches_direct_key(key),
-            BindingDispatch::Prefix => binding.bindings.matches_prefix_key(key),
+            BindingDispatch::Direct => binding.bindings.matches_direct_key(&key),
+            BindingDispatch::Prefix => binding.bindings.matches_prefix_key(&key),
         })
         .cloned()
 }
@@ -415,7 +439,12 @@ pub(super) fn handle_navigate_reserved_key(state: &mut AppState, key: TerminalKe
         }
     }
 
-    if state.keybinds.navigate.workspace_up.matches_direct_key(key) {
+    if state
+        .keybinds
+        .navigate
+        .workspace_up
+        .matches_direct_key(&key)
+    {
         state.move_selected_workspace_by_visible_delta(-1);
         return true;
     }
@@ -423,24 +452,24 @@ pub(super) fn handle_navigate_reserved_key(state: &mut AppState, key: TerminalKe
         .keybinds
         .navigate
         .workspace_down
-        .matches_direct_key(key)
+        .matches_direct_key(&key)
     {
         state.move_selected_workspace_by_visible_delta(1);
         return true;
     }
-    if state.keybinds.navigate.pane_left.matches_direct_key(key) {
+    if state.keybinds.navigate.pane_left.matches_direct_key(&key) {
         state.navigate_pane(NavDirection::Left);
         return true;
     }
-    if state.keybinds.navigate.pane_down.matches_direct_key(key) {
+    if state.keybinds.navigate.pane_down.matches_direct_key(&key) {
         state.navigate_pane(NavDirection::Down);
         return true;
     }
-    if state.keybinds.navigate.pane_up.matches_direct_key(key) {
+    if state.keybinds.navigate.pane_up.matches_direct_key(&key) {
         state.navigate_pane(NavDirection::Up);
         return true;
     }
-    if state.keybinds.navigate.pane_right.matches_direct_key(key) {
+    if state.keybinds.navigate.pane_right.matches_direct_key(&key) {
         state.navigate_pane(NavDirection::Right);
         return true;
     }
@@ -454,12 +483,12 @@ pub(crate) fn handle_navigate_key(state: &mut AppState, key: KeyEvent) {
     state.update_dismissed = true;
     let terminal_key = TerminalKey::from(key);
 
-    if state.is_prefix_key(terminal_key) || key.code == KeyCode::Esc {
+    if state.is_prefix_key(&terminal_key) || key.code == KeyCode::Esc {
         leave_navigate_mode(state);
         return;
     }
 
-    if handle_navigate_reserved_key(state, terminal_key) {
+    if handle_navigate_reserved_key(state, terminal_key.clone()) {
         return;
     }
 
@@ -519,7 +548,7 @@ pub(crate) enum NavigateAction {
 
 fn indexed_navigation_action(
     state: &AppState,
-    key: TerminalKey,
+    key: &TerminalKey,
     dispatch: BindingDispatch,
 ) -> Option<NavigateAction> {
     let kb = &state.keybinds;
@@ -548,7 +577,7 @@ fn indexed_navigation_action(
 
 fn action_matches(
     bindings: &crate::config::ActionKeybinds,
-    key: TerminalKey,
+    key: &TerminalKey,
     dispatch: BindingDispatch,
 ) -> bool {
     match dispatch {
@@ -562,7 +591,7 @@ fn action_for_key(
     key: TerminalKey,
     dispatch: BindingDispatch,
 ) -> Option<NavigateAction> {
-    if let Some(action) = indexed_navigation_action(state, key, dispatch) {
+    if let Some(action) = indexed_navigation_action(state, &key, dispatch) {
         return Some(action);
     }
 
@@ -610,7 +639,7 @@ fn action_for_key(
         (&kb.composer, NavigateAction::OpenComposer),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
     ] {
-        if action_matches(bindings, key, dispatch) {
+        if action_matches(bindings, &key, dispatch) {
             return Some(action);
         }
     }
@@ -935,6 +964,7 @@ fn unique_scrollback_path(attempt: u32) -> std::path::PathBuf {
     ))
 }
 
+#[cfg(unix)]
 fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value.chars().all(|ch| {
@@ -972,6 +1002,50 @@ mod tests {
             checkout_path: format!("/repo/worktree-{ws_idx}").into(),
             is_linked_worktree: ws_idx != 0,
         });
+    }
+
+    fn marker_command(path: &std::path::Path, value: &str) -> String {
+        if cfg!(windows) {
+            format!(
+                "powershell -NoProfile -Command [IO.File]::WriteAllText('{}', '{}')",
+                path.display(),
+                value
+            )
+        } else {
+            format!("printf {value} > '{}'", path.display())
+        }
+    }
+
+    fn workspace_ids_command(path: &std::path::Path) -> String {
+        if cfg!(windows) {
+            format!(
+                "powershell -NoProfile -Command [IO.File]::WriteAllText('{}', ([string]::Join([Environment]::NewLine, @([Environment]::GetEnvironmentVariable('HERDR_ACTIVE_WORKSPACE_ID'), [Environment]::GetEnvironmentVariable('HERDR_ACTIVE_TAB_ID'), [Environment]::GetEnvironmentVariable('HERDR_ACTIVE_PANE_ID'))) + [Environment]::NewLine))",
+                path.display()
+            )
+        } else {
+            format!(
+                "printf '%s\\n%s\\n%s\\n' \"$HERDR_ACTIVE_WORKSPACE_ID\" \"$HERDR_ACTIVE_TAB_ID\" \"$HERDR_ACTIVE_PANE_ID\" > '{}'",
+                path.display()
+            )
+        }
+    }
+
+    fn editor_command(path: &std::path::Path) -> String {
+        if cfg!(windows) {
+            format!(
+                "powershell -NoProfile -Command [IO.File]::Copy($env:HERDR_SCROLLBACK_FILE, '{}'); #",
+                path.display()
+            )
+        } else {
+            format!("sh -c 'cp \"$1\" {}' sh", path.display())
+        }
+    }
+
+    fn file_lines(path: &std::path::Path) -> Vec<String> {
+        wait_for_file(path)
+            .lines()
+            .map(|line| line.trim_end_matches('\r').to_string())
+            .collect()
     }
 
     #[test]
@@ -1811,10 +1885,7 @@ last_pane = "prefix+tab"
         app.state.mode = Mode::Terminal;
 
         let output_path = unique_temp_path("custom-command-keybind");
-        let command = format!(
-            "printf '%s\\n%s\\n%s\\n' \"$HERDR_ACTIVE_WORKSPACE_ID\" \"$HERDR_ACTIVE_TAB_ID\" \"$HERDR_ACTIVE_PANE_ID\" > '{}'",
-            output_path.display()
-        );
+        let command = workspace_ids_command(&output_path);
         app.state.keybinds.custom_commands = vec![crate::config::CustomCommandKeybind {
             bindings: crate::config::ActionKeybinds::prefix("m"),
             label: "prefix+m".into(),
@@ -1833,8 +1904,7 @@ last_pane = "prefix+tab"
         app.handle_key(TerminalKey::new(KeyCode::Char('m'), KeyModifiers::empty()))
             .await;
 
-        let content = wait_for_file(&output_path);
-        let lines: Vec<&str> = content.lines().collect();
+        let lines = file_lines(&output_path);
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0], app.state.workspaces[0].id);
         assert_eq!(lines[1], format!("{}:1", app.state.workspaces[0].id));
@@ -1875,7 +1945,7 @@ last_pane = "prefix+tab"
         app.state.mode = Mode::Terminal;
 
         let output_path = unique_temp_path("custom-pane-command");
-        let command = format!("printf done > '{}'", output_path.display());
+        let command = marker_command(&output_path, "done");
         app.state.keybinds.custom_commands = vec![crate::config::CustomCommandKeybind {
             bindings: crate::config::ActionKeybinds::prefix("m"),
             label: "prefix+m".into(),
@@ -1959,10 +2029,7 @@ last_pane = "prefix+tab"
 
         let output_path = unique_temp_path("edit-scrollback");
         let previous_editor = std::env::var_os("EDITOR");
-        std::env::set_var(
-            "EDITOR",
-            format!("sh -c 'cp \"$1\" {}' sh", output_path.display()),
-        );
+        std::env::set_var("EDITOR", editor_command(&output_path));
         app.state.keybinds.edit_scrollback = crate::config::ActionKeybinds::prefix("g");
 
         app.handle_key(TerminalKey::new(

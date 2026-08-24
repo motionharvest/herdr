@@ -824,7 +824,7 @@ mod tests {
         let pane_id = app
             .start_hidden_agent(
                 std::env::current_dir().unwrap(),
-                &["sleep".to_string(), "30".to_string()],
+                &crate::pane::test_true_argv(),
                 Some(crate::detect::Agent::Pi),
             )
             .unwrap_or_else(|_| panic!("hidden agent should start"));
@@ -852,20 +852,34 @@ mod tests {
     #[tokio::test]
     async fn a_hidden_terminal_runs_the_task_in_its_directory_and_stays_open() {
         let mut app = test_app();
-        app.state.default_shell = "/bin/sh".to_string();
+        app.state.default_shell = if cfg!(windows) {
+            "cmd.exe".to_string()
+        } else {
+            "/bin/sh".to_string()
+        };
         app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
         let cwd = std::env::temp_dir().join(format!(
             "herdr-composer-terminal-{}",
             crate::layout::PaneId::alloc().raw()
         ));
-        std::fs::create_dir(&cwd).expect("scratch directory should be created");
+        std::fs::create_dir_all(&cwd).expect("scratch directory should be created");
         let proof = cwd.join("cwd.txt");
+        let command = if cfg!(windows) {
+            "cd > cwd.txt"
+        } else {
+            "pwd > cwd.txt"
+        };
 
         let pane_id = app
-            .start_hidden_terminal(cwd.clone(), "pwd > cwd.txt")
+            .start_hidden_terminal(cwd.clone(), command)
             .unwrap_or_else(|_| panic!("hidden terminal should start"));
-        for _ in 0..100 {
-            if proof.exists() {
+        // The shell creates the redirect target before it writes the command
+        // output, so waiting for the file alone can read an empty file.
+        for _ in 0..2000 {
+            if std::fs::read_to_string(&proof)
+                .map(|content| !content.trim().is_empty())
+                .unwrap_or(false)
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -888,7 +902,13 @@ mod tests {
 
         app.state.close_detached_agent(pane_id);
         app.shutdown_detached_terminal_runtimes();
-        std::fs::remove_dir_all(cwd).expect("scratch directory should be removed");
+        for _ in 0..2000 {
+            if std::fs::remove_dir_all(&cwd).is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!cwd.exists(), "scratch directory should be removed");
     }
 
     #[tokio::test]
@@ -898,7 +918,7 @@ mod tests {
         let pane_id = app
             .start_hidden_agent(
                 std::env::current_dir().unwrap(),
-                &["sleep".to_string(), "30".to_string()],
+                &crate::pane::test_true_argv(),
                 Some(crate::detect::Agent::Pi),
             )
             .unwrap_or_else(|_| panic!("hidden agent should start"));
@@ -924,6 +944,13 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         std::env::temp_dir().join(format!("herdr-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    fn canonical_test_path(path: &std::path::Path) -> std::path::PathBuf {
+        let canonical = crate::worktree::canonical_or_original(path);
+        let text = canonical.to_string_lossy();
+        let text = text.strip_prefix("\\\\?\\").unwrap_or(&text);
+        std::path::PathBuf::from(text.replace('\\', "/"))
     }
 
     fn run_git(repo: &std::path::Path, args: &[&str]) {
@@ -994,7 +1021,7 @@ mod tests {
             split: None,
             worktree: Some(String::new()),
             focus: false,
-            argv: vec!["sleep".into(), "30".into()],
+            argv: crate::pane::test_true_argv(),
         });
 
         let agent = match started {
@@ -1050,7 +1077,7 @@ mod tests {
             split: None,
             worktree: Some(String::new()),
             focus: false,
-            argv: vec!["sleep".into(), "30".into()],
+            argv: crate::pane::test_true_argv(),
         });
 
         let agent = match started {
@@ -1093,7 +1120,7 @@ mod tests {
             split: None,
             worktree: Some(String::new()),
             focus: false,
-            argv: vec!["sleep".into(), "30".into()],
+            argv: crate::pane::test_true_argv(),
         });
 
         let agent = match started {
@@ -1190,10 +1217,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
 
         assert_eq!(worktrees_after, worktrees_before);
-        assert_eq!(
-            started_cwd,
-            Some(crate::worktree::canonical_or_original(&repo))
-        );
+        // The expected folder is normalized with the same helper as the started
+        // cwd: `remove_dir_all` above is best-effort, and when the checkout
+        // still exists at this point `canonical_or_original` would return a
+        // `\\?\`-prefixed verbatim path while the started side has the prefix
+        // stripped, failing the compare on representation alone.
+        assert_eq!(started_cwd, Some(canonical_test_path(&repo)));
     }
 
     #[tokio::test]
@@ -1240,7 +1269,7 @@ mod tests {
         })?;
         app.state
             .terminal_state_for_pane(pane_id)
-            .map(|terminal| crate::worktree::canonical_or_original(&terminal.cwd))
+            .map(|terminal| canonical_test_path(&terminal.cwd))
     }
 
     fn focused_pane_id(app: &App) -> crate::layout::PaneId {
@@ -1339,7 +1368,7 @@ mod tests {
         let started_cwd = app
             .find_pane(focused)
             .and_then(|(_, pane)| app.state.terminals.get(&pane.attached_terminal_id))
-            .map(|terminal| crate::worktree::canonical_or_original(&terminal.cwd));
+            .map(|terminal| canonical_test_path(&terminal.cwd));
 
         shutdown_started_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&repo);

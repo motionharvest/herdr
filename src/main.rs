@@ -1,12 +1,5 @@
 use std::io;
 
-use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
-use crossterm::execute;
-
 pub(crate) const HERDR_ENV_VAR: &str = "HERDR_ENV";
 pub(crate) const HERDR_ENV_VALUE: &str = "1";
 const NESTED_HERDR_MESSAGES: [&str; 6] = [
@@ -39,6 +32,7 @@ mod ipc;
 mod kitty_graphics;
 mod layout;
 mod logging;
+mod net;
 mod pane;
 mod pane_names;
 mod persist;
@@ -56,6 +50,7 @@ mod session;
 mod sound;
 mod terminal;
 mod terminal_notify;
+mod terminal_setup;
 mod terminal_theme;
 mod ui;
 mod update;
@@ -642,20 +637,27 @@ fn main() -> io::Result<()> {
     let panic_resets_modify_other_keys = modify_other_keys_mode.is_some();
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!("PANIC: {info}");
-        if panic_resets_modify_other_keys {
-            let _ = std::io::Write::write_all(&mut io::stdout(), b"\x1b[>4;0m");
-        }
         if crate::kitty_graphics::is_enabled() {
             let _ = crate::kitty_graphics::clear_all_host_graphics();
         }
-        let _ = execute!(
-            io::stdout(),
-            PopKeyboardEnhancementFlags,
-            DisableFocusChange,
-            DisableBracketedPaste,
-            DisableMouseCapture
-        );
-        ratatui::restore();
+        // The shared teardown resets modifyOtherKeys, pops the keyboard
+        // enhancement, disables focus/paste reporting, disables mouse
+        // capture, restores the saved Windows VTI mode, and restores
+        // ratatui's raw mode and alternate screen — always in that order.
+        // Disabling mouse capture before the VTI restore matters:
+        // crossterm's capture enable caches the pre-mouse console mode and
+        // its disable writes that cached mode back, so restoring the saved
+        // VTI mode after the disable lands the console on the true pre-setup
+        // mode. The hook runs before VTI setup, so the saved mode lives in
+        // the shared slot instead of a captured local, and taking it clears
+        // the slot.
+        let _ = crate::terminal_setup::HostProtocolSetup {
+            modify_other_keys: panic_resets_modify_other_keys,
+            #[cfg(not(windows))]
+            keyboard_enhancement: true,
+            ..Default::default()
+        }
+        .rollback();
         original_hook(info);
     }));
 
@@ -673,26 +675,15 @@ fn main() -> io::Result<()> {
         .expect("failed to create tokio runtime");
 
     let result = rt.block_on(async {
+        // Ratatui's own init failure restores through its panic hook. Every
+        // protocol applied after init goes through one transaction whose
+        // rollback always finishes, so no error path leaves raw mode, the
+        // alternate screen, or the Windows VTI mode on.
         let mut terminal = ratatui::init();
-        if config.ui.mouse_capture {
-            execute!(io::stdout(), EnableMouseCapture)?;
-        } else {
-            execute!(io::stdout(), DisableMouseCapture)?;
-        }
-        execute!(
-            io::stdout(),
-            EnableBracketedPaste,
-            EnableFocusChange,
-            PushKeyboardEnhancementFlags(crate::input::ime_compatible_keyboard_enhancement_flags())
-        )?;
-
-        // Some hosts do not honor Kitty keyboard enhancement pushes for
-        // Shift+Enter. Enable xterm modifyOtherKeys only on hosts where we
-        // know it is needed and parseable, so modified Enter stays distinct.
-        if let Some(mode) = modify_other_keys_mode {
-            use std::io::Write;
-            std::io::stdout().write_all(mode.set_sequence())?;
-            std::io::stdout().flush()?;
+        let mut protocols = crate::terminal_setup::HostProtocolSetup::default();
+        if let Err(err) = setup_monolithic_protocols(&mut protocols, config, modify_other_keys_mode)
+        {
+            return Err(protocols.rollback().unwrap_or(err));
         }
 
         let mut app = app::App::new(
@@ -704,29 +695,23 @@ fn main() -> io::Result<()> {
         );
         let result = app.run(&mut terminal).await;
 
-        // Reset modifyOtherKeys if we enabled it.
-        if modify_other_keys_mode.is_some() {
-            use std::io::Write;
-            std::io::stdout().write_all(b"\x1b[>4;0m")?;
-            std::io::stdout().flush()?;
-        }
-
+        // Teardown runs every step even when an earlier one fails, so the
+        // saved Windows VTI mode is always restored and ratatui restores the
+        // terminal. The first failure is still reported as the run result.
+        let mut cleanup_error: Option<io::Error> = None;
         if crate::kitty_graphics::is_enabled() {
-            crate::kitty_graphics::clear_all_host_graphics()?;
+            if let Err(err) = crate::kitty_graphics::clear_all_host_graphics() {
+                cleanup_error.get_or_insert(err);
+            }
         }
-        execute!(
-            io::stdout(),
-            PopKeyboardEnhancementFlags,
-            DisableFocusChange,
-            DisableBracketedPaste,
-            DisableMouseCapture
-        )?;
-        ratatui::restore();
+        if let Some(err) = protocols.rollback() {
+            cleanup_error.get_or_insert(err);
+        }
 
         // Drop app (and all workspaces/panes) before runtime shuts down
         drop(app);
 
-        result
+        cleanup_error.map_or(result, Err)
     });
 
     // Shut down runtime immediately — kills lingering PTY reader/writer tasks
@@ -734,6 +719,49 @@ fn main() -> io::Result<()> {
 
     logging::shutdown("app");
     result
+}
+
+/// Applies the monolithic host-terminal protocols on top of ratatui's init.
+/// Every step is part of the caller's transaction, so a failure anywhere
+/// rolls the earlier steps back through [`HostProtocolSetup::rollback`].
+fn setup_monolithic_protocols(
+    protocols: &mut crate::terminal_setup::HostProtocolSetup,
+    config: &config::Config,
+    modify_other_keys_mode: Option<crate::input::ModifyOtherKeysMode>,
+) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        // Enable Windows VT input BEFORE the first mouse-capture operation:
+        // crossterm caches the console input mode it sees at the first
+        // capture enable/disable and restores that cached mode on every
+        // later toggle, so a mouse write first would cache a mode without
+        // the VT input bit. The saved restore mode is therefore the true
+        // pre-mouse mode. When mouse capture starts disabled, the cold
+        // disable still caches the now-VTI-enabled mode, so the re-enable
+        // below is needed either way.
+        let vti = crate::client::enable_windows_virtual_terminal_input();
+        // The shared slot hands the saved mode to rollback and the panic
+        // hook, and taking it there means it is restored exactly once.
+        crate::client::record_windows_vti_restore_mode(vti.restore_mode);
+    }
+    protocols.set_mouse_capture(config.ui.mouse_capture)?;
+    #[cfg(windows)]
+    {
+        // The mouse write above dropped the VT input bit (enable replaces
+        // the mode; cold disable caches it for later restores). Re-apply
+        // it. When the bit already stuck, this returns a None restore mode
+        // and leaves the saved pre-mouse slot untouched.
+        let _ = crate::client::enable_windows_virtual_terminal_input();
+    }
+    protocols.enable_paste_focus()?;
+    protocols.push_keyboard_enhancement()?;
+    // Some hosts do not honor Kitty keyboard enhancement pushes for
+    // Shift+Enter. Enable xterm modifyOtherKeys only on hosts where we
+    // know it is needed and parseable, so modified Enter stays distinct.
+    if let Some(mode) = modify_other_keys_mode {
+        protocols.enable_modify_other_keys(mode)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

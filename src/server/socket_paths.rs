@@ -85,8 +85,8 @@ pub(crate) fn restrict_socket_permissions(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::UnixListener;
     use std::fs;
-    use std::os::unix::net::UnixListener;
     use std::time::Duration;
 
     #[test]
@@ -143,7 +143,7 @@ mod tests {
 
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         while std::time::Instant::now() < deadline {
-            if std::os::unix::net::UnixStream::connect(&socket_path).is_err() {
+            if crate::net::UnixStream::connect(&socket_path).is_err() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));

@@ -249,6 +249,9 @@ pub(super) fn render_composer(app: &AppState, frame: &mut Frame, layout: &Compos
     if layout.area.width == 0 || layout.area.height == 0 {
         return;
     }
+    frame
+        .buffer_mut()
+        .set_style(layout.area, Style::default().bg(app.palette.panel_bg));
     draw_controls(app, frame, layout);
 }
 
@@ -604,6 +607,7 @@ fn rounded(app: &AppState, focused: bool, in_band: bool) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(border_style(app, focused, in_band))
+        .style(Style::default().bg(app.palette.panel_bg))
 }
 
 /// The word above a box. Dim and italic, so it reads as a note about the box
@@ -693,7 +697,7 @@ fn elide(text: &str, room: usize) -> String {
     }
     let chars: Vec<char> = text.chars().collect();
     let cut = count - room + 1;
-    if let Some(boundary) = (cut..count).find(|at| chars[*at] == '/') {
+    if let Some(boundary) = (cut..count).find(|at| chars[*at] == '/' || chars[*at] == '\\') {
         let kept: String = chars[boundary..].iter().collect();
         return format!("…{kept}");
     }
@@ -715,6 +719,12 @@ mod tests {
     fn band_state() -> AppState {
         let mut app = AppState::test_new();
         app.mode = Mode::Composer;
+        app.composer.use_harnesses(
+            ["Auto", "Terminal", "Claude Code"]
+                .into_iter()
+                .map(|name| crate::harness::named(name).expect("test harness should exist"))
+                .collect(),
+        );
         app.composer
             .add_folder(std::path::PathBuf::from("/home/nobody/lab/herdr"));
         app

@@ -1083,6 +1083,32 @@ pub const THEME_NAMES: &[&str] = &[
     "vesper",
 ];
 
+/// Human label for a built-in theme key. The key stays the config value.
+pub fn theme_display_name(name: &str) -> &'static str {
+    match name {
+        "catppuccin" => "catppuccin mocha",
+        "catppuccin-latte" => "catppuccin latte",
+        "tokyo-night" => "tokyo night",
+        "tokyo-night-day" => "tokyo night day",
+        "gruvbox-light" => "gruvbox light",
+        "one-dark" => "one dark",
+        "one-light" => "one light",
+        "solarized-light" => "solarized light",
+        "kanagawa-lotus" => "kanagawa lotus",
+        "rose-pine" => "rose pine",
+        "rose-pine-dawn" => "rose pine dawn",
+        "terminal" => "terminal",
+        "dracula" => "dracula",
+        "synthwave" => "synthwave",
+        "nord" => "nord",
+        "gruvbox" => "gruvbox",
+        "solarized" => "solarized",
+        "kanagawa" => "kanagawa",
+        "vesper" => "vesper",
+        _ => "custom",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuListState {
     pub highlighted: usize,
@@ -1887,7 +1913,7 @@ impl AppState {
         self.mouse_capture || self.focused_pane_requests_mouse_capture_from(terminal_runtimes)
     }
 
-    pub fn is_prefix_key(&self, key: crate::input::TerminalKey) -> bool {
+    pub fn is_prefix_key(&self, key: &crate::input::TerminalKey) -> bool {
         crate::config::terminal_key_matches_combo(key, (self.prefix_code, self.prefix_mods))
     }
 
@@ -2025,7 +2051,7 @@ pub fn key_matches(
     expected_mods: KeyModifiers,
 ) -> bool {
     crate::config::terminal_key_matches_combo(
-        crate::input::TerminalKey::from(*key),
+        &crate::input::TerminalKey::from(*key),
         (expected_code, expected_mods),
     )
 }
@@ -2240,6 +2266,36 @@ mod tests {
                 Palette::from_name(name).is_some(),
                 "theme should resolve: {name}"
             );
+        }
+    }
+
+    #[test]
+    fn catppuccin_latte_panel_is_lighter_than_mocha() {
+        let mocha = Palette::catppuccin().panel_bg;
+        let latte = Palette::catppuccin_latte().panel_bg;
+        assert!(luma(latte) > luma(mocha));
+        assert_eq!(theme_display_name("catppuccin"), "catppuccin mocha");
+        assert_eq!(theme_display_name("catppuccin-latte"), "catppuccin latte");
+    }
+
+    #[test]
+    fn named_themes_keep_distinct_accent_and_panel_colors() {
+        let mocha = Palette::catppuccin();
+        let dracula = Palette::dracula();
+        let nord = Palette::nord();
+        let gruvbox = Palette::gruvbox();
+        assert_ne!(mocha.accent, dracula.accent);
+        assert_ne!(mocha.panel_bg, dracula.panel_bg);
+        assert_ne!(dracula.accent, nord.accent);
+        assert_ne!(gruvbox.accent, mocha.accent);
+        assert_eq!(dracula.accent, Color::Rgb(189, 147, 249));
+        assert_eq!(mocha.accent, Color::Rgb(137, 180, 250));
+    }
+
+    fn luma(color: Color) -> u16 {
+        match color {
+            Color::Rgb(r, g, b) => u16::from(r) + u16::from(g) + u16::from(b),
+            _ => 0,
         }
     }
 

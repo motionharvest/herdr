@@ -154,6 +154,21 @@ pub(crate) fn handle_global_menu_key(state: &mut AppState, key: KeyEvent) {
     }
 }
 
+/// Inserts committed IME text into the focused navigator search query.
+/// No-op unless the search field is focused; mirrors handle_navigator_key.
+pub(crate) fn insert_navigator_search_text(
+    state: &mut AppState,
+    terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+    text: &str,
+) {
+    if !state.navigator.search_focused {
+        return;
+    }
+    state.navigator.state_filter = None;
+    state.navigator.query.push_str(text);
+    state.clamp_navigator_selection_from(terminal_runtimes);
+}
+
 pub(crate) fn handle_navigator_key(
     state: &mut AppState,
     terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
@@ -460,6 +475,15 @@ fn clear_rename_input(state: &mut AppState) {
     state.name_input_replace_on_type = false;
 }
 
+/// Inserts committed IME text into the rename input, honoring the
+/// replace-on-type flag the same way a first typed character would.
+pub(crate) fn insert_rename_input_text(state: &mut AppState, text: &str) {
+    if state.name_input_replace_on_type {
+        clear_rename_input(state);
+    }
+    state.name_input.push_str(text);
+}
+
 fn delete_rename_input_char(state: &mut AppState) {
     if state.name_input_replace_on_type {
         clear_rename_input(state);
@@ -553,8 +577,8 @@ pub(crate) fn handle_resize_key(state: &mut AppState, raw_key: TerminalKey) {
     let key = raw_key.as_key_event();
     if key.code == KeyCode::Esc
         || key.code == KeyCode::Enter
-        || state.keybinds.resize_mode.matches_prefix_key(raw_key)
-        || state.keybinds.resize_mode.matches_direct_key(raw_key)
+        || state.keybinds.resize_mode.matches_prefix_key(&raw_key)
+        || state.keybinds.resize_mode.matches_direct_key(&raw_key)
     {
         if state.active.is_some() {
             state.mode = Mode::Terminal;

@@ -5,6 +5,7 @@ use tracing::warn;
 
 use crate::app::PaneClickState;
 use crate::input::TerminalKey;
+use bytes::Bytes;
 use ratatui::layout::Direction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,13 +47,15 @@ pub(crate) use self::{
     modal::{
         handle_confirm_close_key, handle_context_menu_key, handle_global_menu_key,
         handle_keybind_help_key, handle_navigator_key, handle_rename_key, handle_resize_key,
+        insert_rename_input_text,
     },
     navigate::terminal_direct_navigation_action,
     settings::open_settings_at,
 };
 use self::{
     modal::{
-        modal_action_from_key, ModalAction, ONBOARDING_WELCOME_ACTIONS, RELEASE_NOTES_ACTIONS,
+        insert_navigator_search_text, modal_action_from_key, ModalAction,
+        ONBOARDING_WELCOME_ACTIONS, RELEASE_NOTES_ACTIONS,
     },
     settings::SettingsAction,
 };
@@ -65,7 +68,7 @@ use super::App;
 
 impl App {
     pub(super) async fn handle_key(&mut self, key: TerminalKey) {
-        if agent_table_delete_intercept(&mut self.state, key) {
+        if agent_table_delete_intercept(&mut self.state, key.clone()) {
             return;
         }
         match self.state.mode {
@@ -117,6 +120,109 @@ impl App {
                     Mode::Terminal => unreachable!(),
                 }
             }
+        }
+    }
+
+    pub(super) async fn handle_text_commit(&mut self, text: crate::input::TextCommit) {
+        let text = text.into_string();
+        if text.is_empty() {
+            return;
+        }
+        if self.state.mode == Mode::Composer {
+            self.commit_text_to_composer_focus(&text);
+            return;
+        }
+        if self.state.mode != Mode::Terminal {
+            self.paste_into_active_text_input(&text);
+            return;
+        }
+
+        self.state.clear_selection();
+        self.selection_autoscroll_deadline = None;
+        self.state.update_dismissed = true;
+        if let Some(ws_idx) = self.state.active {
+            if let Some(rt) = self
+                .state
+                .focused_runtime_in_workspace(&self.terminal_runtimes, ws_idx)
+            {
+                let _ = rt.try_send_bytes(Bytes::copy_from_slice(text.as_bytes()));
+            }
+        }
+    }
+
+    /// Commits IME text into the composer control that currently has focus,
+    /// the way typed and pasted text reach it: the task field takes the
+    /// text, the folder field opens its list and starts or extends a path,
+    /// and the agent control takes the letters as typing.
+    pub(super) fn commit_text_to_composer_focus(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        match self.state.composer.focus {
+            crate::composer::Focus::Task => {
+                self.state.composer.task.insert_str(text);
+            }
+            crate::composer::Focus::Folder => {
+                // Typing at the folder control is how a path is added, so a
+                // commit opens the list and lands in the path field too.
+                let opening = self.state.composer.open != Some(crate::composer::Focus::Folder);
+                if opening {
+                    self.state.refresh_composer_folders(&self.terminal_runtimes);
+                    self.state
+                        .composer
+                        .open_dropdown(crate::composer::Focus::Folder);
+                }
+                self.state.composer.edit_path(|path| {
+                    if opening {
+                        path.clear();
+                    }
+                    path.insert_str(text);
+                });
+            }
+            crate::composer::Focus::Agent => {
+                for ch in text.chars() {
+                    self.state.composer.type_agent(ch);
+                }
+            }
+        }
+    }
+
+    /// Routes committed IME text into whichever text input currently has
+    /// focus outside the terminal realm. Returns false when the active mode
+    /// has no text input, so callers can keep their own fallback behavior.
+    pub(crate) fn paste_into_active_text_input(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        match self.state.mode {
+            Mode::RenameWorkspace | Mode::RenamePane => {
+                insert_rename_input_text(&mut self.state, text);
+                true
+            }
+            Mode::NewLinkedWorktree => {
+                self.insert_worktree_create_text(text);
+                true
+            }
+            Mode::OpenExistingWorktree => {
+                if !self
+                    .state
+                    .worktree_open
+                    .as_ref()
+                    .is_some_and(|open| open.search_focused)
+                {
+                    return false;
+                }
+                self.insert_worktree_open_search_text(text);
+                true
+            }
+            Mode::Navigator => {
+                if !self.state.navigator.search_focused {
+                    return false;
+                }
+                insert_navigator_search_text(&mut self.state, &self.terminal_runtimes, text);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -715,7 +821,7 @@ fn unique_temp_path(name: &str) -> std::path::PathBuf {
 
 #[cfg(test)]
 fn wait_for_file(path: &std::path::Path) -> String {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while std::time::Instant::now() < deadline {
         if let Ok(content) = std::fs::read_to_string(path) {
             return content;

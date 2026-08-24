@@ -17,7 +17,7 @@ fn is_modifier_only_key(code: &KeyCode) -> bool {
     matches!(code, KeyCode::Modifier(_))
 }
 
-fn is_ctrl_q(key: TerminalKey) -> bool {
+fn is_ctrl_q(key: &TerminalKey) -> bool {
     key.code == KeyCode::Char('q') && key.modifiers == crossterm::event::KeyModifiers::CONTROL
 }
 
@@ -38,7 +38,7 @@ impl App {
 
         let key_event = key.as_key_event();
 
-        if is_ctrl_q(key) {
+        if is_ctrl_q(&key) {
             if key_event.kind == crossterm::event::KeyEventKind::Release {
                 return None;
             }
@@ -48,7 +48,9 @@ impl App {
                 return None;
             }
             self.state.arm_detach_confirm(now);
-        } else if let Some(action) = super::terminal_direct_navigation_action(&self.state, key) {
+        } else if let Some(action) =
+            super::terminal_direct_navigation_action(&self.state, key.clone())
+        {
             if action == super::navigate::NavigateAction::Detach
                 && key_event.kind == crossterm::event::KeyEventKind::Release
             {
@@ -84,13 +86,13 @@ impl App {
             }
             return None;
         }
-        if !is_ctrl_q(key) {
+        if !is_ctrl_q(&key) {
             self.state.clear_detach_confirm();
         }
 
         if let Some(binding) = super::navigate::command_for_key(
             &self.state,
-            key,
+            key.clone(),
             super::navigate::BindingDispatch::Direct,
         ) {
             debug!(
@@ -104,7 +106,7 @@ impl App {
             return None;
         }
 
-        if self.state.is_prefix_key(key) {
+        if self.state.is_prefix_key(&key) {
             self.state.mode = Mode::Prefix;
             return None;
         }
@@ -166,7 +168,7 @@ impl App {
 
         rt.scroll_reset();
         let protocol = rt.keyboard_protocol();
-        let bytes = rt.encode_terminal_key(key);
+        let bytes = rt.encode_terminal_key(key.clone());
 
         if matches!(key_event.code, KeyCode::Esc)
             || key_event
@@ -211,7 +213,7 @@ impl App {
     }
 
     pub(super) async fn handle_terminal_key(&mut self, key: TerminalKey) {
-        if self.try_bridge_clipboard_image_from_key(key).await {
+        if self.try_bridge_clipboard_image_from_key(key.clone()).await {
             return;
         }
 
@@ -256,6 +258,29 @@ mod tests {
         app.state.mode = Mode::Terminal;
         app.state.view.pane_infos = pane_infos;
         (app, info)
+    }
+
+    fn marker_command(path: &std::path::Path, value: &str) -> String {
+        if cfg!(windows) {
+            format!(
+                "powershell -NoProfile -Command [IO.File]::WriteAllText('{}', '{}')",
+                path.display(),
+                value
+            )
+        } else {
+            format!("printf {value} > '{}'", path.display())
+        }
+    }
+
+    fn editor_command(path: &std::path::Path) -> String {
+        if cfg!(windows) {
+            format!(
+                "powershell -NoProfile -Command [IO.File]::Copy($env:HERDR_SCROLLBACK_FILE, '{}'); #",
+                path.display()
+            )
+        } else {
+            format!("sh -c 'cp \"$1\" {}' sh", path.display())
+        }
     }
 
     fn double_click(app: &mut App, col: u16, row: u16) {
@@ -886,7 +911,7 @@ mod tests {
         app.state.keybinds.detach = crate::config::ActionKeybinds::direct("ctrl+q");
 
         let ctrl_q = TerminalKey::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
-        app.handle_terminal_key_headless(ctrl_q);
+        app.handle_terminal_key_headless(ctrl_q.clone());
         let _ = rx.try_recv().expect("first ctrl+q should reach pane");
 
         app.handle_terminal_key_headless(ctrl_q);
@@ -1035,10 +1060,7 @@ mod tests {
 
         let output_path = unique_temp_path("direct-edit-scrollback");
         let previous_editor = std::env::var_os("EDITOR");
-        std::env::set_var(
-            "EDITOR",
-            format!("sh -c 'cp \"$1\" {}' sh", output_path.display()),
-        );
+        std::env::set_var("EDITOR", editor_command(&output_path));
         app.state.keybinds.edit_scrollback = crate::config::ActionKeybinds::direct("ctrl+alt+e");
 
         app.handle_terminal_key(TerminalKey::new(
@@ -1076,7 +1098,7 @@ mod tests {
         app.state.mode = Mode::Terminal;
 
         let output_path = unique_temp_path("direct-custom-command");
-        let command = format!("printf direct > '{}'", output_path.display());
+        let command = marker_command(&output_path, "direct");
         app.state.keybinds.custom_commands = vec![crate::config::CustomCommandKeybind {
             bindings: crate::config::ActionKeybinds::direct("ctrl+alt+g"),
             label: "ctrl+alt+g".into(),
@@ -1106,7 +1128,7 @@ mod tests {
             api_rx,
             crate::api::EventHub::default(),
         );
-        app.state.default_shell = "/usr/bin/true".into();
+        app.state.default_shell = crate::pane::test_shell_program().into();
         let (workspace, terminal, runtime) = Workspace::new(
             std::env::current_dir().unwrap_or_else(|_| "/".into()),
             24,

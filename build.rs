@@ -11,6 +11,7 @@ fn zig_target(target: &str) -> &str {
         "aarch64-unknown-linux-musl" => "aarch64-linux-musl",
         "x86_64-apple-darwin" => "x86_64-macos",
         "aarch64-apple-darwin" => "aarch64-macos",
+        "x86_64-pc-windows-msvc" => "x86_64-windows-msvc",
         other => panic!("unsupported target for libghostty-vt build: {other}"),
     }
 }
@@ -83,6 +84,13 @@ fn main() {
     if target.contains("apple-darwin") {
         let static_lib = lib_dir.join("libghostty-vt.a");
         println!("cargo:rustc-link-arg={}", static_lib.display());
+    } else if target.contains("windows-msvc") {
+        // The vendored build installs the static archive as
+        // `ghostty-vt-static.lib` on Windows because `ghostty-vt.lib` is the
+        // import library for the DLL build.
+        println!("cargo:rustc-link-lib=static=ghostty-vt-static");
+        // The VT engine reaches ntdll for page allocation helpers.
+        println!("cargo:rustc-link-lib=dylib=ntdll");
     } else {
         println!("cargo:rustc-link-lib=static=ghostty-vt");
     }

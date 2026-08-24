@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::Span,
     Frame,
 };
@@ -384,6 +384,15 @@ fn compute_mobile_view(
     app.view.pane_title_hit_areas = self::panes::compute_pane_title_hit_areas(app);
 }
 
+fn fill_chrome(frame: &mut Frame, area: Rect, color: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame
+        .buffer_mut()
+        .set_style(area, Style::default().bg(color));
+}
+
 /// Render the UI — reads AppState but does not mutate it.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn render(app: &AppState, frame: &mut Frame) {
@@ -397,6 +406,10 @@ pub fn render_with_runtime_registry(
     frame: &mut Frame,
 ) {
     let terminal_area = app.view.terminal_area;
+
+    // Chrome must carry the theme background. Reset cells show the host
+    // terminal, so a light theme on a dark WezTerm only lit the settings box.
+    fill_chrome(frame, frame.area(), app.palette.panel_bg);
 
     render_composer(app, frame, &app.view.composer);
 

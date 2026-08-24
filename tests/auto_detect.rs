@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Integration tests for auto-detect launch behavior.
 
 #![cfg(not(target_os = "macos"))]

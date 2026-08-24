@@ -14,9 +14,9 @@
 //! - Handles stale socket cleanup, explicit server stop, minimum terminal size,
 //!   and pane spawn failure during restore
 
+use crate::net::UnixListener;
 use std::collections::HashMap;
 use std::io;
-use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -162,7 +162,10 @@ const CLIENT_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// The headless server — runs the herdr event loop without a real terminal.
 pub struct HeadlessServer {
     app: app::App,
+    // Consumed by the Unix live-handoff path when it runs.
+    #[cfg_attr(not(unix), allow(dead_code))]
     api_tx: Option<api::ApiRequestSender>,
+    #[cfg_attr(not(unix), allow(dead_code))]
     api_server: Option<api::ServerHandle>,
     client_listener: UnixListener,
     client_socket_path: PathBuf,
@@ -189,6 +192,7 @@ pub struct HeadlessServer {
     /// Flag set while exporting live PTYs to a replacement server.
     handoff_in_progress: bool,
     /// Imported panes get one app-safe resize nudge after the first client attaches.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pending_handoff_repaint_nudge: bool,
     /// Flag set by Ctrl+C or `server stop` signal.
     should_quit: Arc<AtomicBool>,
@@ -321,6 +325,7 @@ impl HeadlessServer {
             effective_size: (MIN_COLS, MIN_ROWS),
             shutting_down: false,
             handoff_in_progress: false,
+            #[cfg_attr(not(unix), allow(dead_code))]
             pending_handoff_repaint_nudge: false,
             should_quit,
             server_event_rx,
@@ -1748,6 +1753,7 @@ impl HeadlessServer {
         }
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn disconnect_all_clients_for_handoff(&mut self) {
         let client_ids = self.clients.keys().copied().collect::<Vec<_>>();
         for client_id in client_ids {
@@ -2036,6 +2042,89 @@ impl HeadlessServer {
                 } else {
                     foreground_changed || theme_changed || interaction || outer_focus_changed
                 }
+            }
+            ServerEvent::ClientInputEvents { client_id, events } => {
+                if self.handoff_in_progress {
+                    debug!(
+                        client_id,
+                        len = events.len(),
+                        "ignored client input events during handoff"
+                    );
+                    return false;
+                }
+                debug!(
+                    client_id,
+                    len = events.len(),
+                    "client input events received"
+                );
+                let events = events
+                    .iter()
+                    .map(crate::protocol::ClientInputEvent::to_raw_input_event)
+                    .collect::<Vec<_>>();
+                let host_surface_redraw = crate::raw_input::events_require_host_surface_redraw(
+                    &events,
+                    self.app.state.redraw_on_focus_gained,
+                );
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    if host_surface_redraw {
+                        client.request_full_redraw();
+                    } else {
+                        client.request_semantic_redraw_after_input();
+                    }
+                }
+                let outer_focus_changed =
+                    self.update_client_outer_focus_from_events(client_id, &events);
+                let interaction = events_include_interaction(&events);
+                let foreground_changed = if interaction {
+                    self.promote_client_to_foreground(client_id)
+                } else {
+                    false
+                };
+                if foreground_changed {
+                    self.resize_shared_runtime_to_effective_size_before_input();
+                }
+                let theme_changed = self.update_client_host_theme_from_events(client_id, &events);
+                self.app
+                    .route_client_events(events, self.foreground_client_id == Some(client_id));
+                if self.app.take_config_reloaded_from_disk() {
+                    self.reload_server_config(false);
+                } else {
+                    self.sync_foreground_client_state();
+                }
+
+                if self.app.state.detach_requested {
+                    self.app.state.detach_requested = false;
+                    info!(client_id, "client detach requested via keybind");
+                    self.send_client_graphics_cleanup(client_id);
+                    self.send_to_client(
+                        client_id,
+                        ServerMessage::ServerShutdown {
+                            reason: Some("detached".to_owned()),
+                        },
+                    );
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.writer = None;
+                    }
+                    return false;
+                }
+
+                foreground_changed || theme_changed || interaction || outer_focus_changed
+            }
+            ServerEvent::ClientPasteRejected {
+                client_id,
+                size,
+                max,
+            } => {
+                self.send_to_client(
+                    client_id,
+                    ServerMessage::Notify {
+                        kind: protocol::NotifyKind::Toast,
+                        message: format!(
+                            "Paste rejected: input is {size} bytes; Herdr's limit is {max} bytes"
+                        ),
+                    },
+                );
+                false
             }
             ServerEvent::ClientClipboardImage {
                 client_id,
@@ -3332,7 +3421,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
 
 #[cfg(unix)]
 fn wait_for_old_public_sockets_to_close(timeout: Duration) -> io::Result<()> {
-    use std::os::unix::net::UnixStream;
+    use crate::net::UnixStream;
 
     let deadline = Instant::now() + timeout;
     let api_socket = api::socket_path();
@@ -3430,6 +3519,7 @@ mod tests {
             effective_size: (MIN_COLS, MIN_ROWS),
             shutting_down: false,
             handoff_in_progress: false,
+            #[cfg_attr(not(unix), allow(dead_code))]
             pending_handoff_repaint_nudge: false,
             should_quit: Arc::new(AtomicBool::new(false)),
             server_event_rx,
@@ -4742,6 +4832,176 @@ next_tab = ""
             server.app.state.host_terminal_theme,
             server.clients[&1].host_terminal_theme
         );
+    }
+
+    #[test]
+    fn structured_focus_gained_promotes_client_to_foreground() {
+        let mut server = test_headless_server();
+
+        server.clients.insert(
+            1,
+            ClientConnection::new(
+                (120, 40),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                Some(true),
+                1,
+                RenderEncoding::SemanticFrame,
+                None,
+            ),
+        );
+        server.clients.insert(
+            2,
+            ClientConnection::new(
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                Some(true),
+                2,
+                RenderEncoding::SemanticFrame,
+                None,
+            ),
+        );
+        server.foreground_client_id = Some(2);
+        server.sync_foreground_client_state();
+
+        let changed = server.handle_server_event(ServerEvent::ClientInputEvents {
+            client_id: 1,
+            events: vec![crate::protocol::ClientInputEvent::FocusGained],
+        });
+
+        assert!(changed);
+        assert_eq!(server.foreground_client_id, Some(1));
+        assert_eq!(server.clients[&1].outer_terminal_focus, Some(true));
+        assert_eq!(server.app.state.outer_terminal_focus, Some(true));
+    }
+
+    #[test]
+    fn structured_focus_loss_from_background_client_keeps_foreground() {
+        let mut server = test_headless_server();
+
+        server.clients.insert(
+            1,
+            ClientConnection::new(
+                (120, 40),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                Some(true),
+                1,
+                RenderEncoding::SemanticFrame,
+                None,
+            ),
+        );
+        server.clients.insert(
+            2,
+            ClientConnection::new(
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                Some(true),
+                2,
+                RenderEncoding::SemanticFrame,
+                None,
+            ),
+        );
+        server.foreground_client_id = Some(2);
+        server.sync_foreground_client_state();
+
+        let changed = server.handle_server_event(ServerEvent::ClientInputEvents {
+            client_id: 1,
+            events: vec![crate::protocol::ClientInputEvent::FocusLost],
+        });
+
+        assert!(!changed);
+        assert_eq!(server.foreground_client_id, Some(2));
+        assert_eq!(server.clients[&1].outer_terminal_focus, Some(false));
+    }
+
+    #[test]
+    fn structured_key_event_forwards_to_focused_pane_with_encoding() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let _runtime_guard = rt.enter();
+        let mut server = test_headless_server();
+        let mut workspace = crate::workspace::Workspace::test_new("test");
+        let pane_id = workspace.tabs[0].root_pane;
+        let (runtime, mut input_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        workspace.insert_test_runtime(pane_id, runtime);
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.ensure_test_terminals();
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+        server.app.state.mode = crate::app::Mode::Terminal;
+        server.clients.insert(
+            1,
+            ClientConnection::new(
+                (120, 40),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                Some(true),
+                1,
+                RenderEncoding::SemanticFrame,
+                None,
+            ),
+        );
+        server.foreground_client_id = Some(1);
+        server.sync_foreground_client_state();
+
+        assert!(server.handle_server_event(ServerEvent::ClientInputEvents {
+            client_id: 1,
+            events: vec![crate::protocol::ClientInputEvent::Key {
+                code: crate::protocol::ClientKeyCode::Char('x'),
+                modifiers: 0,
+                kind: crate::protocol::ClientKeyKind::Press,
+                repeat_count: 2,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Synthesized,
+            },],
+        }));
+
+        let mut sent = Vec::new();
+        while let Ok(chunk) = input_rx.try_recv() {
+            sent.extend_from_slice(&chunk);
+        }
+        assert_eq!(sent, b"xx");
+
+        drop(input_rx);
+        drop(_runtime_guard);
+        rt.shutdown_timeout(Duration::from_millis(100));
+    }
+
+    #[test]
+    fn structured_text_commit_pastes_into_composer() {
+        let mut server = test_headless_server();
+        server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("test")];
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+        server.app.state.mode = crate::app::Mode::Composer;
+        server.clients.insert(
+            1,
+            ClientConnection::new(
+                (120, 40),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                Some(true),
+                1,
+                RenderEncoding::SemanticFrame,
+                None,
+            ),
+        );
+        server.foreground_client_id = Some(1);
+        server.sync_foreground_client_state();
+
+        assert!(server.handle_server_event(ServerEvent::ClientInputEvents {
+            client_id: 1,
+            events: vec![crate::protocol::ClientInputEvent::TextCommit(
+                "task text".to_owned(),
+            )],
+        }));
+
+        assert_eq!(server.app.state.composer.task.text(), "task text");
     }
 
     #[test]

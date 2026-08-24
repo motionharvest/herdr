@@ -2873,7 +2873,7 @@ mod tests {
     #[tokio::test]
     async fn keyboard_context_menu_split_keeps_new_runtime() {
         let mut app = app_for_mouse_test();
-        app.state.default_shell = "/usr/bin/true".into();
+        app.state.default_shell = crate::pane::test_shell_program().into();
         let (workspace, terminal, runtime) = Workspace::new(
             std::env::current_dir().unwrap_or_else(|_| "/".into()),
             24,
@@ -4457,13 +4457,16 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("space")];
         app.state.active = Some(0);
         app.state.mode = Mode::Composer;
-        app.state
-            .composer
-            .add_folder(std::path::PathBuf::from("/tmp"));
+        let chosen = std::env::temp_dir();
+        let typed = std::env::current_dir().expect("the test working directory should exist");
+        let expected = crate::worktree::canonical_or_original(&typed);
+        app.state.composer.add_folder(chosen);
         app.state
             .composer
             .open_dropdown(crate::composer::Focus::Folder);
-        app.state.composer.edit_path(|path| path.set_text("/usr"));
+        app.state
+            .composer
+            .edit_path(|path| path.set_text(&typed.display().to_string()));
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
 
         let task = app.state.view.composer.task;
@@ -4475,7 +4478,7 @@ mod tests {
 
         assert_eq!(
             app.state.composer.folder_path(),
-            Some(std::path::Path::new("/usr")),
+            Some(expected.as_path()),
             "the typed path should be kept the way Enter keeps it"
         );
         assert_eq!(app.state.composer.open, None);
@@ -4488,13 +4491,16 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("space")];
         app.state.active = Some(0);
         app.state.mode = Mode::Composer;
-        app.state
-            .composer
-            .add_folder(std::path::PathBuf::from("/tmp"));
+        let chosen = std::env::temp_dir();
+        let typed = std::env::current_dir().expect("the test working directory should exist");
+        let expected = crate::worktree::canonical_or_original(&typed);
+        app.state.composer.add_folder(chosen);
         app.state
             .composer
             .open_dropdown(crate::composer::Focus::Folder);
-        app.state.composer.edit_path(|path| path.set_text("/usr"));
+        app.state
+            .composer
+            .edit_path(|path| path.set_text(&typed.display().to_string()));
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
 
         let pane = app.state.view.pane_infos[0].inner_rect;
@@ -4504,10 +4510,7 @@ mod tests {
             pane.y + 1,
         ));
 
-        assert_eq!(
-            app.state.composer.folder_path(),
-            Some(std::path::Path::new("/usr"))
-        );
+        assert_eq!(app.state.composer.folder_path(), Some(expected.as_path()));
         assert_eq!(app.state.composer.open, None);
         assert_eq!(app.state.mode, Mode::Terminal);
     }

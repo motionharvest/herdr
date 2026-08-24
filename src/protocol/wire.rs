@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -26,6 +26,33 @@ pub const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
 
 /// Maximum clipboard image payload size for remote paste bridging.
 pub const MAX_CLIPBOARD_IMAGE_PAYLOAD: usize = 16 * 1024 * 1024;
+
+/// Maximum allowed client-to-server frame payload size.
+///
+/// Clients never send graphics frames, so inbound frames only need room for
+/// the largest legitimate client message: a clipboard image paste plus its
+/// field framing. Everything else (input, structured events, resize) stays
+/// far below `MAX_FRAME_SIZE`. Keeping this directional cap separate from
+/// `MAX_GRAPHICS_FRAME_SIZE` stops a client from claiming 32 MB frames before
+/// any decode-level allocation limit runs.
+pub const MAX_CLIENT_FRAME_SIZE: usize = MAX_CLIPBOARD_IMAGE_PAYLOAD + MAX_FRAME_SIZE;
+
+/// Allocation/byte-read claim limit for decoding client-to-server frames.
+///
+/// Bincode's claim limit rejects a declared `Vec`/`String` length whose
+/// claimed bytes would exceed this bound before allocating, which bounds
+/// deserialization cost to the frame we actually read. The bound covers the
+/// largest legitimate client payload (a full clipboard image) plus 1 MiB of
+/// envelope and string-field claim overhead on top of it.
+pub const MAX_CLIENT_DECODE_LIMIT: usize = MAX_CLIPBOARD_IMAGE_PAYLOAD + 1024 * 1024;
+
+/// Maximum number of events in one `ClientMessage::InputEvents` batch.
+///
+/// Shared by the framing preflight, which rejects a larger declared `Vec`
+/// length before serde decoding allocates, and the server-side post-decode
+/// limit check, which counts events after key-repeat expansion. Both layers
+/// enforce the same numeric bound.
+pub const MAX_INPUT_EVENT_BATCH: usize = 4096;
 
 /// Length of the u32 little-endian length prefix in bytes.
 const LENGTH_PREFIX_BYTES: usize = 4;
@@ -59,6 +86,286 @@ pub enum ClientLaunchMode {
     App,
     /// Direct terminal attach client.
     TerminalAttach,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientKeyKind {
+    Press,
+    Repeat,
+    Release,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientKeyCode {
+    Backspace,
+    Enter,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Tab,
+    BackTab,
+    Delete,
+    Insert,
+    Esc,
+    Char(char),
+    F(u8),
+    Null,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientMouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientMouseKind {
+    Down(ClientMouseButton),
+    Up(ClientMouseButton),
+    Drag(ClientMouseButton),
+    Moved,
+    ScrollUp,
+    ScrollDown,
+    ScrollLeft,
+    ScrollRight,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientInputEvent {
+    Key {
+        code: ClientKeyCode,
+        modifiers: u8,
+        kind: ClientKeyKind,
+        repeat_count: u16,
+        generated_text: Option<String>,
+        source: ClientKeySource,
+    },
+    TextCommit(String),
+    Mouse {
+        kind: ClientMouseKind,
+        column: u16,
+        row: u16,
+        modifiers: u8,
+    },
+    Paste {
+        text: String,
+    },
+    FocusGained,
+    FocusLost,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientKeySource {
+    Synthesized,
+    Vt {
+        bytes: Vec<u8>,
+    },
+    WindowsConsole {
+        record: crate::input::WindowsKeyRecord,
+    },
+}
+
+impl ClientKeyKind {
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port; kept for the protocol tests
+    pub(crate) fn from_crossterm(kind: crossterm::event::KeyEventKind) -> Self {
+        match kind {
+            crossterm::event::KeyEventKind::Press => Self::Press,
+            crossterm::event::KeyEventKind::Repeat => Self::Repeat,
+            crossterm::event::KeyEventKind::Release => Self::Release,
+        }
+    }
+
+    pub(crate) fn to_crossterm(self) -> crossterm::event::KeyEventKind {
+        match self {
+            Self::Press => crossterm::event::KeyEventKind::Press,
+            Self::Repeat => crossterm::event::KeyEventKind::Repeat,
+            Self::Release => crossterm::event::KeyEventKind::Release,
+        }
+    }
+}
+
+impl ClientKeyCode {
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port; kept for the protocol tests
+    pub(crate) fn from_crossterm(code: crossterm::event::KeyCode) -> Option<Self> {
+        use crossterm::event::KeyCode;
+        Some(match code {
+            KeyCode::Backspace => Self::Backspace,
+            KeyCode::Enter => Self::Enter,
+            KeyCode::Left => Self::Left,
+            KeyCode::Right => Self::Right,
+            KeyCode::Up => Self::Up,
+            KeyCode::Down => Self::Down,
+            KeyCode::Home => Self::Home,
+            KeyCode::End => Self::End,
+            KeyCode::PageUp => Self::PageUp,
+            KeyCode::PageDown => Self::PageDown,
+            KeyCode::Tab => Self::Tab,
+            KeyCode::BackTab => Self::BackTab,
+            KeyCode::Delete => Self::Delete,
+            KeyCode::Insert => Self::Insert,
+            KeyCode::Esc => Self::Esc,
+            KeyCode::Char(ch) => Self::Char(ch),
+            KeyCode::F(n) => Self::F(n),
+            KeyCode::Null => Self::Null,
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn to_crossterm(&self) -> crossterm::event::KeyCode {
+        use crossterm::event::KeyCode;
+        match self {
+            Self::Backspace => KeyCode::Backspace,
+            Self::Enter => KeyCode::Enter,
+            Self::Left => KeyCode::Left,
+            Self::Right => KeyCode::Right,
+            Self::Up => KeyCode::Up,
+            Self::Down => KeyCode::Down,
+            Self::Home => KeyCode::Home,
+            Self::End => KeyCode::End,
+            Self::PageUp => KeyCode::PageUp,
+            Self::PageDown => KeyCode::PageDown,
+            Self::Tab => KeyCode::Tab,
+            Self::BackTab => KeyCode::BackTab,
+            Self::Delete => KeyCode::Delete,
+            Self::Insert => KeyCode::Insert,
+            Self::Esc => KeyCode::Esc,
+            Self::Char(ch) => KeyCode::Char(*ch),
+            Self::F(n) => KeyCode::F(*n),
+            Self::Null => KeyCode::Null,
+        }
+    }
+}
+
+impl ClientMouseButton {
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port; kept for the protocol tests
+    pub(crate) fn from_crossterm(button: crossterm::event::MouseButton) -> Self {
+        match button {
+            crossterm::event::MouseButton::Left => Self::Left,
+            crossterm::event::MouseButton::Right => Self::Right,
+            crossterm::event::MouseButton::Middle => Self::Middle,
+        }
+    }
+
+    pub(crate) fn to_crossterm(self) -> crossterm::event::MouseButton {
+        match self {
+            Self::Left => crossterm::event::MouseButton::Left,
+            Self::Right => crossterm::event::MouseButton::Right,
+            Self::Middle => crossterm::event::MouseButton::Middle,
+        }
+    }
+}
+
+impl ClientMouseKind {
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port; kept for the protocol tests
+    pub(crate) fn from_crossterm(kind: crossterm::event::MouseEventKind) -> Option<Self> {
+        use crossterm::event::MouseEventKind;
+        Some(match kind {
+            MouseEventKind::Down(button) => Self::Down(ClientMouseButton::from_crossterm(button)),
+            MouseEventKind::Up(button) => Self::Up(ClientMouseButton::from_crossterm(button)),
+            MouseEventKind::Drag(button) => Self::Drag(ClientMouseButton::from_crossterm(button)),
+            MouseEventKind::Moved => Self::Moved,
+            MouseEventKind::ScrollUp => Self::ScrollUp,
+            MouseEventKind::ScrollDown => Self::ScrollDown,
+            MouseEventKind::ScrollLeft => Self::ScrollLeft,
+            MouseEventKind::ScrollRight => Self::ScrollRight,
+        })
+    }
+
+    pub(crate) fn to_crossterm(self) -> crossterm::event::MouseEventKind {
+        use crossterm::event::MouseEventKind;
+        match self {
+            Self::Down(button) => MouseEventKind::Down(button.to_crossterm()),
+            Self::Up(button) => MouseEventKind::Up(button.to_crossterm()),
+            Self::Drag(button) => MouseEventKind::Drag(button.to_crossterm()),
+            Self::Moved => MouseEventKind::Moved,
+            Self::ScrollUp => MouseEventKind::ScrollUp,
+            Self::ScrollDown => MouseEventKind::ScrollDown,
+            Self::ScrollLeft => MouseEventKind::ScrollLeft,
+            Self::ScrollRight => MouseEventKind::ScrollRight,
+        }
+    }
+}
+
+impl ClientInputEvent {
+    #[cfg(any(windows, test))]
+    #[allow(dead_code)] // used by the Windows reader port; kept for the protocol tests
+    pub(crate) fn from_crossterm(event: crossterm::event::Event) -> Option<Self> {
+        match event {
+            crossterm::event::Event::Key(key) => Some(Self::Key {
+                code: ClientKeyCode::from_crossterm(key.code)?,
+                modifiers: key.modifiers.bits(),
+                kind: ClientKeyKind::from_crossterm(key.kind),
+                repeat_count: 1,
+                generated_text: None,
+                source: ClientKeySource::Synthesized,
+            }),
+            crossterm::event::Event::Mouse(mouse) => Some(Self::Mouse {
+                kind: ClientMouseKind::from_crossterm(mouse.kind)?,
+                column: mouse.column,
+                row: mouse.row,
+                modifiers: mouse.modifiers.bits(),
+            }),
+            crossterm::event::Event::Paste(text) => Some(Self::Paste { text }),
+            crossterm::event::Event::FocusGained => Some(Self::FocusGained),
+            crossterm::event::Event::FocusLost => Some(Self::FocusLost),
+            crossterm::event::Event::Resize(_, _) => None,
+        }
+    }
+
+    pub(crate) fn to_raw_input_event(&self) -> crate::raw_input::RawInputEvent {
+        match self {
+            Self::Key {
+                code,
+                modifiers,
+                kind,
+                repeat_count,
+                generated_text,
+                source,
+            } => {
+                let mut key = crate::input::TerminalKey::new(
+                    code.to_crossterm(),
+                    crossterm::event::KeyModifiers::from_bits_truncate(*modifiers),
+                )
+                .with_generated_text(generated_text.clone());
+                key = match source {
+                    ClientKeySource::Synthesized => key,
+                    ClientKeySource::Vt { bytes } => key.with_vt_bytes(bytes.clone()),
+                    ClientKeySource::WindowsConsole { record } => key.with_windows_record(*record),
+                };
+                key = key
+                    .with_repeat_count(*repeat_count)
+                    .with_kind(kind.to_crossterm());
+                crate::raw_input::RawInputEvent::Key(key)
+            }
+            Self::TextCommit(text) => {
+                crate::raw_input::RawInputEvent::Text(crate::input::TextCommit::new(text.clone()))
+            }
+            Self::Mouse {
+                kind,
+                column,
+                row,
+                modifiers,
+            } => crate::raw_input::RawInputEvent::Mouse(crossterm::event::MouseEvent {
+                kind: kind.to_crossterm(),
+                column: *column,
+                row: *row,
+                modifiers: crossterm::event::KeyModifiers::from_bits_truncate(*modifiers),
+            }),
+            Self::Paste { text } => crate::raw_input::RawInputEvent::Paste(text.clone()),
+            Self::FocusGained => crate::raw_input::RawInputEvent::OuterFocusGained,
+            Self::FocusLost => crate::raw_input::RawInputEvent::OuterFocusLost,
+        }
+    }
 }
 
 /// Messages sent from the client to the server over the client protocol socket.
@@ -136,6 +443,9 @@ pub enum ClientMessage {
         /// Crossterm-compatible modifier bits for forwarded mouse wheel events.
         modifiers: u8,
     },
+
+    /// Structured input events from platform clients that do not expose Unix-style raw bytes.
+    InputEvents { events: Vec<ClientInputEvent> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -482,6 +792,8 @@ fn u16_to_modifier(val: u16) -> ratatui::style::Modifier {
 pub enum FramingError {
     /// The decoded payload length exceeds the configured maximum frame size.
     Oversized { claimed: usize, max: usize },
+    /// A declared `InputEvents` batch exceeds the per-batch event cap.
+    InputEventBatchTooLarge { claimed: usize, max: usize },
     /// An I/O error occurred while reading or writing.
     Io(io::Error),
     /// Bincode serialization or deserialization failed.
@@ -495,6 +807,9 @@ impl std::fmt::Display for FramingError {
         match self {
             FramingError::Oversized { claimed, max } => {
                 write!(f, "frame size {claimed} exceeds maximum {max}")
+            }
+            FramingError::InputEventBatchTooLarge { claimed, max } => {
+                write!(f, "input event batch {claimed} exceeds maximum {max}")
             }
             FramingError::Io(e) => write!(f, "I/O error: {e}"),
             FramingError::Bincode(e) => write!(f, "bincode error: {e}"),
@@ -587,6 +902,45 @@ pub fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
     Ok(msg)
 }
 
+/// Reads and decodes a client-to-server frame with bounded allocation.
+///
+/// Clients never send graphics frames, so the directional client cap keeps
+/// inbound claims well below `MAX_GRAPHICS_FRAME_SIZE`. Before serde
+/// decoding, [`preflight_client_message`] decodes the message tag and, for
+/// `InputEvents`, the declared event count, rejecting batches larger than
+/// [`MAX_INPUT_EVENT_BATCH`] before any event allocation. The claim-limited
+/// decode then bounds the remaining `Vec`/`String` allocations.
+pub fn read_client_message<R: Read>(
+    reader: &mut R,
+) -> Result<crate::protocol::wire::ClientMessage, FramingError> {
+    let mut len_buf = [0u8; LENGTH_PREFIX_BYTES];
+    read_exact_or_eof(reader, &mut len_buf)?;
+    let claimed_len = u32::from_le_bytes(len_buf) as usize;
+
+    if claimed_len > MAX_CLIENT_FRAME_SIZE {
+        return Err(FramingError::Oversized {
+            claimed: claimed_len,
+            max: MAX_CLIENT_FRAME_SIZE,
+        });
+    }
+
+    let mut payload = vec![0u8; claimed_len];
+    read_exact_or_eof(reader, &mut payload)?;
+
+    preflight_client_message(&payload)?;
+
+    let (msg, consumed) =
+        decode_client_frame(&payload).map_err(|e| FramingError::Bincode(e.to_string()))?;
+
+    if consumed != claimed_len {
+        return Err(FramingError::Bincode(format!(
+            "decoded {} bytes but payload length was {claimed_len}; trailing bytes are not allowed",
+            consumed
+        )));
+    }
+
+    Ok(msg)
+}
 /// Like `Read::read_exact`, but returns `FramingError::UnexpectedEof`
 /// when the reader hits end-of-stream before filling the buffer, instead
 /// of the generic `io::ErrorKind::UnexpectedEof`.
@@ -598,6 +952,54 @@ fn read_exact_or_eof<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<(), Fram
             FramingError::Io(e)
         }
     })
+}
+
+/// `ClientMessage::InputEvents` variant tag under standard bincode encoding.
+/// Enum variants encode their declaration index as a u32 varint; the tests
+/// guard this constant against enum reordering.
+const CLIENT_MESSAGE_INPUT_EVENTS_TAG: u32 = 7;
+
+/// Pre-decodes the client message tag and, for `InputEvents`, the declared
+/// event count with the same bincode primitives the full decode uses.
+///
+/// Bincode's serde bridge does not claim container lengths for `Vec<struct>`
+/// fields, so this preflight rejects a declared `InputEvents` batch larger
+/// than [`MAX_INPUT_EVENT_BATCH`] before serde decoding reserves or
+/// allocates any event storage.
+fn preflight_client_message(payload: &[u8]) -> Result<(), FramingError> {
+    use bincode::de::{read::SliceReader, Decode, DecoderImpl};
+
+    let mut decoder = DecoderImpl::new(SliceReader::new(payload), bincode::config::standard(), ());
+    let bincode_err = |e: bincode::error::DecodeError| FramingError::Bincode(e.to_string());
+    let tag = u32::decode(&mut decoder).map_err(bincode_err)?;
+    if tag != CLIENT_MESSAGE_INPUT_EVENTS_TAG {
+        return Ok(());
+    }
+    let count = usize::decode(&mut decoder).map_err(bincode_err)?;
+    if count > MAX_INPUT_EVENT_BATCH {
+        return Err(FramingError::InputEventBatchTooLarge {
+            claimed: count,
+            max: MAX_INPUT_EVENT_BATCH,
+        });
+    }
+    Ok(())
+}
+
+/// Decodes a client-to-server frame with a bounded allocation budget.
+///
+/// Server-side reads use this instead of unbounded standard decoding: the
+/// bincode claim limit rejects a crafted `Vec<u8>`/`String` length whose
+/// claimed bytes exceed [`MAX_CLIENT_DECODE_LIMIT`] before the allocation
+/// happens. `Vec<struct>` containers such as `InputEvents` are covered by
+/// the framing preflight instead. Server-to-client frames keep standard
+/// decoding because the server builds them itself.
+pub fn decode_client_frame(
+    payload: &[u8],
+) -> Result<(ClientMessage, usize), bincode::error::DecodeError> {
+    bincode::serde::borrow_decode_from_slice(
+        payload,
+        bincode::config::standard().with_limit::<{ MAX_CLIENT_DECODE_LIMIT }>(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -679,6 +1081,90 @@ mod tests {
         let (decoded, _): (ClientMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn client_input_events_roundtrip() {
+        let msg = ClientMessage::InputEvents {
+            events: vec![
+                ClientInputEvent::Key {
+                    code: ClientKeyCode::Char('N'),
+                    modifiers: crossterm::event::KeyModifiers::SHIFT.bits(),
+                    kind: ClientKeyKind::Press,
+                    repeat_count: 1,
+                    generated_text: None,
+                    source: ClientKeySource::Synthesized,
+                },
+                ClientInputEvent::Key {
+                    code: ClientKeyCode::Backspace,
+                    modifiers: 0,
+                    kind: ClientKeyKind::Press,
+                    repeat_count: 3,
+                    generated_text: None,
+                    source: ClientKeySource::Vt {
+                        bytes: b"\x1b[127;1u".to_vec(),
+                    },
+                },
+                ClientInputEvent::Key {
+                    code: ClientKeyCode::Esc,
+                    modifiers: 0,
+                    kind: ClientKeyKind::Release,
+                    repeat_count: 1,
+                    generated_text: None,
+                    source: ClientKeySource::WindowsConsole {
+                        record: crate::input::WindowsKeyRecord {
+                            key_down: false,
+                            repeat_count: 1,
+                            virtual_key_code: 27,
+                            virtual_scan_code: 1,
+                            unicode: 27,
+                            control_key_state: 0,
+                        },
+                    },
+                },
+                ClientInputEvent::TextCommit("你🙂".to_owned()),
+                ClientInputEvent::Mouse {
+                    kind: ClientMouseKind::Down(ClientMouseButton::Left),
+                    column: 3,
+                    row: 4,
+                    modifiers: 0,
+                },
+            ],
+        };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        // Freeze the input envelope tag before it is published: InputEvents is tag 7.
+        assert_eq!(
+            encoded,
+            vec![
+                7, 5, 0, 15, 78, 1, 0, 1, 0, 0, 0, 0, 0, 0, 3, 0, 1, 8, 27, 91, 49, 50, 55, 59, 49,
+                117, 0, 14, 0, 2, 1, 0, 2, 0, 1, 27, 1, 27, 0, 1, 7, 228, 189, 160, 240, 159, 153,
+                130, 2, 0, 0, 3, 4, 0,
+            ]
+        );
+        let (decoded, _): (ClientMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn wire_release_cannot_restore_a_grouped_repeat_count() {
+        let event = ClientInputEvent::Key {
+            code: ClientKeyCode::Esc,
+            modifiers: 0,
+            kind: ClientKeyKind::Release,
+            repeat_count: 3,
+            generated_text: Some("ignored".to_owned()),
+            source: ClientKeySource::Synthesized,
+        };
+
+        match event.to_raw_input_event() {
+            crate::raw_input::RawInputEvent::Key(key) => {
+                assert_eq!(key.kind, crossterm::event::KeyEventKind::Release);
+                assert_eq!(key.repeat_count, 1);
+                assert_eq!(key.generated_text, None);
+            }
+            other => panic!("expected key event, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1261,6 +1747,139 @@ mod tests {
         );
     }
 
+    #[test]
+    fn read_client_message_rejects_huge_input_events_batch_before_allocation() {
+        // Build the frame prefix exactly as bincode standard encoding writes
+        // it: the InputEvents variant tag as a u32 varint, then the Vec
+        // length as a usize varint. The declared count (200 million events)
+        // carries no event bytes. Bincode's serde bridge does not claim
+        // container lengths for Vec<struct> fields, so the framing preflight
+        // must reject the batch before serde decoding allocates any storage.
+        let mut payload = bincode::serde::encode_to_vec(
+            CLIENT_MESSAGE_INPUT_EVENTS_TAG,
+            bincode::config::standard(),
+        )
+        .unwrap();
+        payload.extend_from_slice(
+            &bincode::serde::encode_to_vec(200_000_000usize, bincode::config::standard()).unwrap(),
+        );
+
+        let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(&payload);
+
+        let mut reader: &[u8] = &frame;
+        let err = read_client_message(&mut reader).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                FramingError::InputEventBatchTooLarge {
+                    claimed: 200_000_000,
+                    max: MAX_INPUT_EVENT_BATCH
+                }
+            ),
+            "expected InputEventBatchTooLarge, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn read_client_message_input_event_batch_boundary_is_inclusive() {
+        // A batch of exactly MAX_INPUT_EVENT_BATCH passes the preflight and
+        // only fails later (truncated event bytes), while one more event hits
+        // the batch cap.
+        for (count, expect_batch_rejection) in [
+            (MAX_INPUT_EVENT_BATCH, false),
+            (MAX_INPUT_EVENT_BATCH + 1, true),
+        ] {
+            let mut payload = bincode::serde::encode_to_vec(
+                CLIENT_MESSAGE_INPUT_EVENTS_TAG,
+                bincode::config::standard(),
+            )
+            .unwrap();
+            payload.extend_from_slice(
+                &bincode::serde::encode_to_vec(count, bincode::config::standard()).unwrap(),
+            );
+
+            let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+            frame.extend_from_slice(&payload);
+
+            let mut reader: &[u8] = &frame;
+            let result = read_client_message(&mut reader);
+            if expect_batch_rejection {
+                assert!(
+                    matches!(
+                        result,
+                        Err(FramingError::InputEventBatchTooLarge { claimed, .. }) if claimed == count
+                    ),
+                    "count {count} must hit the batch cap, got: {result:?}"
+                );
+            } else {
+                assert!(
+                    !matches!(result, Err(FramingError::InputEventBatchTooLarge { .. })),
+                    "count {count} must pass the batch cap, got: {result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn client_message_input_events_tag_matches_standard_encoding() {
+        // The preflight hardcodes the InputEvents variant tag; decode the tag
+        // from a real standard encoding so enum reordering breaks this test
+        // instead of silently disarming the preflight.
+        let sample = ClientMessage::InputEvents { events: Vec::new() };
+        let encoded = bincode::serde::encode_to_vec(&sample, bincode::config::standard()).unwrap();
+        let mut decoder = bincode::de::DecoderImpl::new(
+            bincode::de::read::SliceReader::new(&encoded),
+            bincode::config::standard(),
+            (),
+        );
+        use bincode::de::Decode;
+        let tag = u32::decode(&mut decoder).unwrap();
+        assert_eq!(tag, CLIENT_MESSAGE_INPUT_EVENTS_TAG);
+    }
+
+    #[test]
+    fn client_decode_accepts_legitimate_input_events_frame() {
+        let msg = ClientMessage::InputEvents {
+            events: vec![
+                ClientInputEvent::Key {
+                    code: ClientKeyCode::Char('a'),
+                    modifiers: 0,
+                    kind: ClientKeyKind::Press,
+                    repeat_count: 1,
+                    generated_text: None,
+                    source: ClientKeySource::Synthesized,
+                },
+                ClientInputEvent::TextCommit("你🙂".to_owned()),
+            ],
+        };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        let (decoded, consumed): (ClientMessage, _) = decode_client_frame(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+        assert_eq!(consumed, encoded.len());
+    }
+
+    #[test]
+    fn client_frame_cap_covers_largest_legitimate_clipboard_paste() {
+        // The directional client cap must still admit a maximum-size
+        // clipboard image message plus its envelope.
+        const { assert!(MAX_CLIENT_FRAME_SIZE > MAX_CLIPBOARD_IMAGE_PAYLOAD) };
+        let msg = ClientMessage::ClipboardImage {
+            extension: "png".to_owned(),
+            data: vec![0u8; MAX_CLIPBOARD_IMAGE_PAYLOAD],
+        };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        assert!(encoded.len() <= MAX_CLIENT_FRAME_SIZE);
+        let (decoded, consumed): (ClientMessage, _) = decode_client_frame(&encoded).unwrap();
+        assert_eq!(consumed, encoded.len());
+        match decoded {
+            ClientMessage::ClipboardImage { data, .. } => {
+                assert_eq!(data.len(), MAX_CLIPBOARD_IMAGE_PAYLOAD)
+            }
+            other => panic!("expected ClipboardImage, got {other:?}"),
+        }
+    }
+
     // ---- FrameData ↔ ratatui Buffer conversion ----
 
     #[test]
@@ -1494,6 +2113,7 @@ mod tests {
 
     // ---- Unix socketpair integration test ----
 
+    #[cfg(unix)]
     #[test]
     fn framing_over_unix_socketpair() {
         use std::os::unix::net::UnixStream;

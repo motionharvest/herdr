@@ -145,7 +145,7 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
             render_action_button(
                 frame,
                 apply_rect,
-                Some("↵"),
+                Some("enter"),
                 primary_label,
                 Style::default()
                     .fg(panel_contrast_fg(p))
@@ -166,10 +166,10 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
 
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(" ↑↓", Style::default().fg(p.overlay0)),
-                Span::styled(" select  ", Style::default().fg(p.overlay1)),
+                Span::styled(" up/down", Style::default().fg(p.overlay0)),
+                Span::styled(" move  ", Style::default().fg(p.overlay1)),
                 Span::styled("tab", Style::default().fg(p.overlay0)),
-                Span::styled(" section", Style::default().fg(p.overlay1)),
+                Span::styled(" switch section", Style::default().fg(p.overlay1)),
             ])),
             footer_rows[0],
         );
@@ -215,7 +215,7 @@ pub(crate) fn settings_button_rects(
         inner,
         &[
             ActionButtonSpec {
-                hint: Some("↵"),
+                hint: Some("enter"),
                 label: settings_primary_button_label(section),
             },
             ActionButtonSpec {
@@ -253,51 +253,101 @@ fn render_settings_integrations(app: &AppState, frame: &mut Frame, area: Rect) {
         rows[1],
     );
 
-    let mut lines = Vec::new();
-    for item in &app.integration_recommendations {
-        let marker = match item.state {
-            crate::integration::IntegrationStatusKind::Current => "✓",
-            crate::integration::IntegrationStatusKind::Outdated => "↻",
-            crate::integration::IntegrationStatusKind::NotInstalled if item.available => "+",
-            crate::integration::IntegrationStatusKind::NotInstalled => "–",
-        };
-        let marker_style = match item.state {
-            crate::integration::IntegrationStatusKind::Current => Style::default().fg(p.green),
-            crate::integration::IntegrationStatusKind::Outdated => Style::default().fg(p.yellow),
-            crate::integration::IntegrationStatusKind::NotInstalled if item.available => {
-                Style::default().fg(p.accent)
+    let list_area = rows[3];
+    let list_bottom = list_area.y + list_area.height;
+    let mut next_row_y = list_area.y;
+
+    if app.integration_recommendations.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " no integration targets available",
+                Style::default().fg(p.overlay1),
+            )),
+            Rect::new(list_area.x, next_row_y, list_area.width, 1),
+        );
+        next_row_y = next_row_y.saturating_add(1);
+    } else {
+        for (idx, item) in app.integration_recommendations.iter().enumerate() {
+            if next_row_y >= list_bottom {
+                break;
             }
-            crate::integration::IntegrationStatusKind::NotInstalled => {
-                Style::default().fg(p.overlay0)
-            }
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {marker} "), marker_style),
-            Span::styled(
-                format!("{:<9}", item.label),
-                Style::default().fg(p.subtext0),
-            ),
-            Span::styled(item.status_label(), Style::default().fg(p.overlay1)),
-        ]));
+            let marker = match item.state {
+                crate::integration::IntegrationStatusKind::Current => "*",
+                crate::integration::IntegrationStatusKind::Outdated => "!",
+                crate::integration::IntegrationStatusKind::NotInstalled if item.available => "+",
+                crate::integration::IntegrationStatusKind::NotInstalled => "-",
+            };
+            // Status markers keep their per-state color even on the selected
+            // row so install state stays readable while moving the selection.
+            let marker_style = match item.state {
+                crate::integration::IntegrationStatusKind::Current => Style::default().fg(p.green),
+                crate::integration::IntegrationStatusKind::Outdated => {
+                    Style::default().fg(p.yellow)
+                }
+                crate::integration::IntegrationStatusKind::NotInstalled if item.available => {
+                    Style::default().fg(p.accent)
+                }
+                crate::integration::IntegrationStatusKind::NotInstalled => {
+                    Style::default().fg(p.overlay0)
+                }
+            };
+            let selected = idx == app.settings.list.selected;
+            let row_style = if selected {
+                Style::default()
+                    .bg(p.surface0)
+                    .fg(p.text)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let (label_style, status_style) = if selected {
+                (
+                    Style::default()
+                        .fg(p.text)
+                        .bg(p.surface0)
+                        .add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(p.text)
+                        .bg(p.surface0)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                (
+                    Style::default().fg(p.subtext0),
+                    Style::default().fg(p.overlay1),
+                )
+            };
+            let marker_style = if selected {
+                marker_style.bg(p.surface0).add_modifier(Modifier::BOLD)
+            } else {
+                marker_style
+            };
+            let selector = if selected { ">" } else { " " };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(format!(" {selector} "), row_style),
+                    Span::styled(format!("{marker} "), marker_style),
+                    Span::styled(format!("{:<9}", item.label), label_style),
+                    Span::styled(item.status_label(), status_style),
+                ]))
+                .style(row_style),
+                Rect::new(list_area.x, next_row_y, list_area.width, 1),
+            );
+            next_row_y = next_row_y.saturating_add(1);
+        }
     }
 
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            " no integration targets available",
-            Style::default().fg(p.overlay1),
-        )));
-    }
-
+    let mut tail_lines = Vec::new();
     if !app.integration_install_messages.is_empty() {
-        lines.push(Line::from(""));
+        tail_lines.push(Line::from(""));
         for message in &app.integration_install_messages {
-            lines.push(Line::from(Span::styled(
+            tail_lines.push(Line::from(Span::styled(
                 format!(" {message}"),
                 Style::default().fg(p.overlay1),
             )));
         }
     } else {
-        lines.push(Line::from(""));
+        tail_lines.push(Line::from(""));
         let found_any = app.integration_recommendations.iter().any(|item| {
             item.available || item.state != crate::integration::IntegrationStatusKind::NotInstalled
         });
@@ -312,13 +362,23 @@ fn render_settings_integrations(app: &AppState, frame: &mut Frame, area: Rect) {
         } else {
             " no supported agent CLIs found on PATH"
         };
-        lines.push(Line::from(Span::styled(
+        tail_lines.push(Line::from(Span::styled(
             hint,
             Style::default().fg(p.overlay1),
         )));
     }
 
-    frame.render_widget(Paragraph::new(lines), rows[3]);
+    if next_row_y < list_bottom {
+        frame.render_widget(
+            Paragraph::new(tail_lines),
+            Rect::new(
+                list_area.x,
+                next_row_y,
+                list_area.width,
+                list_bottom - next_row_y,
+            ),
+        );
+    }
 }
 
 fn render_settings_theme(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -331,8 +391,15 @@ fn render_settings_theme(app: &AppState, frame: &mut Frame, area: Rect) {
             let is_current = name.to_lowercase().replace([' ', '_'], "-")
                 == app.theme_name.to_lowercase().replace([' ', '_'], "-");
             let marker = if is_current { " ✓" } else { "" };
+            let swatch = crate::app::state::Palette::from_name(name)
+                .map(|theme| theme.accent)
+                .unwrap_or(p.subtext0);
             ListItem::new(Line::from(vec![
-                Span::styled(*name, Style::default().fg(p.subtext0)),
+                Span::styled("■ ", Style::default().fg(swatch)),
+                Span::styled(
+                    crate::app::state::theme_display_name(name),
+                    Style::default().fg(p.subtext0),
+                ),
                 Span::styled(marker, Style::default().fg(p.green)),
             ]))
         })
@@ -486,6 +553,7 @@ fn render_settings_experiments(app: &AppState, frame: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
     use crate::app::{state::SettingsSection, Mode};
+    use crate::integration::IntegrationStatusKind;
     use ratatui::{backend::TestBackend, Terminal};
 
     fn rendered_settings(app: &AppState) -> String {
@@ -654,5 +722,123 @@ mod tests {
             .collect::<String>();
 
         assert!(rendered.contains("switch to ascii input source in prefix (macOS) [✓]"));
+    }
+
+    fn integration_rec(
+        label: &'static str,
+        state: IntegrationStatusKind,
+        available: bool,
+    ) -> crate::integration::IntegrationRecommendation {
+        crate::integration::IntegrationRecommendation {
+            target: crate::api::schema::IntegrationTarget::Codex,
+            label,
+            command: label,
+            available,
+            path: std::path::PathBuf::from("/tmp/herdr-test"),
+            state,
+        }
+    }
+
+    #[test]
+    fn integrations_marks_the_selected_row_with_an_ascii_selector_and_full_row_highlight() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Settings;
+        app.settings.section = SettingsSection::Integrations;
+        app.settings.list.selected = 1;
+        app.integration_recommendations = vec![
+            integration_rec("claude code", IntegrationStatusKind::Current, false),
+            integration_rec("codex", IntegrationStatusKind::NotInstalled, true),
+        ];
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(90, 26)).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| render_settings_overlay(&app, frame, Rect::new(0, 0, 90, 26)))
+            .expect("settings overlay should render");
+
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..26u16)
+            .map(|y| {
+                (0..90u16)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+
+        let selected_y = rows
+            .iter()
+            .position(|row| row.contains('>'))
+            .expect("the selected integration row shows an ascii > selector")
+            as u16;
+        let selected_row = &rows[selected_y as usize];
+        assert!(
+            selected_row.contains("> + codex"),
+            "selected row: {selected_row}"
+        );
+        assert!(
+            selected_row.contains("available"),
+            "selected row: {selected_row}"
+        );
+
+        let current_y = rows
+            .iter()
+            .position(|row| row.contains("claude code"))
+            .expect("the installed integration row renders") as u16;
+        assert!(!rows[current_y as usize].contains('>'));
+
+        let surface0 = app.palette.surface0;
+        for x in 10..70u16 {
+            assert_eq!(
+                buffer[(x, selected_y)].bg,
+                surface0,
+                "row {selected_y} col {x} should carry the full-row selected background"
+            );
+        }
+        assert_eq!(
+            buffer[(10, current_y)].bg,
+            app.palette.panel_bg,
+            "unselected rows should keep the panel background"
+        );
+
+        let selector_x = (0..90u16)
+            .find(|&x| buffer[(x, selected_y)].symbol() == ">")
+            .expect("a selector cell on the selected row");
+        assert_eq!(
+            buffer[(selector_x + 2, selected_y)].fg,
+            app.palette.accent,
+            "the available marker keeps its accent color on the selected row"
+        );
+        assert!(
+            buffer[(selector_x + 4, selected_y)]
+                .modifier
+                .contains(Modifier::BOLD),
+            "selected row text is bold"
+        );
+    }
+
+    #[test]
+    fn settings_footer_and_primary_button_hints_are_ascii() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Settings;
+        app.settings.section = SettingsSection::Sound;
+
+        let rendered = rendered_settings(&app);
+
+        assert!(rendered.contains("enter apply"));
+        assert!(rendered.contains("esc close"));
+        assert!(rendered.contains("up/down move"));
+        assert!(rendered.contains("tab switch section"));
+        assert!(!rendered.contains('↵'));
+        assert!(!rendered.contains('↑'));
+
+        app.settings.section = SettingsSection::Integrations;
+        app.integration_recommendations = vec![integration_rec(
+            "codex",
+            IntegrationStatusKind::NotInstalled,
+            true,
+        )];
+        let rendered = rendered_settings(&app);
+        assert!(rendered.contains("enter install"));
+        assert!(rendered.contains("esc close"));
     }
 }

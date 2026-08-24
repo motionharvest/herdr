@@ -1,5 +1,5 @@
+use crate::net::{UnixListener, UnixStream};
 use std::io::{self, Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, error, info, warn};
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::fs;
 
 use crate::api::schema::{
@@ -57,7 +57,11 @@ pub fn start_server(
     start_server_with_capabilities(
         api_tx,
         event_hub,
-        Some(ServerCapabilities { live_handoff: true }),
+        Some(ServerCapabilities {
+            // Live PTY handoff passes pane master fds over the API socket,
+            // which requires Unix SCM_RIGHTS.
+            live_handoff: cfg!(unix),
+        }),
     )
 }
 
@@ -580,6 +584,7 @@ fn error_response_json(id: String, code: &str, message: String) -> String {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Mutex, OnceLock};
     use tokio::sync::mpsc;
@@ -655,6 +660,7 @@ mod tests {
         std::env::remove_var("XDG_CONFIG_HOME");
     }
 
+    #[cfg(unix)]
     #[test]
     fn restrict_socket_permissions_sets_user_only_mode() {
         let dir = unique_test_path("socket-perms");

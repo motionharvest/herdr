@@ -14,27 +14,25 @@
 
 mod input;
 
+use crate::net::UnixStream;
 use std::collections::HashSet;
 use std::io::{self, Write as _};
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
-use crossterm::execute;
+#[cfg(unix)]
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use tracing::{debug, info, warn};
 
 use crate::protocol::render_ansi;
 use crate::protocol::{
-    self, AttachScrollDirection, AttachScrollSource, ClientKeybindings, ClientLaunchMode,
-    ClientMessage, NotifyKind, RenderEncoding, ServerMessage, MAX_CLIPBOARD_IMAGE_PAYLOAD,
-    MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
+    self, ClientKeybindings, ClientLaunchMode, ClientMessage, NotifyKind, RenderEncoding,
+    ServerMessage, MAX_CLIPBOARD_IMAGE_PAYLOAD, MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE,
+    PROTOCOL_VERSION,
 };
+#[cfg(unix)]
+use crate::protocol::{AttachScrollDirection, AttachScrollSource};
 use crate::server::socket_paths::client_socket_path;
 
 static RECEIVED_KITTY_GRAPHICS_IDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
@@ -58,17 +56,26 @@ struct ClientState {
     /// Direct attach prefix escape state. None for full-app clients.
     attach_escape: Option<AttachEscapeState>,
     /// Rows scrolled for one direct-attach wheel notch.
+    #[cfg(unix)]
     mouse_scroll_lines: usize,
     /// Whether outer focus gain should force a full host-terminal redraw.
     redraw_on_focus_gained: bool,
 }
 
 #[derive(Debug, Default)]
+#[cfg(unix)]
 struct AttachEscapeState {
     pending_prefix: bool,
 }
 
+/// Direct attach has no raw-byte escape filter on Windows; the Windows
+/// reader rejects attach before this state could matter.
+#[derive(Debug, Default)]
+#[cfg(windows)]
+struct AttachEscapeState;
+
 #[derive(Debug)]
+#[cfg(unix)]
 enum AttachInputAction {
     Forward(Vec<u8>),
     Scroll {
@@ -83,6 +90,7 @@ enum AttachInputAction {
     None,
 }
 
+#[cfg(unix)]
 impl AttachEscapeState {
     fn filter_input(
         &mut self,
@@ -126,6 +134,7 @@ impl AttachEscapeState {
     }
 }
 
+#[cfg(unix)]
 fn attach_scroll_action(
     data: &[u8],
     viewport_rows: u16,
@@ -302,46 +311,81 @@ fn setup_terminal_with_capabilities(
 ) -> io::Result<TerminalGuard> {
     ratatui::init();
 
-    if enable_client_protocols {
-        if mouse_capture {
-            execute!(io::stdout(), EnableMouseCapture)?;
+    // Every protocol applied after ratatui::init runs through one
+    // transaction whose rollback always finishes, so no setup error leaves
+    // raw mode, the alternate screen, or the Windows VTI mode on.
+    let mut protocols = crate::terminal_setup::HostProtocolSetup::default();
+    match apply_client_protocols(&mut protocols, enable_client_protocols, mouse_capture) {
+        Ok(()) => Ok(TerminalGuard {
+            protocols,
+            restored: false,
+        }),
+        Err(err) => Err(protocols.rollback().unwrap_or(err)),
+    }
+}
+
+/// Applies the client host-terminal protocols on top of ratatui's init.
+/// Every step is part of the caller's transaction, so a failure anywhere
+/// rolls the earlier steps back through [`HostProtocolSetup::rollback`].
+fn apply_client_protocols(
+    protocols: &mut crate::terminal_setup::HostProtocolSetup,
+    enable_client_protocols: bool,
+    mouse_capture: bool,
+) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        // Enable Windows VT input BEFORE the first mouse-capture operation:
+        // crossterm caches the console input mode it sees at the first
+        // capture enable/disable and restores that cached mode on every
+        // later toggle, so a mouse write first would cache a mode without
+        // the VT input bit. The saved restore mode is therefore the true
+        // pre-mouse mode. When mouse capture starts disabled at startup,
+        // the cold disable still caches the now-VTI-enabled mode, so the
+        // re-enable below is needed either way.
+        let vti = if windows_vti_input_backend_enabled() {
+            enable_windows_virtual_terminal_input()
         } else {
-            execute!(io::stdout(), DisableMouseCapture)?;
+            WindowsVirtualTerminalInputSetup::default()
+        };
+        // The shared slot hands the saved mode to rollback and the panic
+        // hook, and taking it there means it is restored exactly once.
+        record_windows_vti_restore_mode(vti.restore_mode);
+        if vti.active && windows_win32_input_mode_enabled() {
+            protocols.enable_win32_input_mode()?;
         }
-        execute!(
-            io::stdout(),
-            EnableBracketedPaste,
-            EnableFocusChange,
-            PushKeyboardEnhancementFlags(crate::input::ime_compatible_keyboard_enhancement_flags())
-        )?;
-    } else if mouse_capture {
-        execute!(io::stdout(), EnableMouseCapture)?;
-    } else {
-        execute!(io::stdout(), DisableMouseCapture)?;
     }
 
-    let modify_other_keys_mode = enable_client_protocols
-        .then(|| {
-            crate::input::host_modify_other_keys_mode(
-                std::env::var("TMUX").is_ok(),
-                std::env::var("TERM_PROGRAM").ok().as_deref(),
-                std::env::var_os("WEZTERM_PANE").is_some(),
-            )
-        })
-        .flatten();
-    if let Some(mode) = modify_other_keys_mode {
-        io::stdout().write_all(mode.set_sequence())?;
-        io::stdout().flush()?;
+    protocols.set_mouse_capture(mouse_capture)?;
+
+    // The mouse write above dropped the VT input bit (enable replaces the
+    // mode; cold disable caches it for later restores). Re-apply it. When
+    // the bit already stuck, this returns a None restore mode and leaves
+    // the saved pre-mouse slot untouched.
+    #[cfg(windows)]
+    if windows_vti_input_backend_enabled() {
+        let _ = enable_windows_virtual_terminal_input();
     }
 
-    Ok(TerminalGuard {
-        reset_modify_other_keys: modify_other_keys_mode.is_some(),
-    })
+    if !enable_client_protocols {
+        return Ok(());
+    }
+    protocols.enable_paste_focus()?;
+    push_keyboard_enhancement_flags(protocols)?;
+
+    if let Some(mode) = crate::input::host_modify_other_keys_mode(
+        std::env::var("TMUX").is_ok(),
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var_os("WEZTERM_PANE").is_some(),
+    ) {
+        protocols.enable_modify_other_keys(mode)?;
+    }
+    Ok(())
 }
 
 /// Guard that restores the terminal when dropped.
 struct TerminalGuard {
-    reset_modify_other_keys: bool,
+    protocols: crate::terminal_setup::HostProtocolSetup,
+    restored: bool,
 }
 
 fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io::Result<()> {
@@ -351,36 +395,198 @@ fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io::Result<()
 }
 
 fn set_mouse_capture(enabled: bool) -> io::Result<()> {
-    if enabled {
-        execute!(io::stdout(), EnableMouseCapture)
-    } else {
-        execute!(io::stdout(), DisableMouseCapture)
+    crate::input::set_host_mouse_capture(enabled)
+}
+
+fn restore_terminal_state(protocols: crate::terminal_setup::HostProtocolSetup) -> io::Result<()> {
+    let mut first_error: Option<io::Error> = None;
+
+    // Client-drawn kitty graphics are output state; clear them first.
+    if let Err(err) = clear_received_kitty_graphics(&mut io::stdout()) {
+        first_error.get_or_insert(err);
+    }
+    let rollback_error = protocols.rollback();
+    // A visible cursor and the default DECSCUSR come last, after every
+    // protocol and ratatui's own restore have run.
+    let postlude_error = write_terminal_restore_postlude(&mut io::stdout()).err();
+
+    first_error
+        .or(rollback_error)
+        .or(postlude_error)
+        .map_or(Ok(()), Err)
+}
+
+#[cfg(not(windows))]
+fn push_keyboard_enhancement_flags(
+    protocols: &mut crate::terminal_setup::HostProtocolSetup,
+) -> io::Result<()> {
+    protocols.push_keyboard_enhancement()
+}
+
+#[cfg(windows)]
+fn push_keyboard_enhancement_flags(
+    _protocols: &mut crate::terminal_setup::HostProtocolSetup,
+) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+#[derive(Default)]
+pub(crate) struct WindowsVirtualTerminalInputSetup {
+    pub(crate) active: bool,
+    pub(crate) restore_mode: Option<u32>,
+}
+
+#[cfg(windows)]
+/// Whether this process has Windows VT input active. Crossterm's mouse
+/// capture toggles restore the console mode they saved, which may not carry
+/// the VT input bit, so callers re-apply VTI after a toggle only when VTI
+/// was actually on.
+static WINDOWS_VTI_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+pub(crate) fn vti_mode_was_enabled_in_process() -> bool {
+    WINDOWS_VTI_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+#[cfg(windows)]
+pub(crate) fn enable_windows_virtual_terminal_input() -> WindowsVirtualTerminalInputSetup {
+    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_VIRTUAL_TERMINAL_INPUT,
+        STD_INPUT_HANDLE,
+    };
+
+    let handle: HANDLE = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        tracing::warn!("failed to get Windows console input handle for VT input");
+        return WindowsVirtualTerminalInputSetup::default();
+    }
+
+    let mut mode = 0;
+    if unsafe { GetConsoleMode(handle, &mut mode) } == 0 {
+        tracing::warn!("failed to read Windows console input mode for VT input");
+        return WindowsVirtualTerminalInputSetup::default();
+    }
+
+    let desired = windows_virtual_terminal_input_mode(mode);
+    if desired == mode {
+        WINDOWS_VTI_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+        return WindowsVirtualTerminalInputSetup {
+            active: true,
+            restore_mode: None,
+        };
+    }
+
+    if unsafe { SetConsoleMode(handle, desired) } == 0 {
+        tracing::warn!("failed to enable Windows virtual terminal input");
+        return WindowsVirtualTerminalInputSetup::default();
+    }
+
+    let mut applied = 0;
+    if unsafe { GetConsoleMode(handle, &mut applied) } == 0 {
+        tracing::warn!("failed to verify Windows virtual terminal input mode");
+        let _ = unsafe { SetConsoleMode(handle, mode) };
+        return WindowsVirtualTerminalInputSetup::default();
+    }
+    if applied & ENABLE_VIRTUAL_TERMINAL_INPUT == 0 {
+        tracing::warn!("Windows virtual terminal input bit did not stick");
+        let _ = unsafe { SetConsoleMode(handle, mode) };
+        return WindowsVirtualTerminalInputSetup::default();
+    }
+
+    WINDOWS_VTI_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+    WindowsVirtualTerminalInputSetup {
+        active: true,
+        restore_mode: Some(mode),
     }
 }
 
-fn restore_terminal_state(reset_modify_other_keys: bool) {
-    let _ = clear_received_kitty_graphics(&mut io::stdout());
+/// Console input mode saved before Windows VT input was enabled, shared
+/// between setup transactions, normal teardown, and the panic hooks in both
+/// the monolithic launcher and the client.
+///
+/// The panic hooks are installed before VTI setup runs, so they cannot
+/// capture the mode up front; they take the mode from this slot instead.
+/// Normal teardown takes the mode too, so a later panic cannot restore a
+/// mode that teardown already restored.
+#[cfg(windows)]
+static WINDOWS_VTI_RESTORE_MODE: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
 
-    // Reset modifyOtherKeys if we enabled it.
-    if reset_modify_other_keys {
-        let _ = io::stdout().write_all(b"\x1b[>4;0m");
-        let _ = io::stdout().flush();
+/// Records the console input mode to restore when this process stops using
+/// Windows VT input. `None` means nothing needs restoring; recording it
+/// clears any previously saved mode.
+#[cfg(windows)]
+pub(crate) fn record_windows_vti_restore_mode(mode: Option<u32>) {
+    let mut slot = WINDOWS_VTI_RESTORE_MODE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *slot = mode;
+}
+
+/// Takes the saved console input mode for the panic hook and normal teardown,
+/// clearing the slot so it is restored exactly once.
+#[cfg(windows)]
+pub(crate) fn take_windows_vti_restore_mode() -> Option<u32> {
+    let mut slot = WINDOWS_VTI_RESTORE_MODE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    slot.take()
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_vti_input_backend_enabled() -> bool {
+    std::env::var("HERDR_WINDOWS_INPUT_BACKEND")
+        .map(|backend| !backend.eq_ignore_ascii_case("crossterm"))
+        .unwrap_or(true)
+}
+
+#[cfg(any(windows, test))]
+fn windows_virtual_terminal_input_mode(mode: u32) -> u32 {
+    mode | 0x0200
+}
+
+#[cfg(windows)]
+pub(crate) fn restore_windows_input_mode_value(mode: u32) {
+    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Console::{GetStdHandle, SetConsoleMode, STD_INPUT_HANDLE};
+
+    // A restore means this process stops claiming VT input, so clear the
+    // flag even when the console calls below fail or no console is attached.
+    // Otherwise a repeated setup/restore cycle in one process could leave a
+    // stale "VTI active" flag that re-enables a restored mode after a later
+    // mouse-capture toggle.
+    WINDOWS_VTI_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+
+    let handle: HANDLE = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return;
     }
+    if unsafe { SetConsoleMode(handle, mode) } == 0 {
+        tracing::warn!("failed to restore Windows console input mode");
+    }
+}
 
-    let _ = execute!(
-        io::stdout(),
-        PopKeyboardEnhancementFlags,
-        DisableFocusChange,
-        DisableBracketedPaste,
-        DisableMouseCapture
-    );
-    ratatui::restore();
-    let _ = write_terminal_restore_postlude(&mut io::stdout());
+#[cfg(windows)]
+fn windows_win32_input_mode_enabled() -> bool {
+    std::env::var("HERDR_WINDOWS_INPUT_PROBE")
+        .map(|probe| probe.eq_ignore_ascii_case("win32"))
+        .unwrap_or(true)
+}
+
+impl TerminalGuard {
+    fn restore(mut self) -> io::Result<()> {
+        self.restored = true;
+        restore_terminal_state(self.protocols)
+    }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        restore_terminal_state(self.reset_modify_other_keys);
+        if !self.restored {
+            let _ = restore_terminal_state(self.protocols);
+        }
     }
 }
 
@@ -478,7 +684,11 @@ fn do_handshake(
 /// Internal events for the client event loop.
 enum ClientLoopEvent {
     /// Raw input bytes from stdin.
+    #[cfg(unix)]
     StdinInput(Vec<u8>),
+    /// Structured input events from the Windows console readers.
+    #[cfg(windows)]
+    StdinEvents(Vec<crate::protocol::ClientInputEvent>),
     /// Terminal resize detected.
     Resize(u16, u16, u32, u32),
     /// Server message received.
@@ -503,6 +713,7 @@ pub fn run_client() -> io::Result<()> {
 }
 
 /// Runs a direct terminal attach client.
+#[cfg(unix)]
 pub fn run_terminal_attach(terminal_id: String, takeover: bool) -> io::Result<()> {
     run_client_with_mode(
         RenderEncoding::TerminalAnsi,
@@ -510,6 +721,16 @@ pub fn run_terminal_attach(terminal_id: String, takeover: bool) -> io::Result<()
         Some(AttachEscapeState::default()),
         "attaching to terminal",
     )
+}
+
+/// Direct terminal attach is Unix raw-byte input only until Windows gets a
+/// semantic attach path.
+#[cfg(windows)]
+pub fn run_terminal_attach(_terminal_id: String, _takeover: bool) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "direct terminal attach is not supported on Windows yet",
+    ))
 }
 
 fn run_client_with_mode(
@@ -521,6 +742,7 @@ fn run_client_with_mode(
     init_logging();
 
     let loaded_config = crate::config::Config::load();
+    #[cfg(unix)]
     let mouse_scroll_lines = loaded_config.config.ui.mouse_scroll_lines();
     let redraw_on_focus_gained = loaded_config.config.ui.redraw_on_focus_gained;
     let sound_config = loaded_config.config.ui.sound;
@@ -578,7 +800,7 @@ fn run_client_with_mode(
     // Now set up the terminal. This must happen AFTER the handshake succeeds,
     // so we don't leave the terminal in raw mode if the server rejects us.
     let direct_attach = attach_escape.is_some();
-    let _guard = if direct_attach {
+    let terminal_guard = if direct_attach {
         setup_direct_attach_terminal()
     } else {
         setup_terminal(false)
@@ -589,10 +811,10 @@ fn run_client_with_mode(
     })?;
 
     // Install a panic hook to restore the terminal on panic (same as monolithic).
-    let in_tmux = std::env::var("TMUX").is_ok();
+    let panic_protocols = terminal_guard.protocols;
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal_state(in_tmux);
+        let _ = restore_terminal_state(panic_protocols);
         original_hook(info);
     }));
 
@@ -617,9 +839,10 @@ fn run_client_with_mode(
             rows,
             should_quit,
             sound_config,
-            mouse_scroll_lines,
             redraw_on_focus_gained,
             kitty_graphics_enabled,
+            #[cfg(unix)]
+            mouse_scroll_lines,
             false,
             negotiated_encoding,
             attach_escape,
@@ -628,7 +851,9 @@ fn run_client_with_mode(
     });
 
     // Restore the terminal before printing any final status message.
-    drop(_guard);
+    if terminal_guard.restore().is_err() {
+        warn!("failed to restore terminal state");
+    }
 
     if let Err(err) = result {
         eprintln!("herdr: {err}");
@@ -665,7 +890,7 @@ async fn run_client_loop(
     rows: u16,
     should_quit: Arc<AtomicBool>,
     sound_config: crate::config::SoundConfig,
-    mouse_scroll_lines: usize,
+    #[cfg(unix)] mouse_scroll_lines: usize,
     redraw_on_focus_gained: bool,
     kitty_graphics_enabled: bool,
     mouse_capture_active: bool,
@@ -679,6 +904,7 @@ async fn run_client_loop(
         sound_config,
         kitty_graphics_enabled,
         attach_escape,
+        #[cfg(unix)]
         mouse_scroll_lines,
         redraw_on_focus_gained,
     };
@@ -739,6 +965,7 @@ async fn run_client_loop(
         };
 
         match event {
+            #[cfg(unix)]
             ClientLoopEvent::StdinInput(data) => {
                 let data = if let Some(attach_escape) = &mut state.attach_escape {
                     match attach_escape.filter_input(
@@ -830,6 +1057,87 @@ async fn run_client_loop(
                     return Err(ClientError::ConnectionLost(e));
                 }
             }
+            #[cfg(windows)]
+            ClientLoopEvent::StdinEvents(events) => {
+                if state.attach_escape.is_some() {
+                    continue;
+                }
+                if should_bridge_clipboard_image_events(&events) {
+                    if let Some(image) = crate::platform::read_clipboard_image() {
+                        if image.bytes.len() > MAX_CLIPBOARD_IMAGE_PAYLOAD {
+                            warn!(
+                                bytes = image.bytes.len(),
+                                max = MAX_CLIPBOARD_IMAGE_PAYLOAD,
+                                "local clipboard image is too large to bridge"
+                            );
+                            handle_notify(
+                                NotifyKind::Toast,
+                                "clipboard image paste: image is too large",
+                                &state.sound_config,
+                            );
+                            continue;
+                        }
+                        info!(
+                            bytes = image.bytes.len(),
+                            extension = image.extension,
+                            "bridging local clipboard image paste to remote server"
+                        );
+                        handle_notify(
+                            NotifyKind::Toast,
+                            "clipboard image paste: sending image",
+                            &state.sound_config,
+                        );
+                        let msg = ClientMessage::ClipboardImage {
+                            extension: image.extension.to_owned(),
+                            data: image.bytes,
+                        };
+                        if let Err(e) = write_to_server(&mut write_stream, &msg) {
+                            return Err(ClientError::ConnectionLost(e));
+                        }
+                        continue;
+                    }
+                    info!(
+                        "clipboard image paste trigger received, but local clipboard has no image"
+                    );
+                    let message = crate::platform::clipboard_image_read_support_hint()
+                        .unwrap_or("clipboard image paste: no image on clipboard");
+                    handle_notify(NotifyKind::Toast, message, &state.sound_config);
+                }
+                if let Some(image) = read_image_file_from_client_events(&events) {
+                    info!(
+                        path = %image.extension,
+                        bytes = image.bytes.len(),
+                        "bridging dropped image file to remote server"
+                    );
+                    handle_notify(
+                        NotifyKind::Toast,
+                        "image file drop: sending image",
+                        &state.sound_config,
+                    );
+                    let msg = ClientMessage::ClipboardImage {
+                        extension: image.extension.to_owned(),
+                        data: image.bytes,
+                    };
+                    if let Err(e) = write_to_server(&mut write_stream, &msg) {
+                        return Err(ClientError::ConnectionLost(e));
+                    }
+                    continue;
+                }
+                let raw_events = events
+                    .iter()
+                    .map(crate::protocol::ClientInputEvent::to_raw_input_event)
+                    .collect::<Vec<_>>();
+                if crate::raw_input::events_require_host_surface_redraw(
+                    &raw_events,
+                    state.redraw_on_focus_gained,
+                ) {
+                    state.request_full_redraw();
+                }
+                let msg = ClientMessage::InputEvents { events };
+                if let Err(e) = write_to_server(&mut write_stream, &msg) {
+                    return Err(ClientError::ConnectionLost(e));
+                }
+            }
             ClientLoopEvent::Resize(new_cols, new_rows, cell_width_px, cell_height_px) => {
                 state.reported_size = (new_cols, new_rows);
                 let msg = ClientMessage::Resize {
@@ -889,10 +1197,17 @@ async fn run_client_loop(
                     );
                 }
                 ServerMessage::MouseCapture { enabled } => {
-                    let desired = enabled;
-                    if desired != state.mouse_capture_active {
-                        set_mouse_capture(desired).map_err(ClientError::ConnectionFailed)?;
-                        state.mouse_capture_active = desired;
+                    if enabled != state.mouse_capture_active {
+                        set_mouse_capture(enabled).map_err(ClientError::ConnectionFailed)?;
+                        #[cfg(windows)]
+                        if windows_vti_input_backend_enabled() {
+                            // Crossterm's Windows mouse capture writes back the
+                            // console mode it saved before the capture, so both
+                            // directions drop the VT input bit the byte reader
+                            // depends on. Re-apply it either way.
+                            let _ = enable_windows_virtual_terminal_input();
+                        }
+                        state.mouse_capture_active = enabled;
                     }
                 }
                 ServerMessage::Welcome { .. } => {
@@ -1094,6 +1409,7 @@ fn sound_from_notify_message(message: &str) -> Option<crate::sound::Sound> {
     }
 }
 
+#[cfg(unix)]
 fn should_bridge_clipboard_image_paste(data: &[u8]) -> bool {
     let events = crate::raw_input::parse_raw_input_bytes_sync(data);
 
@@ -1107,6 +1423,90 @@ fn should_bridge_clipboard_image_paste(data: &[u8]) -> bool {
                 && key.modifiers.intersects(crossterm::event::KeyModifiers::CONTROL)
                 && matches!(key.code, crossterm::event::KeyCode::Char('v' | 'V'))
     )
+}
+
+/// Windows events equivalent of [`should_bridge_clipboard_image_paste`].
+#[cfg(any(windows, test))]
+fn should_bridge_clipboard_image_events(events: &[crate::protocol::ClientInputEvent]) -> bool {
+    if matches!(
+        events,
+        [crate::protocol::ClientInputEvent::Paste { text }] if text.is_empty()
+    ) {
+        return true;
+    }
+
+    matches!(
+        events,
+        [event]
+            if matches!(
+                event.to_raw_input_event(),
+                crate::raw_input::RawInputEvent::Key(key)
+                    if key.kind == crossterm::event::KeyEventKind::Press
+                        && key.modifiers.intersects(crossterm::event::KeyModifiers::CONTROL)
+                        && matches!(key.code, crossterm::event::KeyCode::Char('v' | 'V'))
+            )
+    )
+}
+
+/// Reads an image file dropped into the terminal from structured client
+/// events. Windows events already carry native paths, so the Unix
+/// backslash-unescaping path does not apply.
+#[cfg(any(windows, test))]
+fn read_image_file_from_client_events(
+    events: &[crate::protocol::ClientInputEvent],
+) -> Option<crate::platform::ClipboardImage> {
+    let [crate::protocol::ClientInputEvent::Paste { text }] = events else {
+        return None;
+    };
+    let path = std::path::PathBuf::from(strip_matching_path_quotes(text));
+    let metadata = std::fs::metadata(&path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let extension = image_drop_extension(&path)?;
+
+    let file = std::fs::File::open(&path).ok()?;
+    let bytes =
+        match crate::platform::read_limited_reader(file, MAX_CLIPBOARD_IMAGE_PAYLOAD).ok()? {
+            crate::platform::LimitedRead::Complete(bytes) => bytes,
+            crate::platform::LimitedRead::Empty => return None,
+            crate::platform::LimitedRead::Oversized => {
+                warn!(
+                    max = MAX_CLIPBOARD_IMAGE_PAYLOAD,
+                    "local image file drop is too large to bridge"
+                );
+                return None;
+            }
+        };
+
+    Some(crate::platform::ClipboardImage { bytes, extension })
+}
+
+fn image_drop_extension(path: &std::path::Path) -> Option<&'static str> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())?;
+    match extension.as_str() {
+        "png" => Some("png"),
+        "jpg" | "jpeg" => Some("jpg"),
+        "gif" => Some("gif"),
+        "webp" => Some("webp"),
+        "bmp" => Some("bmp"),
+        _ => None,
+    }
+}
+
+fn strip_matching_path_quotes(text: &str) -> &str {
+    let trimmed = text.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1361,6 +1761,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn clipboard_image_paste_bridge_triggers_on_ctrl_v_and_empty_paste() {
         assert!(should_bridge_clipboard_image_paste(&[0x16]));
@@ -1373,6 +1774,52 @@ mod tests {
         ));
         assert!(!should_bridge_clipboard_image_paste(b"\x1b[118;3u"));
         assert!(!should_bridge_clipboard_image_paste(b"v"));
+    }
+
+    #[test]
+    fn clipboard_image_event_bridge_matches_ctrl_v_and_empty_paste() {
+        let ctrl_v = crate::protocol::ClientInputEvent::Key {
+            code: crate::protocol::ClientKeyCode::Char('v'),
+            modifiers: crossterm::event::KeyModifiers::CONTROL.bits(),
+            kind: crate::protocol::ClientKeyKind::Press,
+            repeat_count: 1,
+            generated_text: None,
+            source: crate::protocol::ClientKeySource::Synthesized,
+        };
+        let empty_paste = crate::protocol::ClientInputEvent::Paste {
+            text: String::new(),
+        };
+
+        assert!(should_bridge_clipboard_image_events(std::slice::from_ref(
+            &ctrl_v
+        )));
+        assert!(should_bridge_clipboard_image_events(std::slice::from_ref(
+            &empty_paste
+        )));
+        assert!(!should_bridge_clipboard_image_events(&[
+            crate::protocol::ClientInputEvent::Key {
+                code: crate::protocol::ClientKeyCode::Char('v'),
+                modifiers: 0,
+                kind: crate::protocol::ClientKeyKind::Press,
+                repeat_count: 1,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Synthesized,
+            },
+        ]));
+        assert!(!should_bridge_clipboard_image_events(&[
+            crate::protocol::ClientInputEvent::Paste {
+                text: "text".to_string(),
+            },
+        ]));
+    }
+
+    #[test]
+    fn windows_virtual_terminal_input_mode_sets_only_vti_bit() {
+        let before = 0x00ff_u32;
+        let after = windows_virtual_terminal_input_mode(before);
+        assert_eq!(after, before | 0x0200);
+        assert_eq!(windows_virtual_terminal_input_mode(0), 0x0200);
+        assert_eq!(windows_virtual_terminal_input_mode(0x0200), 0x0200);
     }
 
     #[test]
@@ -1440,6 +1887,7 @@ mod tests {
         assert_eq!(output, b"\x1b[?25h\x1b[0 q");
     }
 
+    #[cfg(unix)]
     #[test]
     fn attach_escape_detaches_on_prefix_q() {
         let mut escape = AttachEscapeState::default();
@@ -1453,6 +1901,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn attach_escape_sends_literal_prefix_on_double_prefix() {
         let mut escape = AttachEscapeState::default();
@@ -1466,6 +1915,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn attach_escape_forwards_prefix_before_non_escape_key() {
         let mut escape = AttachEscapeState::default();
@@ -1479,6 +1929,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn attach_escape_turns_wheel_into_scroll_action() {
         let mut escape = AttachEscapeState::default();
@@ -1501,6 +1952,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn attach_escape_swallows_non_wheel_mouse_reports() {
         let mut escape = AttachEscapeState::default();
@@ -1510,6 +1962,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn attach_escape_turns_plain_page_keys_into_scroll_actions() {
         let mut escape = AttachEscapeState::default();
@@ -1552,6 +2005,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn attach_escape_forwards_modified_page_key() {
         let mut escape = AttachEscapeState::default();
@@ -1802,5 +2256,44 @@ mod tests {
         unsafe {
             std::env::remove_var("SSH_CONNECTION");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_vti_active_flag_clears_on_restore() {
+        use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE};
+
+        // Skip when a real console is attached so the restore cannot change
+        // the developer's terminal input mode.
+        let handle: HANDLE = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        let mut mode = 0u32;
+        let stdin_is_console = !handle.is_null()
+            && handle != INVALID_HANDLE_VALUE
+            && unsafe { GetConsoleMode(handle, &mut mode) } != 0;
+        if stdin_is_console {
+            return;
+        }
+
+        WINDOWS_VTI_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+        restore_windows_input_mode_value(0);
+        assert!(!vti_mode_was_enabled_in_process());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_vti_restore_mode_slot_records_and_clears() {
+        assert_eq!(take_windows_vti_restore_mode(), None);
+
+        record_windows_vti_restore_mode(Some(0x01f7));
+        assert_eq!(take_windows_vti_restore_mode(), Some(0x01f7));
+        // Taking clears the slot, so a panic after normal teardown cannot
+        // restore the same mode a second time.
+        assert_eq!(take_windows_vti_restore_mode(), None);
+
+        // Recording None overwrites a stale mode instead of leaving it.
+        record_windows_vti_restore_mode(Some(0x0007));
+        record_windows_vti_restore_mode(None);
+        assert_eq!(take_windows_vti_restore_mode(), None);
     }
 }

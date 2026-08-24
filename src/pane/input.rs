@@ -19,7 +19,7 @@ pub(super) fn ghostty_key_event_from_terminal_key(
         key.shifted_codepoint,
     )?);
 
-    if let Some(text) = ghostty_key_text(key) {
+    if let Some(text) = ghostty_key_text(&key) {
         event.set_utf8(&text);
     } else {
         event.set_utf8("");
@@ -168,7 +168,7 @@ pub(super) fn ghostty_mouse_event_from_wheel_kind(
     Some(event)
 }
 
-fn ghostty_key_text(key: crate::input::TerminalKey) -> Option<String> {
+fn ghostty_key_text(key: &crate::input::TerminalKey) -> Option<String> {
     match key.code {
         crossterm::event::KeyCode::Char(c) => Some(
             key.shifted_codepoint
