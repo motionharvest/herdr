@@ -1213,6 +1213,92 @@ impl AppState {
         true
     }
 
+    pub(crate) fn workspace_index_for_pane(&self, pane_id: PaneId) -> Option<usize> {
+        self.workspaces
+            .iter()
+            .position(|ws| ws.find_tab_index_for_pane(pane_id).is_some())
+    }
+
+    /// Move a pane onto another. Same space: swap in the middle, or pin to an
+    /// edge. Different spaces: take it out of the source layout and dock it
+    /// into the destination. A middle drop across spaces splits the target to
+    /// the right rather than swapping, because the other pane would otherwise
+    /// vanish into a space the user is no longer looking at.
+    pub fn move_pane_to_pane(
+        &mut self,
+        source: PaneId,
+        target: PaneId,
+        zone: crate::layout::DropZone,
+    ) -> bool {
+        if source == target {
+            return false;
+        }
+        let Some(source_ws) = self.workspace_index_for_pane(source) else {
+            return false;
+        };
+        let Some(target_ws) = self.workspace_index_for_pane(target) else {
+            return false;
+        };
+        if source_ws == target_ws {
+            return match zone {
+                crate::layout::DropZone::Over => self.swap_panes(source, target),
+                crate::layout::DropZone::Edge(side) => self.pin_pane_to_edge(source, target, side),
+            };
+        }
+
+        let Some((pane_id, pane)) = self.workspaces[source_ws].take_pane(source) else {
+            return false;
+        };
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.pane_id == pane_id)
+        {
+            self.selection = None;
+            self.selection_autoscroll = None;
+        }
+
+        let side = match zone {
+            crate::layout::DropZone::Edge(side) => side,
+            crate::layout::DropZone::Over => crate::layout::SplitSide::Right,
+        };
+        if !self.workspaces[target_ws].dock_detached_at_edge(target, side, (pane_id, pane.clone()))
+        {
+            if let Some(anchor) = self.workspaces[source_ws].focused_pane_id() {
+                let _ = self.workspaces[source_ws].dock_detached_at_edge(
+                    anchor,
+                    crate::layout::SplitSide::Right,
+                    (pane_id, pane),
+                );
+            }
+            return false;
+        }
+        self.focus_pane_in_workspace(target_ws, pane_id);
+        self.mark_session_dirty();
+        true
+    }
+
+    /// Drop a pane onto a space card: dock it beside that space's focused pane.
+    /// Dropping on the space the pane already belongs to leaves the layout
+    /// alone.
+    pub fn move_pane_into_workspace(&mut self, source: PaneId, ws_idx: usize) -> bool {
+        if self.workspace_index_for_pane(source) == Some(ws_idx) {
+            return false;
+        }
+        let Some(target) = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(crate::workspace::Workspace::focused_pane_id)
+        else {
+            return false;
+        };
+        self.move_pane_to_pane(
+            source,
+            target,
+            crate::layout::DropZone::Edge(crate::layout::SplitSide::Right),
+        )
+    }
+
     pub fn move_agent_to_index(&mut self, source_pane_id: PaneId, insert_idx: usize) -> bool {
         let entries = crate::ui::agent_panel_entries(self);
         let Some(from) = entries
@@ -5241,6 +5327,58 @@ mod tests {
         assert_eq!(state.detached_agents.len(), 1);
         assert_eq!(state.detached_agents[0].pane_id, target);
         assert!(state.terminals.contains_key(&displaced_terminal));
+    }
+
+    #[test]
+    fn moving_a_pane_into_another_workspace_docks_it_there() {
+        let mut state = app_with_workspaces(&["one", "two"]);
+        let source = state.workspaces[0].tabs[0].root_pane;
+        let sibling = state.workspaces[0].test_split(Direction::Horizontal);
+        let dest = state.workspaces[1].tabs[0].root_pane;
+        state.ensure_test_terminals();
+
+        assert!(state.move_pane_to_pane(
+            source,
+            dest,
+            crate::layout::DropZone::Edge(crate::layout::SplitSide::Right),
+        ));
+
+        assert!(state.workspaces[0].pane_state(source).is_none());
+        assert!(state.workspaces[0].pane_state(sibling).is_some());
+        assert!(state.workspaces[1].pane_state(source).is_some());
+        assert!(state.workspaces[1].pane_state(dest).is_some());
+        assert_eq!(state.active, Some(1));
+        assert_eq!(state.workspaces[1].focused_pane_id(), Some(source));
+    }
+
+    #[test]
+    fn dropping_a_pane_on_a_space_docks_beside_that_space_focus() {
+        let mut state = app_with_workspaces(&["one", "two"]);
+        let source = state.workspaces[0].tabs[0].root_pane;
+        let _sibling = state.workspaces[0].test_split(Direction::Horizontal);
+        let dest = state.workspaces[1].tabs[0].root_pane;
+        state.ensure_test_terminals();
+
+        assert!(state.move_pane_into_workspace(source, 1));
+
+        assert!(state.workspaces[0].pane_state(source).is_none());
+        assert!(state.workspaces[1].pane_state(source).is_some());
+        assert!(state.workspaces[1].pane_state(dest).is_some());
+        assert_eq!(state.workspaces[1].tabs[0].layout.pane_count(), 2);
+    }
+
+    #[test]
+    fn dropping_a_pane_on_its_own_space_leaves_the_layout() {
+        let mut state = app_with_workspaces(&["one", "two"]);
+        let source = state.workspaces[0].tabs[0].root_pane;
+        let sibling = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+
+        assert!(!state.move_pane_into_workspace(source, 0));
+        assert!(state.workspaces[0].pane_state(source).is_some());
+        assert!(state.workspaces[0].pane_state(sibling).is_some());
+        assert_eq!(state.workspaces[0].tabs[0].layout.pane_count(), 2);
+        assert!(state.workspaces[1].pane_state(source).is_none());
     }
 
     #[test]

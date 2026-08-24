@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Dragging a pane by its name over another space in the sidebar switches to that space while the drag is still held, so the pane can be dropped onto the layout there. Release on the space card docks it beside the pane that had focus. It used to only rearrange panes in the space you started in, or fly out onto `+ new`.
 - The spaces and agents sidebar is back on the left of the frame. Composer, the agent table, and the panes keep their places to its right. Click a space to switch, click an agent to focus it, drag a pane onto `+ new` to fly it out, and `prefix+b` folds the sidebar to a strip.
 - Pane titles can show more than the agent name again. Settings → pane labels now has independent toggles for agent name, working directory, parent directory, git branch, and git status. Off, a pane still writes only its name. On, the top edge writes those fields in that order — `Olivia lab/herdr (main !)` — the way it did before titles were reduced to the name. The same keys live under `[ui.pane_header]` in the config file. Existing installs keep name-only titles until those toggles are turned on.
 

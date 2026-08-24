@@ -507,8 +507,17 @@ fn render_pane_swap_drop_overlay(
         area,
     );
 
+    let source_in_layout = match app.drag.as_ref().map(|drag| &drag.target) {
+        Some(crate::app::state::DragTarget::PaneSwap { source_pane_id, .. }) => app
+            .view
+            .pane_infos
+            .iter()
+            .any(|pane| pane.id == *source_pane_id),
+        _ => true,
+    };
     let message = match zone {
-        crate::layout::DropZone::Over => "Drop to swap",
+        crate::layout::DropZone::Over if source_in_layout => "Drop to swap",
+        crate::layout::DropZone::Over => "Drop to move",
         crate::layout::DropZone::Edge(_) => "Drop to split",
     };
     let message_y = area.y + area.height.saturating_sub(1) / 2;

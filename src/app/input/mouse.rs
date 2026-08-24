@@ -900,6 +900,11 @@ impl AppState {
                     Some(*pane_id)
                 });
                 if let Some(source_pane_id) = agent_dock_source {
+                    self.switch_space_while_dragging_pane(
+                        terminal_runtimes,
+                        mouse.column,
+                        mouse.row,
+                    );
                     let hovered =
                         self.pane_swap_hover_target(mouse.column, mouse.row, source_pane_id);
                     let zone = self.pane_drop_zone(hovered, mouse.column, mouse.row);
@@ -924,6 +929,11 @@ impl AppState {
                     Some(*source_pane_id)
                 });
                 if let Some(source_pane_id) = pane_swap_source {
+                    self.switch_space_while_dragging_pane(
+                        terminal_runtimes,
+                        mouse.column,
+                        mouse.row,
+                    );
                     let hovered =
                         self.pane_swap_hover_target(mouse.column, mouse.row, source_pane_id);
                     let zone = self.pane_drop_zone(hovered, mouse.column, mouse.row);
@@ -1168,9 +1178,28 @@ impl AppState {
                         self.mode = Mode::Terminal;
                     }
                     Some(DragState {
+                        target:
+                            DragTarget::PaneSwap {
+                                source_pane_id,
+                                moved: true,
+                                ..
+                            },
+                    }) => {
+                        if let Some(ws_idx) =
+                            self.pane_swap_space_under_pointer(mouse.column, mouse.row)
+                        {
+                            self.move_pane_into_workspace(source_pane_id, ws_idx);
+                        } else if self.workspace_index_for_pane(source_pane_id) == self.active {
+                            self.focus_pane(source_pane_id);
+                        }
+                        self.mode = Mode::Terminal;
+                    }
+                    Some(DragState {
                         target: DragTarget::PaneSwap { source_pane_id, .. },
                     }) => {
-                        self.focus_pane(source_pane_id);
+                        if self.workspace_index_for_pane(source_pane_id) == self.active {
+                            self.focus_pane(source_pane_id);
+                        }
                         self.mode = Mode::Terminal;
                     }
                     Some(_) => {}
@@ -1613,6 +1642,44 @@ impl AppState {
         }
     }
 
+    /// The space card under a pane drag, if the pointer is in the sidebar and
+    /// not on `+ new`. Hovering it switches there so the drag can continue onto
+    /// that space's grid.
+    fn pane_swap_space_under_pointer(&self, col: u16, row: u16) -> Option<usize> {
+        let sidebar = self.view.sidebar_rect;
+        if !rect_contains(sidebar, col, row) {
+            return None;
+        }
+        if rect_contains(self.sidebar_new_button_rect(), col, row) {
+            return None;
+        }
+        if self.sidebar_collapsed {
+            self.collapsed_workspace_at_row(row)
+        } else {
+            self.workspace_at_row(row)
+        }
+    }
+
+    fn switch_space_while_dragging_pane(
+        &mut self,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+        col: u16,
+        row: u16,
+    ) {
+        let Some(ws_idx) = self.pane_swap_space_under_pointer(col, row) else {
+            return;
+        };
+        if self.active == Some(ws_idx) {
+            return;
+        }
+        self.switch_workspace(ws_idx);
+        let area = self.view.sidebar_rect.union(self.screen_rect());
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        crate::ui::compute_view_with_runtime_registry(self, terminal_runtimes, area);
+    }
+
     fn pane_swap_enabled(&self) -> bool {
         let Some(ws_idx) = self.active else {
             return false;
@@ -1780,21 +1847,16 @@ impl AppState {
     }
 
     /// Put one pane where the drag ended: over another pane, which trades their
-    /// places, or against one of its edges, which cuts that pane in two.
+    /// places, or against one of its edges, which cuts that pane in two. When
+    /// the two panes belong to different spaces, the dragged pane moves into
+    /// the space that was dropped on.
     fn drop_pane_on_pane(
         &mut self,
         source: crate::layout::PaneId,
         target: crate::layout::PaneId,
         zone: crate::layout::DropZone,
     ) {
-        match zone {
-            crate::layout::DropZone::Over => {
-                self.swap_panes(source, target);
-            }
-            crate::layout::DropZone::Edge(side) => {
-                self.pin_pane_to_edge(source, target, side);
-            }
-        }
+        self.move_pane_to_pane(source, target, zone);
     }
 
     /// Where on the hovered pane the pointer is. With nothing hovered there is
@@ -3250,6 +3312,155 @@ mod tests {
         assert_eq!(new_left, right_rect);
         assert_eq!(new_right, left_rect);
     }
+
+    fn app_with_two_spaces_and_a_split() -> (
+        crate::app::App,
+        crate::layout::PaneId,
+        crate::layout::PaneId,
+        crate::layout::PaneId,
+    ) {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let source = app.state.workspaces[0].tabs[0].root_pane;
+        let sibling = app.state.workspaces[0].test_split(Direction::Horizontal);
+        let dest = app.state.workspaces[1].tabs[0].root_pane;
+        app.state.ensure_test_terminals();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+        (app, source, sibling, dest)
+    }
+
+    fn drag_pane_title_to(
+        app: &mut crate::app::App,
+        pane_id: crate::layout::PaneId,
+        col: u16,
+        row: u16,
+    ) {
+        let title_hit = app
+            .state
+            .view
+            .pane_title_hit_areas
+            .iter()
+            .find(|hit| hit.pane_id == pane_id)
+            .expect("pane title hit area");
+        let start_col = title_hit.rect.x + title_hit.rect.width / 2;
+        let start_row = title_hit.rect.y;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            start_col,
+            start_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            start_col + PANE_DRAG_THRESHOLD,
+            start_row,
+        ));
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), col, row));
+    }
+
+    #[test]
+    fn dragging_a_pane_name_over_another_space_switches_and_keeps_the_drag() {
+        let (mut app, source, _, _) = app_with_two_spaces_and_a_split();
+        let card = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("second space card")
+            .rect;
+
+        drag_pane_title_to(&mut app, source, card.x + 2, card.y + 1);
+
+        assert_eq!(app.state.active, Some(1));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::PaneSwap {
+                source_pane_id,
+                ..
+            }) if *source_pane_id == source
+        ));
+        assert!(
+            app.state.workspaces[0]
+                .find_tab_index_for_pane(source)
+                .is_some(),
+            "the pane stays in the source space until it is dropped"
+        );
+    }
+
+    #[test]
+    fn dragging_a_pane_name_into_another_space_drops_it_on_that_layout() {
+        let (mut app, source, sibling, dest) = app_with_two_spaces_and_a_split();
+        let card = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("second space card")
+            .rect;
+
+        drag_pane_title_to(&mut app, source, card.x + 2, card.y + 1);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+
+        let dest_rect = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|pane| pane.id == dest)
+            .expect("destination pane after the space switch")
+            .rect;
+        let target_col = dest_rect.x + dest_rect.width / 2;
+        let target_row = dest_rect.y + dest_rect.height / 2;
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+
+        assert_eq!(app.state.active, Some(1));
+        assert!(app.state.workspaces[0].pane_state(source).is_none());
+        assert!(app.state.workspaces[0].pane_state(sibling).is_some());
+        assert!(app.state.workspaces[1].pane_state(source).is_some());
+        assert!(app.state.workspaces[1].pane_state(dest).is_some());
+        assert_eq!(app.state.workspaces[1].focused_pane_id(), Some(source));
+    }
+
+    #[test]
+    fn dropping_a_pane_name_on_another_space_card_moves_it_there() {
+        let (mut app, source, sibling, dest) = app_with_two_spaces_and_a_split();
+        let card = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("second space card")
+            .rect;
+        let drop_col = card.x + 2;
+        let drop_row = card.y + 1;
+
+        drag_pane_title_to(&mut app, source, drop_col, drop_row);
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            drop_col,
+            drop_row,
+        ));
+
+        assert_eq!(app.state.active, Some(1));
+        assert!(app.state.workspaces[0].pane_state(source).is_none());
+        assert!(app.state.workspaces[0].pane_state(sibling).is_some());
+        assert!(app.state.workspaces[1].pane_state(source).is_some());
+        assert!(app.state.workspaces[1].pane_state(dest).is_some());
+    }
+
     #[test]
     fn dragging_pane_split_updates_captured_layout_ratio() {
         let mut app = app_for_mouse_test();
