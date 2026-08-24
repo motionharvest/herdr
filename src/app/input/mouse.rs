@@ -687,11 +687,11 @@ impl AppState {
                         return None;
                     }
                     // The done marker is a button before it is part of a row:
-                    // clicking it takes the marker off and nothing else, so the
+                    // clicking it toggles the check and nothing else, so the
                     // click that acknowledges an agent is not also the click
                     // that jumps to it.
                     if let Some(hit) = self.agent_marker_target_at(mouse.column, mouse.row) {
-                        if self.acknowledge_agent_completion(hit.pane_id) {
+                        if self.toggle_agent_completion_acknowledgement(hit.pane_id) {
                             return None;
                         }
                     }
@@ -1463,7 +1463,7 @@ impl AppState {
                 self.mode = Mode::Terminal;
             }
             Some(crate::ui::MobileSwitcherTarget::AcknowledgeAgent { pane_id }) => {
-                self.acknowledge_agent_completion(pane_id);
+                self.toggle_agent_completion_acknowledgement(pane_id);
             }
             Some(crate::ui::MobileSwitcherTarget::Menu(action_idx)) => {
                 let actions = global_menu_actions(self);
@@ -4132,6 +4132,20 @@ mod tests {
             app.state.workspaces[0].focused_pane_id(),
             Some(focused),
             "acknowledging a finish should not also jump to that agent"
+        );
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.rect.x,
+            row.rect.y,
+        ));
+
+        assert!(!app.state.workspaces[0].tabs[0].panes[&finished].seen);
+        assert!(app.state.workspaces[0].tabs[0].panes[&finished].completed);
+        assert_eq!(
+            app.state.workspaces[0].focused_pane_id(),
+            Some(focused),
+            "unchecking a finish should not also jump to that agent"
         );
     }
 

@@ -219,8 +219,9 @@ pub struct PaneSnapshot {
     pub launch_argv: Option<Vec<String>>,
     /// Whether the finish had been acknowledged. An agent that finished wears
     /// the done marker until its marker is clicked, and clicking it leaves the
-    /// check behind, so both halves of the marker have to survive a restart or
-    /// the restart quietly clears the answer to "which one finished".
+    /// check behind until it is clicked again or another run finishes, so both
+    /// halves of the marker have to survive a restart or the restart quietly
+    /// clears the answer to "which one finished".
     /// Snapshots written before the marker was saved carry neither field: an
     /// agent in one of those reads as acknowledged and not finished, which is
     /// the same as no marker at all.

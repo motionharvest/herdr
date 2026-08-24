@@ -78,7 +78,8 @@ const TABLE_FOOTER_ROWS: u16 = 1;
 /// one in others, and a margin is one column wide in all of them.
 const FINISHED: &str = "●";
 /// What the dot becomes once it is clicked: the agent still finished, and the
-/// row still says so, but it is no longer asking to be looked at.
+/// row still says so, but it is no longer asking to be looked at. Click it
+/// again and the dot comes back. A later finish puts the dot back on its own.
 const ACKNOWLEDGED: &str = "✓";
 /// What stands beside an agent that is waiting on an answer, which is the one
 /// state that wants something from you rather than reporting on itself.
@@ -1047,9 +1048,10 @@ pub(super) fn render_global_launcher(app: &AppState, frame: &mut Frame) {
 
 /// The margin says what wants you: something turning is working, a dot is
 /// something that finished while you were not looking, and a diamond is an agent
-/// stopped on a question. Clicking a dot is the one thing that clears it, and it
-/// leaves a check behind, so an agent that finished never becomes
-/// indistinguishable from one that never ran.
+/// stopped on a question. Clicking a dot turns it into a check, and clicking
+/// the check turns it back into a dot. A later run that finishes puts the
+/// dot back on, so an agent that finished never becomes indistinguishable
+/// from one that never ran.
 fn render_margin(app: &AppState, frame: &mut Frame, entry: &AgentPanelEntry, row: Rect) {
     let marker = if entry.landing {
         Some((

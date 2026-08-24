@@ -135,9 +135,9 @@ pub(crate) fn mobile_switcher_target_at(
         let idx = (doc_row - cursor) / 2;
         let entry = agents.get(idx)?;
         // The icon a row leads with is the same button the desktop table's
-        // margin is: it acknowledges the finish instead of switching to it.
+        // margin is: it toggles the finish marker instead of switching to it.
         let on_title_line = (doc_row - cursor).is_multiple_of(2);
-        if on_title_line && !entry.seen && col <= content.x.saturating_add(2) {
+        if on_title_line && (entry.completed || !entry.seen) && col <= content.x.saturating_add(2) {
             return Some(MobileSwitcherTarget::AcknowledgeAgent {
                 pane_id: entry.pane_id,
             });

@@ -896,14 +896,12 @@ impl AppState {
         self.outer_terminal_focus == Some(false)
     }
 
-    /// Take the done marker off one agent, which is the only thing that does.
-    ///
-    /// The marker answers "which agent finished while I was elsewhere", and an
-    /// answer that a stray click on a pane can erase is not an answer. So it
-    /// survives focus, tab switches and space switches, and comes off only when
-    /// the marker itself is clicked. The row keeps a check afterwards, so the
-    /// agent still reads as finished rather than as one that never ran.
-    pub(crate) fn acknowledge_agent_completion(&mut self, pane_id: PaneId) -> bool {
+    /// Toggle the done marker on one agent: the dot becomes a check, the check
+    /// becomes a dot. That is the only click that moves it, and it does not
+    /// also jump to the agent. A later run that finishes puts the dot back on
+    /// its own, so a check earned on the last task does not pretend this one
+    /// was looked at.
+    pub(crate) fn toggle_agent_completion_acknowledgement(&mut self, pane_id: PaneId) -> bool {
         let pane = self
             .workspaces
             .iter_mut()
@@ -918,10 +916,11 @@ impl AppState {
         let Some(pane) = pane else {
             return false;
         };
-        if pane.seen {
+        if pane.seen && !pane.completed {
             return false;
         }
-        pane.seen = true;
+        pane.seen = !pane.seen;
+        pane.completed = true;
         self.mark_session_dirty();
         true
     }
@@ -3008,7 +3007,7 @@ impl AppState {
             pane.seen = true;
             pane.completed = false;
         } else if is_background_completion_transition(change.previous_state, change.state) {
-            pane.seen = suppress_active_tab_notifications;
+            pane.seen = false;
             pane.completed = true;
         }
         let seen = pane.seen;
@@ -4232,13 +4231,37 @@ mod tests {
         let mut state = app_with_workspaces(&["a", "b"]);
         let id = *state.workspaces[1].panes.keys().next().unwrap();
         let other = *state.workspaces[0].panes.keys().next().unwrap();
-        state.workspaces[1].panes.get_mut(&id).unwrap().seen = false;
-        state.workspaces[0].panes.get_mut(&other).unwrap().seen = false;
+        {
+            let pane = state.workspaces[1].panes.get_mut(&id).unwrap();
+            pane.seen = false;
+            pane.completed = true;
+        }
+        {
+            let pane = state.workspaces[0].panes.get_mut(&other).unwrap();
+            pane.seen = false;
+            pane.completed = true;
+        }
 
-        assert!(state.acknowledge_agent_completion(id));
+        assert!(state.toggle_agent_completion_acknowledgement(id));
         assert!(state.workspaces[1].panes.get(&id).unwrap().seen);
         assert!(!state.workspaces[0].panes.get(&other).unwrap().seen);
-        assert!(!state.acknowledge_agent_completion(id));
+        assert!(state.toggle_agent_completion_acknowledgement(id));
+        assert!(!state.workspaces[1].panes.get(&id).unwrap().seen);
+        assert!(state.workspaces[1].panes.get(&id).unwrap().completed);
+        assert!(state.toggle_agent_completion_acknowledgement(id));
+        assert!(state.workspaces[1].panes.get(&id).unwrap().seen);
+    }
+
+    #[test]
+    fn clicking_an_agent_that_never_finished_does_not_invent_a_marker() {
+        let mut state = app_with_workspaces(&["a"]);
+        let id = *state.workspaces[0].panes.keys().next().unwrap();
+        assert!(state.workspaces[0].panes.get(&id).unwrap().seen);
+        assert!(!state.workspaces[0].panes.get(&id).unwrap().completed);
+
+        assert!(!state.toggle_agent_completion_acknowledgement(id));
+        assert!(state.workspaces[0].panes.get(&id).unwrap().seen);
+        assert!(!state.workspaces[0].panes.get(&id).unwrap().completed);
     }
 
     #[test]
@@ -4509,6 +4532,56 @@ mod tests {
     }
 
     #[test]
+    fn a_later_run_on_the_active_tab_finishes_with_the_done_dot() {
+        let mut state = app_with_workspaces(&["active"]);
+        state.active = Some(0);
+        state.outer_terminal_focus = Some(true);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let terminal_id = state.workspaces[0]
+            .panes
+            .get(&pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        {
+            let pane = state.workspaces[0].panes.get_mut(&pane_id).unwrap();
+            pane.seen = true;
+            pane.completed = true;
+        }
+        state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Idle;
+
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Working,
+            visible_blocker: false,
+            visible_idle: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+        {
+            let pane = state.workspaces[0].panes.get(&pane_id).unwrap();
+            assert!(pane.seen);
+            assert!(!pane.completed);
+        }
+
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_idle: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+        let pane = state.workspaces[0].panes.get(&pane_id).unwrap();
+        assert!(!pane.seen);
+        assert!(pane.completed);
+    }
+
+    #[test]
     fn state_changed_idle_in_background_marks_unseen() {
         let mut state = app_with_workspaces(&["active", "background"]);
         state.active = Some(0);
@@ -4540,7 +4613,7 @@ mod tests {
     }
 
     #[test]
-    fn active_tab_completion_marks_pane_seen() {
+    fn active_tab_completion_shows_the_done_dot() {
         let mut state = app_with_workspaces(&["active"]);
         state.active = Some(0);
         state.outer_terminal_focus = Some(true);
@@ -4552,7 +4625,11 @@ mod tests {
             .attached_terminal_id
             .clone();
         state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Working;
-        state.workspaces[0].panes.get_mut(&pane_id).unwrap().seen = false;
+        {
+            let pane = state.workspaces[0].panes.get_mut(&pane_id).unwrap();
+            pane.seen = true;
+            pane.completed = false;
+        }
 
         state.handle_app_event(AppEvent::StateChanged {
             pane_id,
@@ -4568,7 +4645,8 @@ mod tests {
         let terminal = state.terminals.get(&terminal_id).unwrap();
         assert_eq!(terminal.state, AgentState::Idle);
         let pane = state.workspaces[0].panes.get(&pane_id).unwrap();
-        assert!(pane.seen);
+        assert!(!pane.seen);
+        assert!(pane.completed);
     }
 
     #[test]

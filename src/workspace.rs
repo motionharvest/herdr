@@ -296,7 +296,7 @@ impl Workspace {
         self.tabs.get_mut(self.active_tab)
     }
     /// Switching to a tab shows its agents; it does not acknowledge them. The
-    /// done marker comes off when it is clicked, and nowhere else.
+    /// done marker toggles when it is clicked, and nowhere else.
     pub fn switch_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.active_tab = idx;

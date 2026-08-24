@@ -16,6 +16,8 @@
 - Git Status no longer writes `Landed` when a linked worktree has uncommitted files. The label used to follow the dirty marker whenever that checkout's latest commit was already on the parent, so a dirty tree still looked finished.
 
 ### Changed
+- Clicking the check beside a finished agent turns it back into the done dot. The click used to be one-way, so a check stayed until that agent worked again. Clicking still does not jump to the agent.
+- A later run that finishes wears the done dot again, even if you were looking at that pane. Finishing on the active tab used to leave the check standing, so a second task you watched complete never asked to be looked at.
 - A peeked pane's chrome now says `EXIT` instead of `BACK  HIDE`. Clicking it still leaves the overlay. A zoomed pane still says `BACK` and `HIDE`.
 - A hidden agent's name matches Summary until that row is selected, then it uses the accent. A selected name still in a space uses the focus color. Selected docked names used the default foreground, so on synthwave the agent you had clicked stayed white instead of turning pink. Hidden names used the accent while unselected, so every set-down agent read as cyan.
 - A Grok agent's Summary now follows the latest typed prompt, as a short headline of the part that asks for work, not the whole message. Grok still writes `generated_title` after the first reply and then freezes it, so the column used to stay on that first name. A rambling follow-up is folded the same way: a quoted imperative is used when the user named the task, otherwise the sentence that looks like a request. `generated_title` still fills it when no prompt has been parsed yet, and the model read from `summary.json` is unchanged.

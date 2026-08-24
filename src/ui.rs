@@ -847,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn the_done_marker_becomes_a_check_once_it_is_acknowledged() {
+    fn the_done_marker_toggles_between_a_dot_and_a_check() {
         let mut app = crate::app::state::AppState::test_new();
         let workspace = Workspace::test_new("space");
         let pane_id = workspace.tabs[0].root_pane;
@@ -884,8 +884,12 @@ mod tests {
         compute_view(&mut app, Rect::new(0, 0, 106, 20));
         assert_eq!(marker(&app), "\u{25cf}");
 
-        assert!(app.acknowledge_agent_completion(pane_id));
+        assert!(app.toggle_agent_completion_acknowledgement(pane_id));
         compute_view(&mut app, Rect::new(0, 0, 106, 20));
         assert_eq!(marker(&app), "\u{2713}");
+
+        assert!(app.toggle_agent_completion_acknowledgement(pane_id));
+        compute_view(&mut app, Rect::new(0, 0, 106, 20));
+        assert_eq!(marker(&app), "\u{25cf}");
     }
 }
