@@ -1112,12 +1112,16 @@ fn cell_line<'a>(
 ) -> Line<'a> {
     match column {
         COL_NAME => {
+            // Set-down names take the accent so they stay findable; the rest
+            // of that row stays muted. Selected names keep the focus accent.
             let style = if selected {
                 Style::default()
                     .fg(focus_accent(app))
                     .add_modifier(Modifier::BOLD)
-            } else {
+            } else if entry.docked {
                 Style::default().fg(detail_fg(app, entry))
+            } else {
+                Style::default().fg(app.palette.accent)
             };
             Line::styled(pad(text, width), style)
         }
@@ -1493,7 +1497,7 @@ mod tests {
         let (state, pane_id) = state_with_a_set_down_agent();
         let row = row_of(&state, pane_id);
         let folders = FolderColors::new();
-        for column in [COL_NAME, COL_SUMMARY, COL_AGENT, COL_RUN, COL_IDLE] {
+        for column in [COL_SUMMARY, COL_AGENT, COL_RUN, COL_IDLE] {
             let line = cell_line(&state, &row, column, "x", 8, false, &folders);
             assert_eq!(
                 line.style.fg,
@@ -1501,6 +1505,16 @@ mod tests {
                 "column {column}"
             );
         }
+    }
+
+    #[test]
+    fn a_hidden_agent_name_uses_the_accent_color() {
+        let (state, pane_id) = state_with_a_set_down_agent();
+        let row = row_of(&state, pane_id);
+        let folders = FolderColors::new();
+        let name = cell_line(&state, &row, COL_NAME, "x", 8, false, &folders);
+        assert_eq!(name.style.fg, Some(state.palette.accent));
+        assert!(!name.style.add_modifier.contains(Modifier::BOLD));
     }
 
     fn state_with_a_set_down_agent_and_a_docked_agent() -> (AppState, PaneId, PaneId) {
