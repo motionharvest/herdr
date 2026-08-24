@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- The spaces and agents sidebar is back on the left of the frame. Composer, the agent table, and the panes keep their places to its right. Click a space to switch, click an agent to focus it, drag a pane onto `+ new` to fly it out, and `prefix+b` folds the sidebar to a strip.
+
 ### Fixed
 - Paste now goes to the peeked pane, including in `herdr server`. Typing already went there; paste used the last selected docked pane because the client paste path followed layout focus instead of the overlay.
 - Wheel scroll now reaches the peeked pane. Mouse and host-scroll lookups used the workspace layout, so a set-down agent shown in peek could not be scrolled.

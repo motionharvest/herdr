@@ -270,6 +270,7 @@ pub struct Keybinds {
     pub workspace_picker: ActionKeybinds,
     pub goto: ActionKeybinds,
     pub composer: ActionKeybinds,
+    pub toggle_sidebar: ActionKeybinds,
     pub detach: ActionKeybinds,
     pub reload_config: ActionKeybinds,
     pub open_notification_target: ActionKeybinds,
@@ -444,6 +445,7 @@ impl Config {
             workspace_picker: action!("keys.workspace_picker", &self.keys.workspace_picker),
             goto: action!("keys.goto", &self.keys.goto),
             composer: action!("keys.composer", &self.keys.composer),
+            toggle_sidebar: action!("keys.toggle_sidebar", &self.keys.toggle_sidebar),
             detach: action!("keys.detach", &self.keys.detach),
             reload_config: action!("keys.reload_config", &self.keys.reload_config),
             open_notification_target: action!(

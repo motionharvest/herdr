@@ -1304,6 +1304,7 @@ mod tests {
                 seen: false,
                 completed: true,
             }],
+            ..Default::default()
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1366,6 +1367,7 @@ mod tests {
                 seen: true,
                 completed: false,
             }],
+            ..Default::default()
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1439,6 +1441,7 @@ mod tests {
             composer_agent: None,
             agent_order: vec![terminal_id.clone()],
             detached_agents: Vec::new(),
+            ..Default::default()
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1524,6 +1527,7 @@ mod tests {
             composer_agent: None,
             agent_order: Vec::new(),
             detached_agents: Vec::new(),
+            ..Default::default()
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1632,6 +1636,7 @@ mod tests {
             composer_agent: None,
             agent_order: Vec::new(),
             detached_agents: Vec::new(),
+            ..Default::default()
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1712,6 +1717,7 @@ mod tests {
             composer_agent: None,
             agent_order: Vec::new(),
             detached_agents: Vec::new(),
+            ..Default::default()
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1905,6 +1911,7 @@ mod tests {
             composer_agent: None,
             agent_order: Vec::new(),
             detached_agents: Vec::new(),
+            ..Default::default()
         };
         (snapshot, history)
     }
@@ -1954,6 +1961,7 @@ mod tests {
             composer_agent: None,
             agent_order: Vec::new(),
             detached_agents: Vec::new(),
+            ..Default::default()
         }
     }
 

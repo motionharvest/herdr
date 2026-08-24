@@ -803,11 +803,67 @@ pub struct PaneChromeControl {
     pub rect: Rect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceCardArea {
+    pub ws_idx: usize,
+    pub rect: Rect,
+    pub indented: bool,
+}
+
+/// Clickable region for an agent row nested under its space card. The rect
+/// covers only the entry's content rows, not the leading gap row and not the
+/// folder header row above it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentRowArea {
+    pub ws_idx: usize,
+    pub tab_idx: usize,
+    pub pane_id: PaneId,
+    pub rect: Rect,
+    /// Whether the row directly above this one is the folder header this agent
+    /// heads. Agents listed under it in the same folder share that one header,
+    /// so only the first of them carries it.
+    pub location_header: bool,
+}
+
+/// The folder row a space's agents are listed under. It is a label rather than
+/// a card — clicking it selects nothing — but dragging it moves the whole
+/// folder among its space's folders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentFolderArea {
+    pub ws_idx: usize,
+    /// The folder itself, which is the identity a drag carries.
+    pub key: String,
+    /// The first agent listed under it, whose location supplies the row's text.
+    pub tab_idx: usize,
+    pub pane_id: PaneId,
+    pub rect: Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarWidthSource {
+    ConfigDefault,
+    Persisted,
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
+pub enum AgentPanelScope {
+    CurrentWorkspace,
+    #[default]
+    AllWorkspaces,
+}
+
 pub struct ViewState {
     pub layout: ViewLayout,
     /// The rows the composer occupies above every other surface, and where its
     /// controls sit on them.
     pub composer: crate::ui::ComposerLayout,
+    /// Left column of space cards and the agents under them.
+    pub sidebar_rect: Rect,
+    pub workspace_card_areas: Vec<WorkspaceCardArea>,
+    pub agent_row_areas: Vec<AgentRowArea>,
+    pub agent_folder_areas: Vec<AgentFolderArea>,
     /// The agent table between the composer and the panes: where its rows and
     /// columns sit, and which agent each row is.
     pub agent_table: crate::ui::AgentTableLayout,
@@ -824,6 +880,29 @@ pub struct ViewState {
     pub pane_chrome_controls: Vec<PaneChromeControl>,
     pub pane_title_hit_areas: Vec<PaneTitleHitArea>,
     pub split_borders: Vec<SplitBorder>,
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        Self {
+            layout: ViewLayout::Desktop,
+            composer: crate::ui::ComposerLayout::default(),
+            sidebar_rect: Rect::default(),
+            workspace_card_areas: Vec::new(),
+            agent_row_areas: Vec::new(),
+            agent_folder_areas: Vec::new(),
+            agent_table: crate::ui::AgentTableLayout::default(),
+            agent_locations: std::collections::HashMap::new(),
+            terminal_area: Rect::default(),
+            mobile_header_rect: Rect::default(),
+            mobile_menu_hit_area: Rect::default(),
+            toast_hit_area: Rect::default(),
+            pane_infos: Vec::new(),
+            pane_chrome_controls: Vec::new(),
+            pane_title_hit_areas: Vec::new(),
+            split_borders: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1096,6 +1175,28 @@ pub struct SettingsState {
 }
 
 pub(crate) enum DragTarget {
+    WorkspaceReorder {
+        source_ws_idx: usize,
+        insert_idx: Option<usize>,
+    },
+    /// Reordering an agent row among the agents it shares a folder with in
+    /// the sidebar. Display order only — the pane layout is untouched.
+    SidebarAgentReorder {
+        ws_idx: usize,
+        source_pane_id: PaneId,
+        insert_idx: Option<usize>,
+    },
+    /// Reordering a whole folder, and every agent under it, among its space's
+    /// folders. Display order only.
+    AgentFolderReorder {
+        ws_idx: usize,
+        key: String,
+        insert_idx: Option<usize>,
+    },
+    WorkspaceListScrollbar {
+        grab_row_offset: u16,
+    },
+    SidebarDivider,
     /// Reordering the session-wide agent table. This changes presentation
     /// order only; pane placement and workspace membership stay untouched.
     AgentReorder {
@@ -1122,6 +1223,9 @@ pub(crate) enum DragTarget {
         source_pane_id: PaneId,
         hovered_pane_id: Option<PaneId>,
         drop_zone: crate::layout::DropZone,
+        /// Hovering the sidebar `+ new` button, which flies the pane out into
+        /// its own space.
+        create_space: bool,
         moved: bool,
     },
     PaneScrollbar {
@@ -1176,8 +1280,29 @@ pub(crate) fn detached_agent_cwd(
         })
 }
 
+pub(crate) struct WorkspacePressState {
+    pub ws_idx: usize,
+    pub start_col: u16,
+    pub start_row: u16,
+}
+
 pub(crate) struct PanePressState {
     pub pane_id: PaneId,
+    pub start_col: u16,
+    pub start_row: u16,
+}
+
+/// Left button held on a sidebar agent row, waiting to become a reorder drag.
+pub(crate) struct SidebarAgentPressState {
+    pub ws_idx: usize,
+    pub pane_id: PaneId,
+    pub start_col: u16,
+    pub start_row: u16,
+}
+
+pub(crate) struct AgentFolderPressState {
+    pub ws_idx: usize,
+    pub key: String,
     pub start_col: u16,
     pub start_row: u16,
 }
@@ -1212,6 +1337,15 @@ pub(crate) struct AgentPressState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextMenuKind {
+    Workspace {
+        ws_idx: usize,
+    },
+    GitWorkspace {
+        ws_idx: usize,
+        is_linked_worktree: bool,
+        has_worktree_children: bool,
+        collapsed: bool,
+    },
     /// A row of the agent table. The row is the only handle on the space the
     /// agent works in as well as on the agent itself, so this menu carries
     /// what can be done to the agent, then the worktree actions its folder
@@ -1284,6 +1418,41 @@ pub struct ContextMenuState {
 impl ContextMenuState {
     pub fn items(&self) -> Vec<String> {
         match &self.kind {
+            ContextMenuKind::Workspace { .. } => vec!["Rename".into(), "Close".into()],
+            ContextMenuKind::GitWorkspace {
+                is_linked_worktree: false,
+                has_worktree_children: false,
+                ..
+            } => vec![
+                "Rename".into(),
+                "Close".into(),
+                "New worktree".into(),
+                "Open worktree...".into(),
+            ],
+            ContextMenuKind::GitWorkspace {
+                is_linked_worktree: true,
+                ..
+            } => vec![
+                "Rename".into(),
+                "Close".into(),
+                "Delete worktree checkout...".into(),
+            ],
+            ContextMenuKind::GitWorkspace {
+                is_linked_worktree: false,
+                has_worktree_children: true,
+                collapsed,
+                ..
+            } => vec![
+                "Rename".into(),
+                "Close group".into(),
+                "New worktree".into(),
+                "Open worktree...".into(),
+                if *collapsed {
+                    "Expand".into()
+                } else {
+                    "Collapse".into()
+                },
+            ],
             ContextMenuKind::Agent { space, .. } => {
                 let mut items = vec!["Rename agent".into(), "Delete agent".into()];
                 match space {
@@ -1497,6 +1666,25 @@ pub struct AppState {
     /// Stable, session-wide order for agent rows. Terminal ids survive pane
     /// moves and session restore, unlike layout positions and pane ids.
     pub agent_order: Vec<crate::terminal::TerminalId>,
+    pub collapsed_space_keys: std::collections::HashSet<String>,
+    /// Ids of spaces whose agent entries are folded away in the sidebar.
+    /// Spaces default to expanded, so only collapsed ones are tracked.
+    pub collapsed_agent_space_ids: std::collections::HashSet<String>,
+    pub workspace_scroll: usize,
+    pub default_sidebar_width: u16,
+    pub sidebar_width: u16,
+    pub sidebar_min_width: u16,
+    pub sidebar_max_width: u16,
+    pub sidebar_width_source: SidebarWidthSource,
+    #[allow(dead_code)]
+    pub sidebar_width_auto: bool,
+    pub sidebar_collapsed: bool,
+    pub spaces_collapsed: bool,
+    /// Legacy ratio of sidebar height once allocated to the workspaces
+    /// section. Kept so older sessions still restore.
+    pub sidebar_section_split: f32,
+    #[allow(dead_code)]
+    pub agent_panel_scope: AgentPanelScope,
     /// How far down the agent list the table's first drawn row sits. It follows
     /// the focused agent, and a wheel notch over the table moves it directly.
     pub agent_table_scroll: usize,
@@ -1504,8 +1692,11 @@ pub struct AppState {
     // View geometry (computed before render, consumed by render + mouse)
     pub view: ViewState,
     pub(crate) drag: Option<DragState>,
+    pub(crate) workspace_press: Option<WorkspacePressState>,
     pub(crate) pane_press: Option<PanePressState>,
     pub(crate) agent_press: Option<AgentPressState>,
+    pub(crate) sidebar_agent_press: Option<SidebarAgentPressState>,
+    pub(crate) agent_folder_press: Option<AgentFolderPressState>,
     /// The row a click picked out, until the next key releases it.
     pub(crate) agent_table_focus: Option<AgentTableFocus>,
     /// An agent shown full-pane over the current layout. The splits underneath
@@ -1899,11 +2090,28 @@ impl AppState {
             navigator: NavigatorState::default(),
             copy_mode: None,
             agent_order: Vec::new(),
+            collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_agent_space_ids: std::collections::HashSet::new(),
+            workspace_scroll: 0,
+            default_sidebar_width: 26,
+            sidebar_width: 26,
+            sidebar_min_width: 18,
+            sidebar_max_width: 36,
+            sidebar_width_source: SidebarWidthSource::ConfigDefault,
+            sidebar_width_auto: false,
+            sidebar_collapsed: false,
+            spaces_collapsed: false,
+            sidebar_section_split: 0.5,
+            agent_panel_scope: AgentPanelScope::AllWorkspaces,
             agent_table_scroll: 0,
             mobile_switcher_scroll: 0,
             view: ViewState {
                 layout: ViewLayout::Desktop,
                 composer: crate::ui::ComposerLayout::default(),
+                sidebar_rect: Rect::default(),
+                workspace_card_areas: Vec::new(),
+                agent_row_areas: Vec::new(),
+                agent_folder_areas: Vec::new(),
                 agent_table: crate::ui::AgentTableLayout::default(),
                 agent_locations: std::collections::HashMap::new(),
                 terminal_area: Rect::default(),
@@ -1916,8 +2124,11 @@ impl AppState {
                 split_borders: Vec::new(),
             },
             drag: None,
+            workspace_press: None,
             pane_press: None,
             agent_press: None,
+            sidebar_agent_press: None,
+            agent_folder_press: None,
             agent_table_focus: None,
             agent_peek: None,
             confirm_close_agent: None,

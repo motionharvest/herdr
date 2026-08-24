@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- The spaces and agents sidebar is back on the left of the frame. Composer, the agent table, and the panes keep their places to its right. Click a space to switch, click an agent to focus it, drag a pane onto `+ new` to fly it out, and `prefix+b` folds the sidebar to a strip.
+
 ### Fixed
 - Git Status no longer writes `Landed` when a linked worktree has uncommitted files. The label used to follow the dirty marker whenever that checkout's latest commit was already on the parent, so a dirty tree still looked finished.
 

@@ -63,7 +63,7 @@ fn render_onboarding_welcome(app: &AppState, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(
         Paragraph::new(
-            "  this is a mouse-first terminal.\n  click the sidebar to switch workspaces, drag pane\n  borders to resize, right-click for context menus.",
+            "  this is a mouse-first terminal.\n  click the sidebar to switch spaces, drag pane\n  borders to resize, right-click for context menus.",
         )
         .style(Style::default().fg(app.palette.overlay1)),
         content_rows[0],

@@ -412,6 +412,10 @@ impl Tab {
         self.detach_pane(pane_id)
     }
 
+    pub fn take_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
+        self.detach_pane(pane_id)
+    }
+
     fn detach_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
         if self.layout.pane_count() <= 1 {
             return None;

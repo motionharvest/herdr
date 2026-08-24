@@ -119,6 +119,7 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
         help_entry(keybind_label(&kb.previous_agent), "previous agent"),
         help_entry(keybind_label(&kb.next_agent), "next agent"),
         help_entry(indexed_label(&kb.focus_agent), "focus agent 1-9"),
+        help_entry(keybind_label(&kb.toggle_sidebar), "toggle sidebar"),
     ];
     groups.push(("spaces / agents", workspace_tab));
 

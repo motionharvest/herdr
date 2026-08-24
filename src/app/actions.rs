@@ -932,8 +932,41 @@ impl AppState {
         (0..self.workspaces.len()).collect()
     }
 
+    fn sidebar_visual_workspace_order(&self) -> Vec<usize> {
+        let order = crate::ui::workspace_list_entries(self)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
+                crate::ui::WorkspaceListEntry::Agent { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        if order.is_empty() {
+            (0..self.workspaces.len()).collect()
+        } else {
+            order
+        }
+    }
+
     pub(crate) fn workspace_at_visible_position(&self, position: usize) -> Option<usize> {
         self.visible_workspace_order().get(position).copied()
+    }
+
+    pub(crate) fn move_selected_workspace_by_sidebar_delta(&mut self, delta: isize) {
+        if self.workspaces.is_empty() {
+            return;
+        }
+        let order = self.sidebar_visual_workspace_order();
+        let current_pos = order
+            .iter()
+            .position(|idx| *idx == self.selected)
+            .unwrap_or(0);
+        let target_pos = current_pos
+            .saturating_add_signed(delta)
+            .min(order.len().saturating_sub(1));
+        if let Some(ws_idx) = order.get(target_pos).copied() {
+            self.selected = ws_idx;
+            self.ensure_workspace_visible(ws_idx);
+        }
     }
 
     pub(crate) fn move_selected_workspace_by_visible_delta(&mut self, delta: isize) {
@@ -992,6 +1025,194 @@ impl AppState {
 
     /// Move one agent row to an insert-before position in the global table.
     /// Pane geometry is deliberately not involved: this is display order only.
+    pub fn move_workspace(&mut self, source_idx: usize, insert_idx: usize) {
+        if source_idx >= self.workspaces.len() || insert_idx > self.workspaces.len() {
+            return;
+        }
+
+        self.mark_session_dirty();
+
+        let active_id = self.active.map(|idx| self.workspaces[idx].id.clone());
+        let selected_id = self
+            .workspaces
+            .get(self.selected)
+            .map(|workspace| workspace.id.clone());
+
+        let workspace = self.workspaces.remove(source_idx);
+        let target_idx = if source_idx < insert_idx {
+            insert_idx.saturating_sub(1)
+        } else {
+            insert_idx
+        }
+        .min(self.workspaces.len());
+        self.workspaces.insert(target_idx, workspace);
+
+        self.active = active_id.and_then(|id| self.workspaces.iter().position(|ws| ws.id == id));
+        self.selected = selected_id
+            .and_then(|id| self.workspaces.iter().position(|ws| ws.id == id))
+            .unwrap_or(0);
+        self.ensure_workspace_visible(self.selected);
+    }
+
+    /// Move a dragged agent to `insert_idx` among the agents it shares a folder
+    /// with. Every other folder, and every other agent in this one, stays where
+    /// it is. Display order only.
+    pub fn move_agent_in_folder(
+        &mut self,
+        ws_idx: usize,
+        source_pane_id: crate::layout::PaneId,
+        insert_idx: usize,
+    ) -> bool {
+        let mut groups = crate::ui::workspace_agent_groups(self, ws_idx);
+        let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.agents.iter().any(|m| m.pane_id == source_pane_id))
+        else {
+            return false;
+        };
+        let Some(from) = group
+            .agents
+            .iter()
+            .position(|member| member.pane_id == source_pane_id)
+        else {
+            return false;
+        };
+        if insert_idx > group.agents.len() {
+            return false;
+        }
+        let to = if from < insert_idx {
+            insert_idx - 1
+        } else {
+            insert_idx
+        };
+        if to == from {
+            return false;
+        }
+        let member = group.agents.remove(from);
+        group.agents.insert(to, member);
+        self.apply_agent_group_order(ws_idx, &groups)
+    }
+
+    /// Move a whole folder, and every agent under it, to `insert_idx` among its
+    /// space's folders. Display order only.
+    pub fn move_agent_folder(&mut self, ws_idx: usize, key: &str, insert_idx: usize) -> bool {
+        let mut groups = crate::ui::workspace_agent_groups(self, ws_idx);
+        let Some(from) = groups.iter().position(|group| group.key == key) else {
+            return false;
+        };
+        if insert_idx > groups.len() {
+            return false;
+        }
+        let to = if from < insert_idx {
+            insert_idx - 1
+        } else {
+            insert_idx
+        };
+        if to == from {
+            return false;
+        }
+        let group = groups.remove(from);
+        groups.insert(to, group);
+        self.apply_agent_group_order(ws_idx, &groups)
+    }
+
+    /// Write a rearranged set of folders back as the space's agent order. The
+    /// agents fill the slots they already occupied, so panes with no agent —
+    /// which the sidebar never lists — keep their place in the order.
+    fn apply_agent_group_order(
+        &mut self,
+        ws_idx: usize,
+        groups: &[crate::ui::AgentFolderGroup],
+    ) -> bool {
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return false;
+        };
+        let mut listed = groups
+            .iter()
+            .flat_map(|group| group.agents.iter().map(|member| member.pane_id));
+        let previous = ws.ordered_pane_ids();
+        let is_listed = |pane_id: &crate::layout::PaneId| {
+            groups
+                .iter()
+                .any(|group| group.agents.iter().any(|m| m.pane_id == *pane_id))
+        };
+        let order = previous
+            .iter()
+            .map(|pane_id| {
+                if is_listed(pane_id) {
+                    listed.next().unwrap_or(*pane_id)
+                } else {
+                    *pane_id
+                }
+            })
+            .collect::<Vec<_>>();
+        if order == previous {
+            return false;
+        }
+        ws.set_agent_order(order);
+        self.mark_session_dirty();
+        true
+    }
+
+    pub fn promote_pane_to_new_workspace(&mut self, source_pane_id: crate::layout::PaneId) -> bool {
+        let Some(ws_idx) = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.find_tab_index_for_pane(source_pane_id).is_some())
+        else {
+            return false;
+        };
+        let Some(tab_idx) = self.workspaces[ws_idx].find_tab_index_for_pane(source_pane_id) else {
+            return false;
+        };
+        let Some(tab) = self.workspaces[ws_idx].tabs.get(tab_idx) else {
+            return false;
+        };
+        if tab.zoomed || tab.layout.pane_count() <= 1 {
+            return false;
+        }
+
+        let identity_cwd = self.workspaces[ws_idx]
+            .pane_state(source_pane_id)
+            .and_then(|pane| self.terminals.get(&pane.attached_terminal_id))
+            .map(|terminal| terminal.cwd.clone())
+            .unwrap_or_else(|| self.workspaces[ws_idx].identity_cwd.clone());
+
+        let events = tab.events.clone();
+        let render_notify = tab.render_notify.clone();
+        let render_dirty = tab.render_dirty.clone();
+
+        let Some((pane_id, pane_state)) = self.workspaces[ws_idx].take_pane(source_pane_id) else {
+            return false;
+        };
+
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.pane_id == pane_id)
+        {
+            self.selection = None;
+            self.selection_autoscroll = None;
+        }
+
+        let workspace = crate::workspace::Workspace::from_existing_pane(
+            pane_id,
+            pane_state,
+            identity_cwd,
+            events,
+            render_notify,
+            render_dirty,
+        );
+        let workspace_id = workspace.id.clone();
+        self.workspaces.push(workspace);
+        let new_idx = self.workspaces.len() - 1;
+        crate::logging::workspace_created(&workspace_id, pane_id.raw());
+        self.switch_workspace(new_idx);
+        self.mode = Mode::Terminal;
+        self.mark_session_dirty();
+        true
+    }
+
     pub fn move_agent_to_index(&mut self, source_pane_id: PaneId, insert_idx: usize) -> bool {
         let entries = crate::ui::agent_panel_entries(self);
         let Some(from) = entries

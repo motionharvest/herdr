@@ -34,6 +34,38 @@ pub struct SessionSnapshot {
     /// down or started hidden belongs to the session, not to a layout.
     #[serde(default)]
     pub detached_agents: Vec<DetachedAgentSnapshot>,
+    #[serde(default)]
+    pub sidebar_width: Option<u16>,
+    #[serde(default)]
+    pub sidebar_section_split: Option<f32>,
+    #[serde(default)]
+    pub collapsed_space_keys: std::collections::HashSet<String>,
+    #[serde(default)]
+    pub collapsed_agent_space_ids: std::collections::HashSet<String>,
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
+    #[serde(default)]
+    pub spaces_collapsed: bool,
+}
+
+impl Default for SessionSnapshot {
+    fn default() -> Self {
+        Self {
+            version: SNAPSHOT_VERSION,
+            workspaces: Vec::new(),
+            active: None,
+            selected: 0,
+            composer_agent: None,
+            agent_order: Vec::new(),
+            detached_agents: Vec::new(),
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_agent_space_ids: std::collections::HashSet::new(),
+            sidebar_collapsed: false,
+            spaces_collapsed: false,
+        }
+    }
 }
 
 /// An agent that was running with no pane showing it.
@@ -273,6 +305,18 @@ struct RawSessionSnapshot {
     agent_order: Vec<crate::terminal::TerminalId>,
     #[serde(default)]
     detached_agents: Vec<DetachedAgentSnapshot>,
+    #[serde(default)]
+    sidebar_width: Option<u16>,
+    #[serde(default)]
+    sidebar_section_split: Option<f32>,
+    #[serde(default)]
+    collapsed_space_keys: std::collections::HashSet<String>,
+    #[serde(default)]
+    collapsed_agent_space_ids: std::collections::HashSet<String>,
+    #[serde(default)]
+    sidebar_collapsed: bool,
+    #[serde(default)]
+    spaces_collapsed: bool,
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -288,6 +332,12 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
         composer_agent: raw.composer_agent,
         agent_order: raw.agent_order,
         detached_agents: raw.detached_agents,
+        sidebar_width: raw.sidebar_width,
+        sidebar_section_split: raw.sidebar_section_split,
+        collapsed_space_keys: raw.collapsed_space_keys,
+        collapsed_agent_space_ids: raw.collapsed_agent_space_ids,
+        sidebar_collapsed: raw.sidebar_collapsed,
+        spaces_collapsed: raw.spaces_collapsed,
     })
 }
 
@@ -358,6 +408,12 @@ pub fn capture(
             .filter(|terminal_id| state.terminals.contains_key(*terminal_id))
             .cloned()
             .collect(),
+        sidebar_width: Some(state.sidebar_width),
+        sidebar_section_split: Some(state.sidebar_section_split),
+        collapsed_space_keys: state.collapsed_space_keys.clone(),
+        collapsed_agent_space_ids: state.collapsed_agent_space_ids.clone(),
+        sidebar_collapsed: state.sidebar_collapsed,
+        spaces_collapsed: state.spaces_collapsed,
         detached_agents: state
             .detached_agents
             .iter()
@@ -669,6 +725,7 @@ mod tests {
             composer_agent: None,
             agent_order: Vec::new(),
             detached_agents: Vec::new(),
+            ..Default::default()
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored = parse_snapshot(&json).unwrap();
@@ -760,6 +817,7 @@ mod tests {
             agent_order: Vec::new(),
             detached_agents: Vec::new(),
             version: SNAPSHOT_VERSION,
+            ..Default::default()
         };
 
         let json = serde_json::to_string_pretty(&snap).unwrap();
@@ -1252,6 +1310,7 @@ mod tests {
             composer_agent: None,
             agent_order: Vec::new(),
             detached_agents: Vec::new(),
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&snap).unwrap();

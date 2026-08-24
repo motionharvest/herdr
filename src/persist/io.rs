@@ -207,6 +207,7 @@ mod tests {
             composer_agent: None,
             agent_order: Vec::new(),
             detached_agents: Vec::new(),
+            ..Default::default()
         }
     }
 

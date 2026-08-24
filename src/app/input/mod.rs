@@ -32,6 +32,7 @@ mod navigate;
 mod overlays;
 mod selection;
 mod settings;
+mod sidebar;
 mod terminal;
 
 pub(crate) use self::agent_table::{

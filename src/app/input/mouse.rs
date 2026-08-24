@@ -5,8 +5,9 @@ use tracing::warn;
 
 use crate::{
     app::state::{
-        AgentPressState, AgentTableFocus, AppState, ContextMenuKind, ContextMenuState, DragState,
-        DragTarget, MenuListState, Mode, PanePressState, RightClickPassthroughGesture, ViewLayout,
+        AgentFolderPressState, AgentPressState, AgentTableFocus, AppState, ContextMenuKind,
+        ContextMenuState, DragState, DragTarget, MenuListState, Mode, PanePressState,
+        RightClickPassthroughGesture, SidebarAgentPressState, ViewLayout, WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
     selection::Selection,
@@ -179,8 +180,13 @@ impl AppState {
         }
 
         let in_table = self.in_agent_table(mouse.column, mouse.row);
+        let sidebar = self.view.sidebar_rect;
+        let in_sidebar = mouse.column >= sidebar.x
+            && mouse.column < sidebar.x + sidebar.width
+            && mouse.row >= sidebar.y
+            && mouse.row < sidebar.y + sidebar.height;
 
-        if self.handle_right_click_passthrough(terminal_runtimes, mouse, in_table) {
+        if self.handle_right_click_passthrough(terminal_runtimes, mouse, in_table || in_sidebar) {
             return None;
         }
 
@@ -461,6 +467,122 @@ impl AppState {
                     return None;
                 }
 
+                if in_sidebar {
+                    if self.on_sidebar_toggle(mouse.column, mouse.row) {
+                        self.sidebar_collapsed = !self.sidebar_collapsed;
+                        self.mark_session_dirty();
+                        return None;
+                    }
+
+                    if self.on_spaces_section_header(mouse.column, mouse.row) {
+                        self.spaces_collapsed = !self.spaces_collapsed;
+                        self.mark_session_dirty();
+                        return None;
+                    }
+
+                    if self.sidebar_collapsed {
+                        if let Some(idx) = self.collapsed_workspace_at_row(mouse.row) {
+                            self.switch_workspace(idx);
+                            self.mode = Mode::Terminal;
+                            return None;
+                        }
+
+                        if let Some((ws_idx, _tab_idx, pane_id)) =
+                            self.collapsed_agent_detail_target_at(mouse.row)
+                        {
+                            self.focus_pane_in_workspace(ws_idx, pane_id);
+                            self.mode = Mode::Terminal;
+                        }
+                        return None;
+                    }
+
+                    if self.on_sidebar_divider(mouse.column, mouse.row) {
+                        self.drag = Some(DragState {
+                            target: DragTarget::SidebarDivider,
+                        });
+                        return None;
+                    }
+
+                    let new_button = self.sidebar_new_button_rect();
+                    if rect_contains(new_button, mouse.column, mouse.row) {
+                        self.request_new_workspace = true;
+                        return None;
+                    }
+
+                    if let Some(target) =
+                        self.workspace_list_scrollbar_target_at(mouse.column, mouse.row)
+                    {
+                        match target {
+                            ScrollbarClickTarget::Thumb { grab_row_offset } => {
+                                self.drag = Some(DragState {
+                                    target: DragTarget::WorkspaceListScrollbar { grab_row_offset },
+                                });
+                            }
+                            ScrollbarClickTarget::Track { offset_from_bottom } => {
+                                self.set_workspace_list_offset_from_bottom(offset_from_bottom);
+                            }
+                        }
+                        return None;
+                    }
+
+                    let cards = if self.view.workspace_card_areas.is_empty() {
+                        crate::ui::compute_workspace_card_areas(self, self.view.sidebar_rect)
+                    } else {
+                        self.view.workspace_card_areas.clone()
+                    };
+                    if let Some(card) = cards.iter().find(|card| {
+                        mouse.row == card.rect.y
+                            && mouse.column == card.rect.x
+                            && mouse.column < card.rect.x + card.rect.width
+                    }) {
+                        if let Some((key, collapsed)) =
+                            crate::ui::workspace_parent_group_state(self, card.ws_idx)
+                        {
+                            if collapsed {
+                                self.collapsed_space_keys.remove(&key);
+                            } else {
+                                self.collapsed_space_keys.insert(key);
+                            }
+                            self.mark_session_dirty();
+                            return None;
+                        }
+                    }
+
+                    if let Some(idx) = self.workspace_at_row(mouse.row) {
+                        self.workspace_press = Some(WorkspacePressState {
+                            ws_idx: idx,
+                            start_col: mouse.column,
+                            start_row: mouse.row,
+                        });
+                        return None;
+                    }
+
+                    if let Some((ws_idx, key)) = self.agent_folder_target_at(mouse.row) {
+                        self.agent_folder_press = Some(AgentFolderPressState {
+                            ws_idx,
+                            key,
+                            start_col: mouse.column,
+                            start_row: mouse.row,
+                        });
+                        return None;
+                    }
+
+                    if let Some((ws_idx, _tab_idx, pane_id)) =
+                        self.agent_detail_target_at(mouse.row)
+                    {
+                        self.sidebar_agent_press = Some(SidebarAgentPressState {
+                            ws_idx,
+                            pane_id,
+                            start_col: mouse.column,
+                            start_row: mouse.row,
+                        });
+                        self.focus_pane_in_workspace(ws_idx, pane_id);
+                        self.mode = Mode::Terminal;
+                        return None;
+                    }
+                    return None;
+                }
+
                 if !in_table {
                     if let Some(control) = self.pane_chrome_control_at(mouse.column, mouse.row) {
                         if self.agent_peek.is_some() {
@@ -644,6 +766,7 @@ impl AppState {
                                     source_pane_id: press.pane_id,
                                     hovered_pane_id: None,
                                     drop_zone: crate::layout::DropZone::Over,
+                                    create_space: false,
                                     moved: false,
                                 },
                             });
@@ -660,6 +783,50 @@ impl AppState {
                                         mouse.row,
                                         press.pane_id,
                                     ),
+                                },
+                            });
+                        }
+                    } else if let Some(press) = &self.sidebar_agent_press {
+                        let delta_col = mouse.column.abs_diff(press.start_col);
+                        let delta_row = mouse.row.abs_diff(press.start_row);
+                        if delta_col.max(delta_row) >= PANE_DRAG_THRESHOLD {
+                            self.drag = Some(DragState {
+                                target: DragTarget::SidebarAgentReorder {
+                                    ws_idx: press.ws_idx,
+                                    source_pane_id: press.pane_id,
+                                    insert_idx: self.agent_drop_index_at_row(
+                                        press.ws_idx,
+                                        press.pane_id,
+                                        mouse.row,
+                                    ),
+                                },
+                            });
+                        }
+                    } else if let Some(press) = &self.agent_folder_press {
+                        let delta_col = mouse.column.abs_diff(press.start_col);
+                        let delta_row = mouse.row.abs_diff(press.start_row);
+                        if delta_col.max(delta_row) >= PANE_DRAG_THRESHOLD {
+                            self.drag = Some(DragState {
+                                target: DragTarget::AgentFolderReorder {
+                                    ws_idx: press.ws_idx,
+                                    key: press.key.clone(),
+                                    insert_idx: self
+                                        .agent_folder_drop_index_at_row(press.ws_idx, mouse.row),
+                                },
+                            });
+                        }
+                    } else if let Some(press) = &self.workspace_press {
+                        let delta_col = mouse.column.abs_diff(press.start_col);
+                        let delta_row = mouse.row.abs_diff(press.start_row);
+                        let can_reorder = self
+                            .workspaces
+                            .get(press.ws_idx)
+                            .is_some_and(|ws| ws.worktree_space().is_none());
+                        if can_reorder && delta_col.max(delta_row) >= PANE_DRAG_THRESHOLD {
+                            self.drag = Some(DragState {
+                                target: DragTarget::WorkspaceReorder {
+                                    source_ws_idx: press.ws_idx,
+                                    insert_idx: self.workspace_drop_index_at_row(mouse.row),
                                 },
                             });
                         }
@@ -742,11 +909,14 @@ impl AppState {
                     let hovered =
                         self.pane_swap_hover_target(mouse.column, mouse.row, source_pane_id);
                     let zone = self.pane_drop_zone(hovered, mouse.column, mouse.row);
+                    let create_space = hovered.is_none()
+                        && rect_contains(self.sidebar_new_button_rect(), mouse.column, mouse.row);
                     if let Some(DragState {
                         target:
                             DragTarget::PaneSwap {
                                 hovered_pane_id,
                                 drop_zone,
+                                create_space: create_space_hover,
                                 moved,
                                 ..
                             },
@@ -755,14 +925,71 @@ impl AppState {
                         *moved = true;
                         *hovered_pane_id = hovered;
                         *drop_zone = zone;
+                        *create_space_hover = create_space;
                     }
+                }
+
+                let sidebar_agent_drop = match self.drag.as_ref().map(|drag| &drag.target) {
+                    Some(DragTarget::SidebarAgentReorder {
+                        ws_idx,
+                        source_pane_id,
+                        ..
+                    }) => self.agent_drop_index_at_row(*ws_idx, *source_pane_id, mouse.row),
+                    _ => None,
+                };
+                let folder_drop = match self.drag.as_ref().map(|drag| &drag.target) {
+                    Some(DragTarget::AgentFolderReorder { ws_idx, .. }) => {
+                        self.agent_folder_drop_index_at_row(*ws_idx, mouse.row)
+                    }
+                    _ => None,
+                };
+                let workspace_drop = match self.drag.as_ref().map(|drag| &drag.target) {
+                    Some(DragTarget::WorkspaceReorder { .. }) => {
+                        self.workspace_drop_index_at_row(mouse.row)
+                    }
+                    _ => None,
+                };
+                let scrollbar_offset = match self.drag.as_ref().map(|drag| &drag.target) {
+                    Some(DragTarget::WorkspaceListScrollbar { grab_row_offset }) => {
+                        self.workspace_list_offset_for_drag_row(mouse.row, *grab_row_offset)
+                    }
+                    _ => None,
+                };
+                let resizing_sidebar = matches!(
+                    self.drag.as_ref().map(|drag| &drag.target),
+                    Some(DragTarget::SidebarDivider)
+                );
+                if let Some(DragState {
+                    target: DragTarget::SidebarAgentReorder { insert_idx, .. },
+                }) = &mut self.drag
+                {
+                    *insert_idx = sidebar_agent_drop;
+                } else if let Some(DragState {
+                    target: DragTarget::AgentFolderReorder { insert_idx, .. },
+                }) = &mut self.drag
+                {
+                    *insert_idx = folder_drop;
+                } else if let Some(DragState {
+                    target: DragTarget::WorkspaceReorder { insert_idx, .. },
+                }) = &mut self.drag
+                {
+                    *insert_idx = workspace_drop;
+                } else if let Some(offset) = scrollbar_offset {
+                    self.workspace_scroll = offset;
+                } else if resizing_sidebar {
+                    self.set_manual_sidebar_width(mouse.column);
                 }
 
                 if let Some(drag) = &self.drag {
                     match &drag.target {
                         DragTarget::PaneSwap { .. }
                         | DragTarget::AgentDock { .. }
-                        | DragTarget::AgentReorder { .. } => {}
+                        | DragTarget::AgentReorder { .. }
+                        | DragTarget::WorkspaceReorder { .. }
+                        | DragTarget::SidebarAgentReorder { .. }
+                        | DragTarget::AgentFolderReorder { .. }
+                        | DragTarget::WorkspaceListScrollbar { .. }
+                        | DragTarget::SidebarDivider => {}
                         DragTarget::PaneSplit {
                             path,
                             direction,
@@ -817,6 +1044,9 @@ impl AppState {
                     let was_already_copied = selection.is_done();
 
                     self.pane_press = None;
+                    self.workspace_press = None;
+                    self.sidebar_agent_press = None;
+                    self.agent_folder_press = None;
                     self.drag = None;
                     self.selection_autoscroll = None;
                     if was_click {
@@ -841,8 +1071,40 @@ impl AppState {
 
                 let pane_press = self.pane_press.take();
                 let agent_press = self.agent_press.take();
+                let workspace_press = self.workspace_press.take();
+                self.sidebar_agent_press = None;
+                self.agent_folder_press = None;
                 let drag = self.drag.take();
                 match drag {
+                    Some(DragState {
+                        target:
+                            DragTarget::WorkspaceReorder {
+                                source_ws_idx,
+                                insert_idx: Some(insert_idx),
+                            },
+                    }) => {
+                        self.move_workspace(source_ws_idx, insert_idx);
+                    }
+                    Some(DragState {
+                        target:
+                            DragTarget::SidebarAgentReorder {
+                                ws_idx,
+                                source_pane_id,
+                                insert_idx: Some(insert_idx),
+                            },
+                    }) => {
+                        self.move_agent_in_folder(ws_idx, source_pane_id, insert_idx);
+                    }
+                    Some(DragState {
+                        target:
+                            DragTarget::AgentFolderReorder {
+                                ws_idx,
+                                key,
+                                insert_idx: Some(insert_idx),
+                            },
+                    }) => {
+                        self.move_agent_folder(ws_idx, &key, insert_idx);
+                    }
                     Some(DragState {
                         target:
                             DragTarget::AgentReorder {
@@ -866,9 +1128,22 @@ impl AppState {
                         target:
                             DragTarget::PaneSwap {
                                 source_pane_id,
+                                create_space: true,
+                                moved: true,
+                                ..
+                            },
+                    }) => {
+                        self.promote_pane_to_new_workspace(source_pane_id);
+                        self.mode = Mode::Terminal;
+                    }
+                    Some(DragState {
+                        target:
+                            DragTarget::PaneSwap {
+                                source_pane_id,
                                 hovered_pane_id: Some(target_pane_id),
                                 drop_zone,
                                 moved: true,
+                                ..
                             },
                     }) => {
                         self.drop_pane_on_pane(source_pane_id, target_pane_id, drop_zone);
@@ -882,6 +1157,15 @@ impl AppState {
                     }
                     Some(_) => {}
                     None => {
+                        if let Some(press) = workspace_press {
+                            let was_active = self.active == Some(press.ws_idx);
+                            self.switch_workspace(press.ws_idx);
+                            if was_active {
+                                self.toggle_workspace_agents(press.ws_idx);
+                            }
+                            self.mode = Mode::Terminal;
+                            return None;
+                        }
                         if let Some(press) = agent_press.filter(|press| !press.docked) {
                             self.peek_agent(press.pane_id);
                             return None;
@@ -903,17 +1187,39 @@ impl AppState {
                 }
             }
 
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if !in_table && self.scroll_selection_with_wheel(terminal_runtimes, mouse) => {}
+            MouseEventKind::ScrollUp if in_sidebar => {
+                if crate::ui::should_show_scrollbar(crate::ui::workspace_list_scroll_metrics(
+                    self,
+                    self.workspace_list_rect(),
+                )) {
+                    self.scroll_workspace_list(-1);
+                } else {
+                    self.move_selected_workspace_by_sidebar_delta(-1);
+                }
+            }
+            MouseEventKind::ScrollDown if in_sidebar => {
+                if crate::ui::should_show_scrollbar(crate::ui::workspace_list_scroll_metrics(
+                    self,
+                    self.workspace_list_rect(),
+                )) {
+                    self.scroll_workspace_list(1);
+                } else {
+                    self.move_selected_workspace_by_sidebar_delta(1);
+                }
+            }
+            MouseEventKind::ScrollUp if in_table => self.scroll_agent_table(-1),
+            MouseEventKind::ScrollDown if in_table => self.scroll_agent_table(1),
 
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if !in_table => {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if !in_table
+                    && !in_sidebar
+                    && self.scroll_selection_with_wheel(terminal_runtimes, mouse) => {}
+
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if !in_table && !in_sidebar => {
                 self.selection = None;
                 self.selection_autoscroll = None;
                 self.handle_terminal_wheel(terminal_runtimes, mouse);
             }
-
-            MouseEventKind::ScrollUp if in_table => self.scroll_agent_table(-1),
-            MouseEventKind::ScrollDown if in_table => self.scroll_agent_table(1),
 
             MouseEventKind::Moved if self.mode == Mode::ContextMenu => {
                 let hovered = self.context_menu_item_at(mouse.column, mouse.row);
@@ -925,6 +1231,74 @@ impl AppState {
             MouseEventKind::Moved if self.mode == Mode::Terminal && !in_table => {
                 if let Some(info) = self.pane_at(mouse.column, mouse.row).cloned() {
                     let _ = self.forward_pane_mouse_motion(terminal_runtimes, &info, mouse);
+                }
+            }
+
+            MouseEventKind::Down(MouseButton::Right) if in_sidebar && !self.sidebar_collapsed => {
+                self.workspace_press = None;
+                self.agent_press = None;
+                self.sidebar_agent_press = None;
+                self.agent_folder_press = None;
+                if self
+                    .workspace_list_scrollbar_target_at(mouse.column, mouse.row)
+                    .is_some()
+                {
+                    return None;
+                }
+                if let Some(idx) = self.workspace_at_row(mouse.row) {
+                    self.selected = idx;
+                    let kind = self
+                        .workspaces
+                        .get(idx)
+                        .and_then(|ws| {
+                            let group_state = crate::ui::workspace_parent_group_state(self, idx);
+                            let git_space = ws.git_space().cloned().or_else(|| {
+                                ws.resolved_identity_cwd_from(&self.terminals, terminal_runtimes)
+                                    .as_deref()
+                                    .and_then(crate::workspace::git_space_metadata)
+                            });
+                            let is_linked_worktree = ws.worktree_space().map_or_else(
+                                || {
+                                    git_space
+                                        .as_ref()
+                                        .is_some_and(|space| space.is_linked_worktree)
+                                },
+                                |space| space.is_linked_worktree,
+                            );
+                            let show_git_menu = ws.worktree_space().is_some()
+                                || git_space
+                                    .as_ref()
+                                    .is_some_and(|space| !space.is_linked_worktree);
+                            show_git_menu.then_some(ContextMenuKind::GitWorkspace {
+                                ws_idx: idx,
+                                is_linked_worktree,
+                                has_worktree_children: group_state.is_some(),
+                                collapsed: group_state
+                                    .as_ref()
+                                    .is_some_and(|(_, collapsed)| *collapsed),
+                            })
+                        })
+                        .unwrap_or(ContextMenuKind::Workspace { ws_idx: idx });
+                    self.context_menu = Some(ContextMenuState {
+                        kind,
+                        x: mouse.column,
+                        y: mouse.row,
+                        list: MenuListState::new(0),
+                    });
+                    self.mode = Mode::ContextMenu;
+                    return None;
+                }
+
+                if let Some((ws_idx, _tab_idx, pane_id)) = self.agent_detail_target_at(mouse.row) {
+                    self.focus_pane_in_workspace(ws_idx, pane_id);
+                    let kind = self.agent_menu_kind(terminal_runtimes, ws_idx, pane_id);
+                    self.context_menu = Some(ContextMenuState {
+                        kind,
+                        x: mouse.column,
+                        y: mouse.row,
+                        list: MenuListState::new(0),
+                    });
+                    self.mode = Mode::ContextMenu;
                 }
             }
 
@@ -1204,7 +1578,11 @@ impl AppState {
     /// release: the motion after it belongs to the drag it may still become,
     /// never to whatever pane sits under the cursor.
     fn chrome_press_active(&self) -> bool {
-        self.pane_press.is_some() || self.agent_press.is_some()
+        self.pane_press.is_some()
+            || self.agent_press.is_some()
+            || self.workspace_press.is_some()
+            || self.sidebar_agent_press.is_some()
+            || self.agent_folder_press.is_some()
     }
 
     fn lift_peek_for_dock(&mut self, terminal_runtimes: &TerminalRuntimeRegistry) {

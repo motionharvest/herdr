@@ -167,6 +167,63 @@ impl AgentLocation {
             None => self.path.clone(),
         }
     }
+
+    /// The label narrowed to `width` columns and split into the part that reads
+    /// as the folder and the part that reads as the git status, so the two can
+    /// be drawn in different tones from a single decision about what fits.
+    ///
+    /// Context goes before identity: leading folders are dropped first, marked
+    /// by `…/`, so the folder the agent is actually in and its branch both
+    /// survive as long as they can. Only when even the last folder and the
+    /// branch will not sit together does the branch go, and only after that
+    /// does a word get cut.
+    pub(crate) fn fit(&self, width: usize) -> (String, Option<String>) {
+        let elisions = path_elisions(&self.path);
+        for git in [self.git.as_deref(), None] {
+            let git = git.map(|git| format!(" ({git})"));
+            let git_width = git.as_deref().map_or(0, |git| git.chars().count());
+            for path in &elisions {
+                if path.chars().count() + git_width <= width {
+                    return (path.clone(), git);
+                }
+            }
+        }
+        let shortest = elisions.last().unwrap_or(&self.path);
+        (truncate_path_chars(shortest, width), None)
+    }
+}
+
+/// A path written at decreasing lengths: whole, then with one more leading
+/// folder replaced by `…/` each time, down to its last folder alone.
+fn path_elisions(path: &str) -> Vec<String> {
+    let mut elisions = vec![path.to_string()];
+    let mut rest = path;
+    while let Some(slash) = rest.find('/') {
+        rest = &rest[slash + '/'.len_utf8()..];
+        if rest.is_empty() {
+            break;
+        }
+        elisions.push(format!("…/{rest}"));
+    }
+    elisions
+}
+
+fn truncate_path_chars(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    chars
+        .into_iter()
+        .take(max_chars.saturating_sub(1))
+        .chain(std::iter::once('…'))
+        .collect()
 }
 
 /// The last two folders in a path, joined as `parent/current`. A trailing slash
@@ -702,7 +759,7 @@ fn duration_sort_key(duration: Option<std::time::Duration>) -> (u8, std::cmp::Re
 
 /// The pane's cwd, with its git branch and dirty marker when the pane is in a
 /// repository.
-fn agent_location(
+pub(crate) fn agent_location(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     tab_idx: usize,

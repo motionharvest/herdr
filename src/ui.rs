@@ -17,6 +17,7 @@ mod panes;
 mod release_notes;
 mod scrollbar;
 mod settings;
+mod sidebar;
 mod status;
 mod widgets;
 
@@ -54,9 +55,18 @@ pub(crate) use self::release_notes::{
 use self::release_notes::{render_product_announcement_overlay, render_release_notes_overlay};
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
-    scrollbar_offset_from_row, scrollbar_thumb_grab_offset,
+    scrollbar_offset_from_row, scrollbar_thumb_grab_offset, should_show_scrollbar,
 };
 use self::settings::render_settings_overlay;
+pub(crate) use self::sidebar::{
+    agent_folder_position, collapsed_sidebar_sections, collapsed_sidebar_toggle_rect,
+    compute_workspace_card_areas, compute_workspace_list_areas, expanded_sidebar_toggle_rect,
+    new_workspace_button_rect, normalized_workspace_scroll, render_sidebar,
+    spaces_section_collapsed, spaces_section_header_rect, workspace_agent_groups,
+    workspace_agents_expanded, workspace_drop_indicator_row, workspace_list_entries,
+    workspace_list_rect, workspace_list_scroll_metrics, workspace_list_scrollbar_rect,
+    workspace_parent_group_state, AgentFolderGroup, WorkspaceListEntry,
+};
 pub(crate) use self::status::config_diagnostic_dismiss_rect;
 use self::status::{
     render_config_diagnostic, render_copy_feedback, render_toast_notification,
@@ -181,12 +191,9 @@ fn compute_view_internal(
     // never feed back into the list.
     agent_table::sync_agent_order(app);
 
-    // The composer is carved off first and spans the whole frame, so it
-    // survives every layout below it: sidebar, tabs, panes, and the mobile
-    // header all lay out inside what is left.
-    let (composer, area) = split_composer(app, area);
-
     if is_mobile_width(area, app.mobile_width_threshold) {
+        // Mobile has no sidebar, so the composer still spans the frame.
+        let (composer, area) = split_composer(app, area);
         compute_mobile_view(
             app,
             terminal_runtimes,
@@ -199,7 +206,24 @@ fn compute_view_internal(
     }
 
     app.view.agent_locations = compute_agent_locations(app, terminal_runtimes);
-    let (agent_table, terminal_area) = split_agent_table(app, area);
+
+    let sidebar_width = desktop_sidebar_width(app, area.width);
+    let sidebar_rect = if sidebar_width > 0 {
+        Rect::new(area.x, area.y, sidebar_width, area.height)
+    } else {
+        Rect::default()
+    };
+    let main_area = Rect::new(
+        area.x.saturating_add(sidebar_width),
+        area.y,
+        area.width.saturating_sub(sidebar_width),
+        area.height,
+    );
+
+    app.workspace_scroll = normalized_workspace_scroll(app, sidebar_rect, app.workspace_scroll);
+
+    let (composer, main_area) = split_composer(app, main_area);
+    let (agent_table, terminal_area) = split_agent_table(app, main_area);
 
     let split_borders = if app.agent_peek.is_some() {
         Vec::new()
@@ -232,10 +256,19 @@ fn compute_view_internal(
         .map(|toast| toast_notification_rect(terminal_area, toast, app.config_diagnostic.is_some()))
         .unwrap_or_default();
 
+    let (workspace_card_areas, agent_row_areas, agent_folder_areas) = if app.sidebar_collapsed {
+        (Vec::new(), Vec::new(), Vec::new())
+    } else {
+        compute_workspace_list_areas(app, sidebar_rect)
+    };
     let agent_locations = std::mem::take(&mut app.view.agent_locations);
     app.view = crate::app::ViewState {
         layout: ViewLayout::Desktop,
         composer,
+        sidebar_rect,
+        workspace_card_areas,
+        agent_row_areas,
+        agent_folder_areas,
         agent_table,
         agent_locations,
         terminal_area,
@@ -249,6 +282,29 @@ fn compute_view_internal(
     };
     app.view.pane_chrome_controls = self::panes::compute_pane_chrome_controls(app);
     app.view.pane_title_hit_areas = self::panes::compute_pane_title_hit_areas(app);
+}
+
+fn desktop_sidebar_width(app: &AppState, total_width: u16) -> u16 {
+    if total_width == 0 {
+        return 0;
+    }
+
+    const MIN_MAIN_WIDTH: u16 = 20;
+
+    let max_width = if total_width > MIN_MAIN_WIDTH {
+        total_width - MIN_MAIN_WIDTH
+    } else if total_width > 1 {
+        1
+    } else {
+        total_width
+    };
+    let desired_width = if app.sidebar_collapsed {
+        1
+    } else {
+        app.sidebar_width
+            .clamp(app.sidebar_min_width, app.sidebar_max_width)
+    };
+    desired_width.min(max_width)
 }
 
 fn compute_mobile_view(
@@ -309,6 +365,10 @@ fn compute_mobile_view(
     app.view = crate::app::ViewState {
         layout: ViewLayout::Mobile,
         composer,
+        sidebar_rect: Rect::default(),
+        workspace_card_areas: Vec::new(),
+        agent_row_areas: Vec::new(),
+        agent_folder_areas: Vec::new(),
         agent_table: crate::ui::AgentTableLayout::default(),
         agent_locations: std::collections::HashMap::new(),
         terminal_area,
@@ -344,6 +404,7 @@ pub fn render_with_runtime_registry(
         render_mobile_header(app, terminal_runtimes, frame, app.view.mobile_header_rect);
     }
     if app.view.layout != ViewLayout::Mobile {
+        render_sidebar(app, terminal_runtimes, frame, app.view.sidebar_rect);
         let entries = agent_panel_entries_from(app, terminal_runtimes);
         render_agent_table(app, frame, &app.view.agent_table, &entries);
         render_global_launcher(app, frame);

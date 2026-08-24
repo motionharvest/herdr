@@ -514,6 +514,7 @@ pub(crate) enum NavigateAction {
     Detach,
     OpenNavigator,
     OpenComposer,
+    ToggleSidebar,
 }
 
 fn indexed_navigation_action(
@@ -607,6 +608,7 @@ fn action_for_key(
         (&kb.detach, NavigateAction::Detach),
         (&kb.goto, NavigateAction::OpenNavigator),
         (&kb.composer, NavigateAction::OpenComposer),
+        (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
     ] {
         if action_matches(bindings, key, dispatch) {
             return Some(action);
@@ -816,6 +818,11 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::OpenNavigator => state.open_navigator_from(terminal_runtimes),
         NavigateAction::OpenComposer => super::enter_composer_mode(state, terminal_runtimes),
+        NavigateAction::ToggleSidebar => {
+            state.sidebar_collapsed = !state.sidebar_collapsed;
+            state.mark_session_dirty();
+            leave_navigate_mode(state);
+        }
     }
 
     finish_action_context(state, context, previous_mode);

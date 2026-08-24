@@ -1142,7 +1142,7 @@ mod tests {
             !text.contains("This worktree has changes that are not landed"),
             "{text}"
         );
-        let popup = super::remove_worktree_popup_rect(app.view.terminal_area).expect("popup");
+        let popup = super::remove_worktree_popup_rect(Rect::new(0, 0, 106, 24)).expect("popup");
         assert_eq!(buffer[(popup.x, popup.y)].fg, app.palette.accent);
     }
 
@@ -1155,7 +1155,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("delete anyway"), "{text}");
-        let popup = super::remove_worktree_popup_rect(app.view.terminal_area).expect("popup");
+        let popup = super::remove_worktree_popup_rect(Rect::new(0, 0, 106, 24)).expect("popup");
         assert_eq!(buffer[(popup.x, popup.y)].fg, app.palette.red);
     }
 
@@ -1168,7 +1168,7 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("Land work first if you need it."), "{text}");
-        let popup = super::remove_worktree_popup_rect(app.view.terminal_area).expect("popup");
+        let popup = super::remove_worktree_popup_rect(Rect::new(0, 0, 106, 24)).expect("popup");
         assert_eq!(buffer[(popup.x, popup.y)].fg, app.palette.red);
     }
 

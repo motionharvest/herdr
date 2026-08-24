@@ -284,11 +284,23 @@ impl App {
         let mut restored_detached_agents = Vec::new();
         let mut restored_agent_order = Vec::new();
         let mut restored_composer_agent = None;
+        let mut restored_sidebar_width = None;
+        let mut restored_sidebar_section_split = None;
+        let mut restored_collapsed_space_keys = std::collections::HashSet::new();
+        let mut restored_collapsed_agent_space_ids = std::collections::HashSet::new();
+        let mut restored_sidebar_collapsed = false;
+        let mut restored_spaces_collapsed = false;
         let (workspaces, active, selected) = if no_session {
             (Vec::new(), None, 0)
         } else if let Some(snap) = crate::persist::load() {
             restored_agent_order = snap.agent_order.clone();
             restored_composer_agent = snap.composer_agent.clone();
+            restored_sidebar_width = snap.sidebar_width;
+            restored_sidebar_section_split = snap.sidebar_section_split;
+            restored_collapsed_space_keys = snap.collapsed_space_keys.clone();
+            restored_collapsed_agent_space_ids = snap.collapsed_agent_space_ids.clone();
+            restored_sidebar_collapsed = snap.sidebar_collapsed;
+            restored_spaces_collapsed = snap.spaces_collapsed;
             let history = config
                 .experimental
                 .pane_history
@@ -355,6 +367,12 @@ impl App {
             composer.restore_agent(&agent);
         }
 
+        let (sidebar_min_width, sidebar_max_width) = crate::config::validated_sidebar_bounds(
+            config.ui.sidebar_min_width,
+            config.ui.sidebar_max_width,
+        )
+        .unwrap_or((18, 36));
+
         let mut state = AppState {
             terminals: std::collections::HashMap::new(),
             detached_agents: restored_detached_agents,
@@ -416,11 +434,32 @@ impl App {
             navigator: state::NavigatorState::default(),
             copy_mode: None,
             agent_order: restored_agent_order,
+            collapsed_space_keys: restored_collapsed_space_keys,
+            collapsed_agent_space_ids: restored_collapsed_agent_space_ids,
+            workspace_scroll: 0,
+            default_sidebar_width: config.ui.sidebar_width,
+            sidebar_width: restored_sidebar_width.unwrap_or(config.ui.sidebar_width),
+            sidebar_min_width,
+            sidebar_max_width,
+            sidebar_width_source: if restored_sidebar_width.is_some() {
+                state::SidebarWidthSource::Persisted
+            } else {
+                state::SidebarWidthSource::ConfigDefault
+            },
+            sidebar_width_auto: false,
+            sidebar_collapsed: restored_sidebar_collapsed,
+            spaces_collapsed: restored_spaces_collapsed,
+            sidebar_section_split: restored_sidebar_section_split.unwrap_or(0.5),
+            agent_panel_scope: state::AgentPanelScope::AllWorkspaces,
             agent_table_scroll: 0,
             mobile_switcher_scroll: 0,
             view: state::ViewState {
                 layout: state::ViewLayout::Desktop,
                 composer: crate::ui::ComposerLayout::default(),
+                sidebar_rect: ratatui::layout::Rect::default(),
+                workspace_card_areas: Vec::new(),
+                agent_row_areas: Vec::new(),
+                agent_folder_areas: Vec::new(),
                 agent_table: crate::ui::AgentTableLayout::default(),
                 agent_locations: std::collections::HashMap::new(),
                 terminal_area: Rect::default(),
@@ -433,8 +472,11 @@ impl App {
                 split_borders: Vec::new(),
             },
             drag: None,
+            workspace_press: None,
             pane_press: None,
             agent_press: None,
+            sidebar_agent_press: None,
+            agent_folder_press: None,
             agent_table_focus: None,
             agent_peek: None,
             confirm_close_agent: None,
@@ -616,6 +658,17 @@ impl App {
         if let Some(agent) = snapshot.composer_agent.as_deref() {
             app.state.composer.restore_agent(agent);
         }
+        if let Some(width) = snapshot.sidebar_width {
+            app.state.sidebar_width = width;
+            app.state.sidebar_width_source = state::SidebarWidthSource::Persisted;
+        }
+        if let Some(split) = snapshot.sidebar_section_split {
+            app.state.sidebar_section_split = split;
+        }
+        app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
+        app.state.collapsed_agent_space_ids = snapshot.collapsed_agent_space_ids.clone();
+        app.state.sidebar_collapsed = snapshot.sidebar_collapsed;
+        app.state.spaces_collapsed = snapshot.spaces_collapsed;
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
         } else {
@@ -1131,6 +1184,21 @@ impl App {
             diagnostics.extend(config.ui.sound.diagnostics());
 
             self.state.mobile_width_threshold = config.ui.mobile_width_threshold;
+            if let Some((min_width, max_width)) = crate::config::validated_sidebar_bounds(
+                config.ui.sidebar_min_width,
+                config.ui.sidebar_max_width,
+            ) {
+                self.state.default_sidebar_width = config.ui.sidebar_width;
+                if self.state.sidebar_width_source == state::SidebarWidthSource::ConfigDefault {
+                    self.state.sidebar_width = config.ui.sidebar_width;
+                }
+                self.state.sidebar_min_width = min_width;
+                self.state.sidebar_max_width = max_width;
+                self.state.sidebar_width = self
+                    .state
+                    .sidebar_width
+                    .clamp(self.state.sidebar_min_width, self.state.sidebar_max_width);
+            }
             self.state.mouse_capture = config.ui.mouse_capture;
             if self.state.redraw_on_focus_gained != config.ui.redraw_on_focus_gained {
                 self.state.request_client_config_reload = true;

@@ -204,6 +204,19 @@ pub struct LoadedConfig {
     pub invalid_sections: Vec<String>,
 }
 
+/// Validate `[ui]` sidebar bound configuration.
+///
+/// Returns `Some((min, max))` when `min <= max`, `None` otherwise. The two
+/// values are funneled through this helper before they reach any
+/// `u16::clamp(min, max)` call site (`u16::clamp` panics when `min > max`).
+pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<(u16, u16)> {
+    if min <= max {
+        Some((min, max))
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct KeysConfig {
@@ -231,6 +244,8 @@ pub struct KeysConfig {
     pub goto: BindingConfig,
     /// Focus the composer above the tabs. Default: "prefix+/"
     pub composer: BindingConfig,
+    /// Toggle sidebar collapse. Default: "prefix+b"
+    pub toggle_sidebar: BindingConfig,
     /// Move workspace selection up in navigate mode. Default: "up".
     pub navigate_workspace_up: BindingConfig,
     /// Move workspace selection down in navigate mode. Default: "down".
@@ -332,6 +347,12 @@ pub struct WorktreesConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
+    /// Sidebar width (columns) when expanded. Default: 26.
+    pub sidebar_width: u16,
+    /// Minimum sidebar width (columns) when expanded. Default: 18.
+    pub sidebar_min_width: u16,
+    /// Maximum sidebar width (columns) when expanded. Default: 36.
+    pub sidebar_max_width: u16,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -469,6 +490,7 @@ impl Default for KeysConfig {
             workspace_picker: BindingConfig::one("prefix+w"),
             goto: BindingConfig::one("prefix+g"),
             composer: BindingConfig::one("prefix+/"),
+            toggle_sidebar: BindingConfig::one("prefix+b"),
             navigate_workspace_up: BindingConfig::one("up"),
             navigate_workspace_down: BindingConfig::one("down"),
             navigate_pane_left: BindingConfig::one("h"),
@@ -522,6 +544,9 @@ impl Default for WorktreesConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
+            sidebar_width: 26,
+            sidebar_min_width: 18,
+            sidebar_max_width: 36,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),

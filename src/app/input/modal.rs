@@ -611,6 +611,57 @@ pub(super) fn apply_context_menu_action(
     let items = menu.items();
     let item = items.get(idx).map(String::as_str);
     match (menu.kind, item) {
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
+            state.request_new_linked_worktree = Some(ws_idx);
+            leave_modal(state);
+        }
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete worktree checkout...")) => {
+            state.request_remove_linked_worktree = Some(ws_idx);
+            leave_modal(state);
+        }
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open worktree...")) => {
+            state.request_open_existing_worktree = Some(ws_idx);
+            leave_modal(state);
+        }
+        (
+            ContextMenuKind::GitWorkspace {
+                ws_idx, collapsed, ..
+            },
+            Some("Collapse" | "Expand"),
+        ) => {
+            if let Some(key) = state
+                .workspaces
+                .get(ws_idx)
+                .and_then(|ws| ws.worktree_space())
+                .map(|space| space.key.clone())
+            {
+                if collapsed {
+                    state.collapsed_space_keys.remove(&key);
+                } else {
+                    state.collapsed_space_keys.insert(key);
+                }
+                state.mark_session_dirty();
+            }
+            leave_modal(state);
+        }
+        (
+            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            Some("Rename"),
+        ) => {
+            open_rename_workspace(state, terminal_runtimes, ws_idx);
+        }
+        (
+            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            Some("Close" | "Close group"),
+        ) => {
+            state.selected = ws_idx;
+            if state.confirm_close {
+                open_confirm_close(state);
+            } else {
+                state.close_selected_workspace();
+                state.mode = Mode::Navigate;
+            }
+        }
         (ContextMenuKind::Agent { ws_idx, .. }, Some("New worktree")) => {
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);
