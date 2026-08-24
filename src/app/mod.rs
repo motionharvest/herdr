@@ -503,6 +503,7 @@ impl App {
             confirm_close: config.ui.confirm_close,
             nerd_font: config.ui.nerd_font,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
+            pane_header: config.ui.pane_header,
             pane_history_persistence: config.experimental.pane_history,
             reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
             cjk_ime_agent_filter_configured: !config.experimental.cjk_ime_agents.is_empty(),
@@ -1212,6 +1213,7 @@ impl App {
             self.state.nerd_font = config.ui.nerd_font;
             self.state.show_agent_labels_on_pane_borders =
                 config.ui.show_agent_labels_on_pane_borders;
+            self.state.pane_header = config.ui.pane_header;
             self.state.accent = crate::config::parse_color(&config.ui.accent);
             if !self.state.local_sound_playback && self.state.sound != config.ui.sound {
                 self.state.request_client_config_reload = true;
@@ -2161,6 +2163,29 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("[experimental]"));
         assert!(content.contains("pane_history = true"));
+        assert!(app.state.config_diagnostic.is_none());
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn settings_save_pane_header_field_persists_then_applies_live_config() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("settings-save-pane-header");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "onboarding = false\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        assert!(!app.state.pane_header.git_branch);
+
+        app.save_pane_header_field(crate::config::PaneHeaderField::GitBranch, true);
+
+        assert!(app.state.pane_header.git_branch);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[ui.pane_header]"));
+        assert!(content.contains("git_branch = true"));
         assert!(app.state.config_diagnostic.is_none());
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);

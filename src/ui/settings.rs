@@ -11,11 +11,8 @@ use super::widgets::{
     render_action_button, render_modal_choice_list, render_panel_shell, ActionButtonSpec,
 };
 use crate::{
-    app::{
-        state::{ExperimentSetting, Palette},
-        AppState,
-    },
-    config::ToastDelivery,
+    app::{state::ExperimentSetting, AppState},
+    config::{PaneHeaderField, ToastDelivery},
 };
 
 pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -116,15 +113,7 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
             );
         }
         SettingsSection::PaneLabels => {
-            render_settings_toggle(
-                frame,
-                content_area,
-                p,
-                "agent border labels",
-                "show detected agent names in split pane borders",
-                app.agent_border_labels_enabled(),
-                app.settings.list.selected,
-            );
+            render_settings_pane_header(app, frame, content_area);
         }
         SettingsSection::Experiments => {
             render_settings_experiments(app, frame, content_area);
@@ -352,26 +341,42 @@ fn render_settings_theme(app: &AppState, frame: &mut Frame, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_settings_toggle(
-    frame: &mut Frame,
-    area: Rect,
-    p: &Palette,
-    title: &str,
-    description: &str,
-    current_value: bool,
-    selected_idx: usize,
-) {
-    render_modal_choice_list(
+fn render_settings_pane_header(app: &AppState, frame: &mut Frame, area: Rect) {
+    let p = &app.palette;
+    let [desc_area, _, list_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas::<3>(area);
+
+    super::widgets::render_modal_description(
         frame,
-        area,
-        title,
-        description,
-        &[("on", true), ("off", false)],
-        current_value,
-        selected_idx,
-        p,
-        1,
+        desc_area,
+        "what each pane writes on its top edge",
+        Style::default().fg(p.overlay1),
     );
+
+    for (idx, field) in PaneHeaderField::ALL.iter().copied().enumerate() {
+        let marker = if field.enabled(app.pane_header()) {
+            "[✓]"
+        } else {
+            "[ ]"
+        };
+        let style = if app.settings.list.selected == idx {
+            Style::default()
+                .bg(p.surface0)
+                .fg(p.text)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.subtext0)
+        };
+        let row = Rect::new(list_area.x, list_area.y + idx as u16, list_area.width, 1);
+        frame.render_widget(
+            Paragraph::new(format!(" {} {marker}", field.label())).style(style),
+            row,
+        );
+    }
 }
 
 /// Row offsets inside the Sound section's content area. `app::input::settings`
@@ -654,5 +659,22 @@ mod tests {
             .collect::<String>();
 
         assert!(rendered.contains("switch to ascii input source in prefix (macOS) [✓]"));
+    }
+
+    #[test]
+    fn pane_header_lists_each_field_with_a_checkbox() {
+        let mut app = AppState::test_new();
+        app.pane_header.working_directory = true;
+        app.settings.section = SettingsSection::PaneLabels;
+        app.mode = Mode::Settings;
+
+        let rendered = rendered_settings(&app);
+
+        assert!(rendered.contains("agent name [✓]"));
+        assert!(rendered.contains("working directory [✓]"));
+        assert!(rendered.contains("parent directory [ ]"));
+        assert!(rendered.contains("git branch [ ]"));
+        assert!(rendered.contains("git status [ ]"));
+        assert!(rendered.contains("what each pane writes on its top edge"));
     }
 }

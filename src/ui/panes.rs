@@ -376,11 +376,86 @@ fn pane_chrome_title_for_pane(
     pane_id: crate::layout::PaneId,
 ) -> PaneChromeTitle {
     let terminal = app.terminal_state_for_pane(pane_id);
+    let header = app.pane_header();
     let assigned_name = terminal.and_then(|terminal| {
         crate::pane_names::assigned_names(&app.terminals).remove(&terminal.id)
     });
+    let name = header.agent_name.then(|| {
+        pane_name_label(terminal, assigned_name, ws.public_pane_number(pane_id))
+            .unwrap_or_else(|| "Workspace".to_string())
+    });
+    let git_status = ws.git_status_for_pane(pane_id);
+    let path = pane_header_path(app, pane_id, terminal, &git_status);
+    let folder = path.as_deref().and_then(|path| {
+        header_folder_label(path, header.working_directory, header.parent_directory)
+    });
+    let in_repo = git_status.space.is_some()
+        || git_status
+            .branch
+            .as_deref()
+            .is_some_and(|branch| !branch.is_empty());
+    let branch = header
+        .git_branch
+        .then(|| git_branch_label(&git_status))
+        .flatten();
+    let status = (header.git_status && in_repo)
+        .then(|| worktree_state_marker(git_status.worktree_state).to_string());
     PaneChromeTitle {
-        folder_name: pane_name_label(terminal, assigned_name, ws.public_pane_number(pane_id)),
+        name,
+        folder,
+        git: git_suffix(branch.as_deref(), status.as_deref()),
+    }
+}
+
+fn pane_header_path(
+    app: &AppState,
+    pane_id: crate::layout::PaneId,
+    terminal: Option<&crate::terminal::TerminalState>,
+    git_status: &crate::workspace::WorkspaceGitStatusSnapshot,
+) -> Option<String> {
+    if let Some(location) = app.view.agent_locations.get(&pane_id) {
+        return Some(location.path.clone());
+    }
+    let cwd = terminal.map(|terminal| terminal.cwd.as_path())?;
+    if cwd.as_os_str().is_empty() {
+        return None;
+    }
+    Some(display_location_path(cwd, git_status))
+}
+
+/// The folder text a pane header writes from a display path.
+///
+/// Working directory is the last folder. Parent directory is the folder above
+/// it. Both together are `parent/current`, the same pair the agent table uses.
+fn header_folder_label(path: &str, show_working: bool, show_parent: bool) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut parts = trimmed.rsplit('/');
+    let current = parts.next().filter(|part| !part.is_empty())?;
+    let parent = parts.next();
+    match (show_parent, show_working) {
+        (false, false) => None,
+        (false, true) => Some(current.to_string()),
+        (true, false) => match parent {
+            Some("") | None => None,
+            Some(parent) => Some(parent.to_string()),
+        },
+        (true, true) => Some(match parent {
+            Some("") => format!("/{current}"),
+            Some(parent) => format!("{parent}/{current}"),
+            None => current.to_string(),
+        }),
+    }
+}
+
+fn git_suffix(branch: Option<&str>, status: Option<&str>) -> Option<String> {
+    match (branch, status) {
+        (None, None) => None,
+        (Some(branch), Some(status)) => Some(format!("({branch} {status})")),
+        (Some(branch), None) => Some(format!("({branch})")),
+        (None, Some(status)) => Some(format!("({status})")),
     }
 }
 
@@ -500,15 +575,62 @@ fn truncate_to_width(text: &str, width: usize) -> String {
 }
 
 struct PaneChromeTitle {
-    folder_name: Option<String>,
+    name: Option<String>,
+    folder: Option<String>,
+    git: Option<String>,
 }
 
 impl PaneChromeTitle {
-    fn formatted_title(&self) -> String {
-        self.folder_name
-            .clone()
-            .unwrap_or_else(|| "Workspace".to_string())
+    #[cfg(test)]
+    fn name_only(name: impl Into<String>) -> Self {
+        Self {
+            name: Some(name.into()),
+            folder: None,
+            git: None,
+        }
     }
+
+    fn formatted_title(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(name) = &self.name {
+            parts.push(name.as_str());
+        }
+        if let Some(folder) = &self.folder {
+            parts.push(folder.as_str());
+        }
+        if let Some(git) = &self.git {
+            parts.push(git.as_str());
+        }
+        parts.join(" ")
+    }
+}
+
+fn pane_title_spans(
+    title: &PaneChromeTitle,
+    truncated: &str,
+    name_style: Style,
+    rest_style: Style,
+) -> Vec<Span<'static>> {
+    if truncated.is_empty() {
+        return Vec::new();
+    }
+    if let Some(name) = &title.name {
+        if let Some(rest) = truncated.strip_prefix(name) {
+            let mut spans = vec![Span::styled(name.clone(), name_style)];
+            if !rest.is_empty() {
+                spans.push(Span::styled(rest.to_string(), rest_style));
+            }
+            return spans;
+        }
+    }
+    vec![Span::styled(
+        truncated.to_string(),
+        if title.name.is_some() {
+            name_style
+        } else {
+            rest_style
+        },
+    )]
 }
 
 fn render_code_ui_pane_chrome(
@@ -588,16 +710,24 @@ fn render_code_ui_pane_chrome(
         .saturating_sub(controls_width)
         .saturating_sub(3) as usize;
     let title_text = truncate_to_width(&title.formatted_title(), text_available);
+    let rest_style = if chrome_active {
+        Style::default().fg(app.palette.overlay1).bg(Color::Reset)
+    } else {
+        unfocused_style
+    };
     let rule_text = if layout.rule_width > 0 {
         rule_glyph.to_string().repeat(layout.rule_width as usize)
     } else {
         String::new()
     };
 
-    let mut spans = vec![
-        Span::styled("╭─ ".to_string(), edge_style),
-        Span::styled(title_text, pane_name_style),
-    ];
+    let mut spans = vec![Span::styled("╭─ ".to_string(), edge_style)];
+    spans.extend(pane_title_spans(
+        &title,
+        &title_text,
+        pane_name_style,
+        rest_style,
+    ));
     spans.push(Span::styled(" ".to_string(), edge_style));
     if !rule_text.is_empty() {
         spans.push(Span::styled(rule_text, edge_style));
@@ -943,17 +1073,7 @@ pub(super) fn render_panes(
             // it. A swap takes the whole pane, and there is nothing left to see.
             let covers_pane = preview_zone == Some(crate::layout::DropZone::Over);
             if framed {
-                let terminal = app.terminal_state_for_pane(info.id);
-                let assigned_name = terminal.and_then(|terminal| {
-                    crate::pane_names::assigned_names(&app.terminals).remove(&terminal.id)
-                });
-                let title = PaneChromeTitle {
-                    folder_name: pane_name_label(
-                        terminal,
-                        assigned_name,
-                        ws.public_pane_number(info.id),
-                    ),
-                };
+                let title = pane_chrome_title_for_pane(app, ws, info.id);
                 render_code_ui_pane_chrome(
                     app,
                     frame,
@@ -1523,6 +1643,121 @@ mod tests {
     }
 
     #[test]
+    fn header_folder_label_selects_parent_and_working_segments() {
+        assert_eq!(
+            header_folder_label("~/lab/herdr", true, false).as_deref(),
+            Some("herdr")
+        );
+        assert_eq!(
+            header_folder_label("~/lab/herdr", false, true).as_deref(),
+            Some("lab")
+        );
+        assert_eq!(
+            header_folder_label("~/lab/herdr", true, true).as_deref(),
+            Some("lab/herdr")
+        );
+        assert_eq!(header_folder_label("~/lab/herdr", false, false), None);
+        assert_eq!(
+            header_folder_label("herdr", true, false).as_deref(),
+            Some("herdr")
+        );
+        assert_eq!(header_folder_label("herdr", false, true), None);
+        assert_eq!(
+            header_folder_label("/herdr", true, true).as_deref(),
+            Some("/herdr")
+        );
+    }
+
+    #[test]
+    fn pane_chrome_title_joins_enabled_fields() {
+        let title = PaneChromeTitle {
+            name: Some("Olivia".into()),
+            folder: Some("lab/herdr".into()),
+            git: git_suffix(Some("main"), Some("✓")),
+        };
+        assert_eq!(title.formatted_title(), "Olivia lab/herdr (main ✓)");
+        assert_eq!(
+            PaneChromeTitle {
+                name: None,
+                folder: Some("herdr".into()),
+                git: git_suffix(Some("main"), None),
+            }
+            .formatted_title(),
+            "herdr (main)"
+        );
+        assert_eq!(
+            PaneChromeTitle::name_only("Olivia").formatted_title(),
+            "Olivia"
+        );
+        assert!(PaneChromeTitle {
+            name: None,
+            folder: None,
+            git: None,
+        }
+        .formatted_title()
+        .is_empty());
+    }
+
+    #[test]
+    fn pane_chrome_title_for_pane_follows_header_toggles() {
+        let mut app = AppState::test_new();
+        let workspace = Workspace::test_new("test");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.tabs[0]
+            .terminal_id(pane_id)
+            .expect("test workspace has a root terminal")
+            .clone();
+        let mut terminal = crate::terminal::TerminalState::new(
+            terminal_id.clone(),
+            std::path::PathBuf::from("/home/aaron/lab/herdr"),
+        );
+        terminal.set_manual_label("Olivia".into());
+        app.terminals.insert(terminal_id, terminal);
+        app.workspaces = vec![workspace];
+        app.workspaces[0].pane_git_statuses.insert(
+            pane_id,
+            WorkspaceGitStatusSnapshot {
+                branch: Some("main".into()),
+                ahead_behind: None,
+                space: None,
+                worktree_state: crate::workspace::GitWorktreeState::Unstaged,
+                landed: false,
+            },
+        );
+
+        assert_eq!(
+            pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
+            "Olivia"
+        );
+
+        app.pane_header.working_directory = true;
+        app.pane_header.parent_directory = true;
+        let folder = header_folder_label(
+            &display_path_with_home(std::path::Path::new("/home/aaron/lab/herdr")),
+            true,
+            true,
+        )
+        .expect("parent/current folder");
+        assert_eq!(
+            pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
+            format!("Olivia {folder}")
+        );
+
+        app.pane_header.git_branch = true;
+        app.pane_header.git_status = true;
+        assert_eq!(
+            pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
+            format!("Olivia {folder} (main !)")
+        );
+
+        app.pane_header.agent_name = false;
+        assert_eq!(
+            pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
+            format!("{folder} (main !)")
+        );
+    }
+
+    #[test]
     fn an_agent_pane_says_hide_instead_of_close() {
         let (full, _) = pane_controls_text(40, false, true);
         assert!(full.contains("HIDE"), "{full:?}");
@@ -1573,9 +1808,7 @@ mod tests {
     #[test]
     fn pane_title_hit_area_excludes_rule_glyphs() {
         let area = Rect::new(0, 0, 80, 10);
-        let title = PaneChromeTitle {
-            folder_name: Some("Agent Work".to_string()),
-        };
+        let title = PaneChromeTitle::name_only("Agent Work");
         let layout = pane_title_chrome_layout(area.width, &title, false, false);
         let hit = pane_title_hit_area(area, &title, false, false).expect("title hit area");
 
@@ -1602,9 +1835,7 @@ mod tests {
                     &app,
                     frame,
                     area,
-                    PaneChromeTitle {
-                        folder_name: Some("panel".to_string()),
-                    },
+                    PaneChromeTitle::name_only("panel"),
                     PaneId::from_raw(1),
                     true,
                     false,
@@ -1646,9 +1877,7 @@ mod tests {
                     &app,
                     frame,
                     area,
-                    PaneChromeTitle {
-                        folder_name: Some("panel".to_string()),
-                    },
+                    PaneChromeTitle::name_only("panel"),
                     PaneId::from_raw(1),
                     true,
                     false,
@@ -1782,9 +2011,7 @@ mod tests {
                         app,
                         frame,
                         area,
-                        PaneChromeTitle {
-                            folder_name: Some("panel".to_string()),
-                        },
+                        PaneChromeTitle::name_only("panel"),
                         PaneId::from_raw(1),
                         true,
                         false,
@@ -1820,9 +2047,7 @@ mod tests {
                     &app,
                     frame,
                     Rect::new(0, 0, 20, 5),
-                    PaneChromeTitle {
-                        folder_name: Some("panel".to_string()),
-                    },
+                    PaneChromeTitle::name_only("panel"),
                     PaneId::from_raw(1),
                     true,
                     false,
@@ -1956,9 +2181,7 @@ mod tests {
                     &app,
                     frame,
                     right,
-                    PaneChromeTitle {
-                        folder_name: Some("panel".to_string()),
-                    },
+                    PaneChromeTitle::name_only("panel"),
                     PaneId::from_raw(2),
                     false,
                     false,
@@ -2011,9 +2234,7 @@ mod tests {
                     &app,
                     frame,
                     right,
-                    PaneChromeTitle {
-                        folder_name: Some("panel".to_string()),
-                    },
+                    PaneChromeTitle::name_only("panel"),
                     PaneId::from_raw(2),
                     true,
                     false,
@@ -2163,9 +2384,7 @@ mod tests {
                     &app,
                     frame,
                     area,
-                    PaneChromeTitle {
-                        folder_name: Some("Review notes".to_string()),
-                    },
+                    PaneChromeTitle::name_only("Review notes"),
                     PaneId::from_raw(1),
                     true,
                     false,
@@ -2198,9 +2417,7 @@ mod tests {
                     &app,
                     frame,
                     area,
-                    PaneChromeTitle {
-                        folder_name: Some("Review notes".to_string()),
-                    },
+                    PaneChromeTitle::name_only("Review notes"),
                     PaneId::from_raw(1),
                     false, // unfocused
                     false, // not highlighted

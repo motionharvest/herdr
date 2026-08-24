@@ -244,6 +244,15 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Show detected/reported agent labels in split pane borders when no manual pane name is set.
 # show_agent_labels_on_pane_borders = false
 
+# Fields on each pane's top edge. Name is on; the rest are off, matching the
+# current name-only titles. Turn them on from Settings → pane labels, or here.
+# [ui.pane_header]
+# agent_name = true
+# working_directory = false
+# parent_directory = false
+# git_branch = false
+# git_status = false
+
 # Agent panel scope: "current" or "all". Toggling it in the sidebar saves this setting.
 # agent_panel_scope = "all"
 

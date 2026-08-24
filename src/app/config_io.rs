@@ -95,12 +95,16 @@ impl App {
         }
     }
 
-    pub(super) fn save_agent_border_labels(&mut self, enabled: bool) {
-        if self.update_config_file("agent border labels", |content| {
+    pub(super) fn save_pane_header_field(
+        &mut self,
+        field: crate::config::PaneHeaderField,
+        enabled: bool,
+    ) {
+        if self.update_config_file("pane header", |content| {
             crate::config::upsert_section_bool(
                 content,
-                "ui",
-                "show_agent_labels_on_pane_borders",
+                "ui.pane_header",
+                field.config_key(),
                 enabled,
             )
         }) {

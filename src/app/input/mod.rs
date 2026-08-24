@@ -340,8 +340,8 @@ impl App {
                     SettingsAction::SaveToastDelivery(delivery) => {
                         self.save_toast_delivery(delivery)
                     }
-                    SettingsAction::SaveAgentBorderLabels(enabled) => {
-                        self.save_agent_border_labels(enabled)
+                    SettingsAction::SavePaneHeaderField(field, enabled) => {
+                        self.save_pane_header_field(field, enabled)
                     }
                     SettingsAction::SavePaneHistory(enabled) => {
                         self.save_pane_history_persistence(enabled)

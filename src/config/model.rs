@@ -371,6 +371,8 @@ pub struct UiConfig {
     pub nerd_font: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
+    /// Which fields a pane's top edge writes besides the chrome itself.
+    pub pane_header: PaneHeaderConfig,
     /// Accent color for highlights, borders, and navigation UI.
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
     pub accent: String,
@@ -556,10 +558,84 @@ impl Default for UiConfig {
             confirm_close: true,
             nerd_font: false,
             show_agent_labels_on_pane_borders: true,
+            pane_header: PaneHeaderConfig::default(),
             accent: "cyan".into(),
             notify_active_tab: false,
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
+        }
+    }
+}
+
+/// Fields drawn on a pane's top edge. Name is on by default; the rest match
+/// the current name-only titles until someone turns them on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct PaneHeaderConfig {
+    pub agent_name: bool,
+    pub working_directory: bool,
+    pub parent_directory: bool,
+    pub git_branch: bool,
+    pub git_status: bool,
+}
+
+impl Default for PaneHeaderConfig {
+    fn default() -> Self {
+        Self {
+            agent_name: true,
+            working_directory: false,
+            parent_directory: false,
+            git_branch: false,
+            git_status: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneHeaderField {
+    AgentName,
+    WorkingDirectory,
+    ParentDirectory,
+    GitBranch,
+    GitStatus,
+}
+
+impl PaneHeaderField {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::AgentName,
+        Self::WorkingDirectory,
+        Self::ParentDirectory,
+        Self::GitBranch,
+        Self::GitStatus,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::AgentName => "agent name",
+            Self::WorkingDirectory => "working directory",
+            Self::ParentDirectory => "parent directory",
+            Self::GitBranch => "git branch",
+            Self::GitStatus => "git status",
+        }
+    }
+
+    pub(crate) fn config_key(self) -> &'static str {
+        match self {
+            Self::AgentName => "agent_name",
+            Self::WorkingDirectory => "working_directory",
+            Self::ParentDirectory => "parent_directory",
+            Self::GitBranch => "git_branch",
+            Self::GitStatus => "git_status",
+        }
+    }
+
+    pub(crate) fn enabled(self, header: PaneHeaderConfig) -> bool {
+        match self {
+            Self::AgentName => header.agent_name,
+            Self::WorkingDirectory => header.working_directory,
+            Self::ParentDirectory => header.parent_directory,
+            Self::GitBranch => header.git_branch,
+            Self::GitStatus => header.git_status,
         }
     }
 }
@@ -701,6 +777,31 @@ show_agent_labels_on_pane_borders = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.show_agent_labels_on_pane_borders);
+    }
+
+    #[test]
+    fn pane_header_defaults_to_name_only_and_parses() {
+        let default_config = Config::default();
+        assert!(default_config.ui.pane_header.agent_name);
+        assert!(!default_config.ui.pane_header.working_directory);
+        assert!(!default_config.ui.pane_header.parent_directory);
+        assert!(!default_config.ui.pane_header.git_branch);
+        assert!(!default_config.ui.pane_header.git_status);
+
+        let toml = r#"
+[ui.pane_header]
+agent_name = false
+working_directory = true
+parent_directory = true
+git_branch = true
+git_status = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.ui.pane_header.agent_name);
+        assert!(config.ui.pane_header.working_directory);
+        assert!(config.ui.pane_header.parent_directory);
+        assert!(config.ui.pane_header.git_branch);
+        assert!(config.ui.pane_header.git_status);
     }
 
     #[test]

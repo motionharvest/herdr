@@ -19,13 +19,15 @@ pub use self::{
     },
     model::{
         validated_sidebar_bounds, Config, ConfigReloadReport, ConfigReloadStatus, KeysConfig,
-        NewTerminalCwdConfig, ShellModeConfig, ToastConfig, ToastDelivery, UpdateChannelConfig,
+        NewTerminalCwdConfig, PaneHeaderConfig, ShellModeConfig, ToastConfig, ToastDelivery,
+        UpdateChannelConfig,
     },
     sound::SoundConfig,
     theme::{parse_color, CustomThemeColors, ThemeConfig},
 };
 
 pub(crate) use self::io::upsert_top_level_bool;
+pub(crate) use self::model::PaneHeaderField;
 
 pub const CONFIG_PATH_ENV_VAR: &str = "HERDR_CONFIG_PATH";
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;

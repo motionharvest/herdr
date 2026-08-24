@@ -6,7 +6,7 @@ use crate::{
         state::{AppState, DoneSoundChoice, ExperimentSetting, SettingsSection, THEME_NAMES},
         App, Mode,
     },
-    config::ToastDelivery,
+    config::{PaneHeaderField, ToastDelivery},
 };
 
 /// Rows of the Sound section: the two alert toggle rows, then one row per
@@ -59,10 +59,19 @@ pub(super) enum SettingsAction {
     SaveSound(bool),
     SaveDoneSound(DoneSoundChoice),
     SaveToastDelivery(ToastDelivery),
-    SaveAgentBorderLabels(bool),
+    SavePaneHeaderField(PaneHeaderField, bool),
     SavePaneHistory(bool),
     SaveSwitchAsciiInputSourceInPrefix(bool),
     InstallRecommendedIntegrations,
+}
+
+/// Map a pane-header row index to the toggle action that flips it.
+fn pane_header_toggle_action(state: &AppState, idx: usize) -> Option<SettingsAction> {
+    let field = *PaneHeaderField::ALL.get(idx)?;
+    Some(SettingsAction::SavePaneHeaderField(
+        field,
+        !field.enabled(state.pane_header()),
+    ))
 }
 
 /// Map an Experiments row index to the toggle action that flips it.
@@ -88,8 +97,8 @@ impl App {
                 SettingsAction::SaveSound(enabled) => self.save_sound(enabled),
                 SettingsAction::SaveDoneSound(choice) => self.save_done_sound(&choice),
                 SettingsAction::SaveToastDelivery(delivery) => self.save_toast_delivery(delivery),
-                SettingsAction::SaveAgentBorderLabels(enabled) => {
-                    self.save_agent_border_labels(enabled)
+                SettingsAction::SavePaneHeaderField(field, enabled) => {
+                    self.save_pane_header_field(field, enabled)
                 }
                 SettingsAction::SavePaneHistory(enabled) => {
                     self.save_pane_history_persistence(enabled)
@@ -272,7 +281,7 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::PaneLabels;
-                state.settings.list.selected = usize::from(!state.agent_border_labels_enabled());
+                state.settings.list.selected = 0;
             }
             _ => {
                 if let Some(super::modal::ModalAction::Close) =
@@ -283,12 +292,12 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
         },
         SettingsSection::PaneLabels => match key.code {
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
-                state.settings.list.selected = 1 - state.settings.list.selected.min(1);
+            KeyCode::Up | KeyCode::Char('k') => state.settings.list.move_prev(),
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.settings.list.move_next(PaneHeaderField::ALL.len())
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
-                let enabled = state.settings.list.selected == 0;
-                return Some(SettingsAction::SaveAgentBorderLabels(enabled));
+                return pane_header_toggle_action(state, state.settings.list.selected);
             }
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 state.settings.section = SettingsSection::Toast;
@@ -336,7 +345,7 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 state.settings.section = SettingsSection::PaneLabels;
-                state.settings.list.selected = usize::from(!state.agent_border_labels_enabled());
+                state.settings.list.selected = 0;
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::Experiments;
@@ -365,7 +374,7 @@ pub(crate) fn open_settings_at(state: &mut AppState, section: SettingsSection) {
         SettingsSection::Theme => current_theme_index(&state.theme_name),
         SettingsSection::Sound => sound_selected_index(state),
         SettingsSection::Toast => toast_delivery_index(state.toast_delivery()),
-        SettingsSection::PaneLabels => usize::from(!state.agent_border_labels_enabled()),
+        SettingsSection::PaneLabels => 0,
         SettingsSection::Experiments => 0,
         SettingsSection::Integrations => 0,
     };
@@ -454,7 +463,7 @@ impl AppState {
             }
             SettingsSection::PaneLabels => {
                 let list_y = area.y + 3;
-                if row >= list_y && row < list_y + 2 {
+                if row >= list_y && row < list_y + PaneHeaderField::ALL.len() as u16 {
                     Some((row - list_y) as usize)
                 } else {
                     None
@@ -481,9 +490,7 @@ impl AppState {
                         SettingsSection::Theme => current_theme_index(&self.theme_name),
                         SettingsSection::Sound => sound_selected_index(self),
                         SettingsSection::Toast => toast_delivery_index(self.toast_delivery()),
-                        SettingsSection::PaneLabels => {
-                            usize::from(!self.agent_border_labels_enabled())
-                        }
+                        SettingsSection::PaneLabels => 0,
                         SettingsSection::Experiments => 0,
                         SettingsSection::Integrations => 0,
                     });
@@ -501,10 +508,7 @@ impl AppState {
                             let delivery = toast_delivery_for_index(idx);
                             Some(SettingsAction::SaveToastDelivery(delivery))
                         }
-                        SettingsSection::PaneLabels => {
-                            let enabled = idx == 0;
-                            Some(SettingsAction::SaveAgentBorderLabels(enabled))
-                        }
+                        SettingsSection::PaneLabels => pane_header_toggle_action(self, idx),
                         SettingsSection::Experiments => experiment_toggle_action(self, idx),
                         SettingsSection::Integrations => None,
                     };
@@ -734,6 +738,65 @@ mod tests {
         ));
 
         assert_eq!(action, Some(SettingsAction::SaveSound(true)));
+    }
+
+    #[test]
+    fn settings_pane_header_enter_toggles_the_highlighted_field() {
+        let mut state = state_with_workspaces(&["test"]);
+        open_settings_at(&mut state, SettingsSection::PaneLabels);
+        assert!(state.pane_header.agent_name);
+
+        let action = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+
+        assert_eq!(
+            action,
+            Some(SettingsAction::SavePaneHeaderField(
+                PaneHeaderField::AgentName,
+                false
+            ))
+        );
+
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+        let action = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+        assert_eq!(
+            action,
+            Some(SettingsAction::SavePaneHeaderField(
+                PaneHeaderField::WorkingDirectory,
+                true
+            ))
+        );
+        assert_eq!(state.mode, Mode::Settings);
+    }
+
+    #[test]
+    fn settings_mouse_click_toggles_pane_header_git_branch() {
+        let mut app = app_for_mouse_test();
+        open_settings_at(&mut app.state, SettingsSection::PaneLabels);
+
+        let area = app.state.settings_content_rect();
+        let action = app.state.handle_settings_mouse(mouse(
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            area.x + 2,
+            area.y + 6,
+        ));
+
+        assert_eq!(
+            action,
+            Some(SettingsAction::SavePaneHeaderField(
+                PaneHeaderField::GitBranch,
+                true
+            ))
+        );
+        assert_eq!(app.state.settings.list.selected, 3);
     }
 
     #[test]

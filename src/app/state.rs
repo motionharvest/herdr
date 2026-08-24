@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use crate::config::{Keybinds, NewTerminalCwdConfig, SoundConfig, ToastConfig, ToastDelivery};
+use crate::config::{
+    Keybinds, NewTerminalCwdConfig, PaneHeaderConfig, SoundConfig, ToastConfig, ToastDelivery,
+};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Direction, Rect};
 use ratatui::style::Color;
@@ -1736,6 +1738,7 @@ pub struct AppState {
     pub confirm_close: bool,
     pub nerd_font: bool,
     pub show_agent_labels_on_pane_borders: bool,
+    pub pane_header: PaneHeaderConfig,
     pub pane_history_persistence: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`. See `[experimental] reveal_hidden_cursor_for_cjk_ime`.
@@ -1838,8 +1841,8 @@ impl AppState {
         self.toast_config.delivery
     }
 
-    pub fn agent_border_labels_enabled(&self) -> bool {
-        self.show_agent_labels_on_pane_borders
+    pub fn pane_header(&self) -> PaneHeaderConfig {
+        self.pane_header
     }
 
     pub fn pane_history_persistence_enabled(&self) -> bool {
@@ -2155,6 +2158,7 @@ impl AppState {
             confirm_close: true,
             nerd_font: false,
             show_agent_labels_on_pane_borders: true,
+            pane_header: PaneHeaderConfig::default(),
             pane_history_persistence: false,
             reveal_hidden_cursor_for_cjk_ime: false,
             cjk_ime_agent_filter_configured: false,

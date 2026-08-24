@@ -321,6 +321,19 @@ Set `mouse_scroll_lines` to change how many pane scrollback lines each mouse whe
 
 Set `show_agent_labels_on_pane_borders = true` if you want detected agent labels in split pane borders when no manual pane label is set.
 
+Each pane's top edge can write more than the agent name. These default to name-only, matching current titles:
+
+```toml
+[ui.pane_header]
+agent_name = true
+working_directory = false
+parent_directory = false
+git_branch = false
+git_status = false
+```
+
+`working_directory` is the last folder of the pane's cwd. `parent_directory` is the folder above it. Both together write `parent/current`, the same pair the agent table's Directory column uses. `git_branch` and `git_status` follow in parentheses when the pane is in a repository (`main !`). Settings → pane labels toggles the same keys.
+
 ## Notifications
 
 Herdr can show popup notifications when agents finish or need input.
