@@ -11,7 +11,6 @@ use super::agent_table::agent_panel_entries;
 use super::agent_table::{agent_panel_entries_from, AgentLocation, AgentPanelEntry};
 use super::panes::{focus_accent, mute_when_host_unfocused};
 use super::scrollbar::should_show_scrollbar;
-use super::widgets::contrasting_label_fg;
 use crate::app::state::Mode;
 use crate::app::AppState;
 use crate::detect::AgentState;
@@ -41,14 +40,8 @@ const AGENT_STATUS_BAR_GLYPH: &str = "▎";
 /// clears the space outline with a column to spare and sits inside the folder
 /// header's own column, which is what indents an agent under its folder.
 const AGENT_STATUS_BAR_X: u16 = 3;
-/// Where an agent row's labels start: the status bar, and the column the band's
-/// opening cap shares with the air after the bar.
+/// Where an agent row's labels start: the status bar, and the air after it.
 const AGENT_ROW_LABEL_X: u16 = AGENT_STATUS_BAR_X + 2;
-/// Half blocks closing either end of the focused row's band. Each fills the
-/// half of its cell that faces the label, so the band gains half a column of
-/// padding on each side instead of a full one.
-const AGENT_ROW_BAND_CAP_LEFT: &str = "▐";
-const AGENT_ROW_BAND_CAP_RIGHT: &str = "▌";
 /// `spinner_tick` advances once per animation frame at ~60fps, so 8 moves the
 /// status bar's lit cell about every 128ms — with the overshoot below, a glide
 /// across the bar rather than three abrupt hops.
@@ -1539,22 +1532,12 @@ fn render_agent_rows(
             AgentState::Idle => app.palette.overlay0,
             AgentState::Unknown => app.palette.overlay0,
         };
-        // The pane you are typing into reads as a filled band — its labels
-        // knocked out of the accent — so the eye lands on the row rather than
-        // on one tinted word. The band takes the same color as the outline
-        // around the space, so focus reads as one mark at two scales: the space
-        // you are in, and the agent inside it. The location on top stays off
-        // the band and carries the accent as text instead, so it heads the row
-        // the way a selected space's name heads its card. The status bar is
-        // left off too: it animates in its own state color and has to stay
-        // legible against the sidebar, not against a wash behind it.
-        // The band mutes with the pane borders while the terminal window itself
-        // is unfocused, so the sidebar does not go on claiming input that the
-        // window is not receiving.
-        let band_color = focus_accent(app);
-        if is_focused_pane {
-            fill_agent_row_band(frame, rect, band_color);
-        }
+        // The pane you are typing into wears the same accent as the space
+        // outline and the folder above it, as text rather than as a fill, so
+        // the name stays readable on the sidebar. The status bar is left in
+        // its own state color. The accent mutes with the pane borders while
+        // the terminal window itself is unfocused, so the sidebar does not go
+        // on claiming input that the window is not receiving.
         // Status is shown as a vertical bar running down the entry's left edge
         // instead of a bullet. It is inset by two so it clears the space
         // outline's edge with a column to spare. On live entries the lit cell
@@ -1569,14 +1552,9 @@ fn render_agent_rows(
             )
         };
         let text_width = agent_row_label_width(rect.width) as usize;
-        // Everything under the name is knocked out of the band in the panel's
-        // own background tone, the way an active tab's label sits on its accent
-        // fill; off the band it keeps its usual dim tones. A muted band is too
-        // close to the panel for a knockout to show, so there the labels sit on
-        // top in the panel's text tone instead.
         let (title_fg, status_fg) = if is_focused_pane {
-            let label = contrasting_label_fg(&app.palette, band_color);
-            (label, label)
+            let accent = focus_accent(app);
+            (accent, accent)
         } else {
             (app.palette.overlay1, app.palette.overlay0)
         };
@@ -1621,11 +1599,6 @@ fn render_agent_rows(
                     ),
                 ]),
             );
-        }
-        // Last, because the bar's own trailing column and the labels' line both
-        // run over where the left cap sits.
-        if is_focused_pane {
-            cap_agent_row_band(frame, rect, band_color);
         }
     }
 }
@@ -1876,62 +1849,6 @@ fn render_sidebar_line(frame: &mut Frame, rect: Rect, line: Line<'_>) {
     frame.render_widget(Paragraph::new(line), rect);
 }
 
-/// Paints the focused agent row's band. It covers the labels only: it starts
-/// past the status bar's column, so the bar keeps animating against the plain
-/// sidebar, and stops short of the right edge so the outline and the band's cap
-/// have their columns. The lines drawn on top only set foregrounds, so this
-/// background shows through behind their text and past the end of it.
-fn fill_agent_row_band(frame: &mut Frame, rect: Rect, bg: Color) {
-    let Some(band) = agent_row_band_rect(rect) else {
-        return;
-    };
-    let style = Style::default().bg(bg);
-    let buf = frame.buffer_mut();
-    for y in band.y..band.y + band.height {
-        for x in band.x..band.x + band.width {
-            buf[(x, y)].set_symbol(" ");
-            buf[(x, y)].set_style(style);
-        }
-    }
-}
-
-/// Closes the band with a half block at each end, drawn in the band's own color
-/// against the sidebar behind it. Half a cell of color on either side is the
-/// padding the label wants; a whole column would be too much air.
-fn cap_agent_row_band(frame: &mut Frame, rect: Rect, color: Color) {
-    let Some(band) = agent_row_band_rect(rect) else {
-        return;
-    };
-    let style = Style::default().fg(color);
-    let buf = frame.buffer_mut();
-    for y in band.y..band.y + band.height {
-        for (x, cap) in [
-            (band.x - 1, AGENT_ROW_BAND_CAP_LEFT),
-            (band.x + band.width, AGENT_ROW_BAND_CAP_RIGHT),
-        ] {
-            buf[(x, y)].set_symbol(cap);
-            buf[(x, y)].set_style(style);
-        }
-    }
-}
-
-/// The solid part of the focused row's band — the label columns, without the
-/// half-block caps that sit just outside either end. The folder header above the
-/// row stays off the band: it reads as the heading the row sits under, and it
-/// can belong to several rows, so it carries the accent as text instead.
-fn agent_row_band_rect(rect: Rect) -> Option<Rect> {
-    let width = agent_row_label_width(rect.width);
-    if width == 0 || rect.height == 0 {
-        return None;
-    }
-    Some(Rect::new(
-        rect.x + AGENT_ROW_LABEL_X,
-        rect.y,
-        width,
-        rect.height,
-    ))
-}
-
 fn sidebar_state_dot(state: AgentState, seen: bool, app: &AppState) -> (&'static str, Style) {
     let color = match state {
         AgentState::Working => app.palette.yellow,
@@ -1960,7 +1877,6 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::app::state::AgentPanelScope;
-    use crate::ui::widgets::panel_contrast_fg;
     use crate::{detect::Agent, workspace::Workspace};
     use ratatui::{backend::TestBackend, Terminal};
 
@@ -2392,7 +2308,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_agent_row_fills_an_accent_band_with_knocked_out_text_under_its_accent_folder() {
+    fn focused_agent_row_wears_the_accent_as_text_on_the_sidebar() {
         let area = Rect::new(0, 0, 28, 24);
         let (app, terminal) = render_sidebar_list(area);
         let row = compute_workspace_list_areas(&app, area)
@@ -2401,75 +2317,36 @@ mod tests {
             .expect("the space's agent should have a row")
             .rect;
         let buf = terminal.backend().buffer();
-        // The band wears the space outline's color, so focus reads as one mark.
-        let band_color = app.palette.focused_pane_border();
-
-        // The band covers the entry's own lines, starts past the status bar, and
-        // stops inside the space outline.
-        let band = agent_row_band_rect(row).expect("the row is wide enough for a band");
-        assert_eq!(band.y, row.y);
-        assert_eq!(band.height, row.height);
+        let accent = app.palette.focused_pane_border();
+        let name_x = row.x + AGENT_ROW_LABEL_X;
         let header_y = row.y - 1;
-        for x in band.x - 1..=band.x + band.width {
-            assert_ne!(
-                buf[(x, header_y)].style().bg,
-                Some(band_color),
-                "the folder header stays off the band at ({x}, {header_y})"
-            );
-        }
-        for y in band.y..band.y + band.height {
-            for x in band.x..band.x + band.width {
-                assert_eq!(
-                    buf[(x, y)].style().bg,
-                    Some(band_color),
-                    "band at ({x}, {y})"
-                );
-            }
-            for x in row.x..band.x - 1 {
+
+        for y in row.y..row.y + row.height {
+            for x in name_x..row.x + row.width - 1 {
                 assert_ne!(
                     buf[(x, y)].style().bg,
-                    Some(band_color),
-                    "the status bar's columns stay off the band at ({x}, {y})"
+                    Some(accent),
+                    "the focused row keeps the sidebar behind it at ({x}, {y})"
                 );
             }
-            let outline_x = row.x + row.width - 1;
-            assert_ne!(
-                buf[(outline_x, y)].style().bg,
-                Some(band_color),
-                "the outline column at row {y} stays clear of the band"
-            );
             assert_eq!(
-                buf[(outline_x, y)].style().fg,
-                Some(band_color),
-                "the space outline at row {y} matches the band's color"
+                buf[(row.x + row.width - 1, y)].style().fg,
+                Some(accent),
+                "the space outline at row {y} stays in the accent"
             );
-
-            // Half blocks pad either end, drawn in the band's color rather than
-            // filling their whole cell with it.
-            for (x, cap) in [
-                (band.x - 1, AGENT_ROW_BAND_CAP_LEFT),
-                (band.x + band.width, AGENT_ROW_BAND_CAP_RIGHT),
-            ] {
-                assert_eq!(buf[(x, y)].symbol(), cap, "cap at ({x}, {y})");
-                assert_eq!(buf[(x, y)].style().fg, Some(band_color));
-                assert_ne!(buf[(x, y)].style().bg, Some(band_color));
-            }
         }
 
-        // The folder above wears the band's own color as text, so focus reads
-        // as one mark; both lines on the band knock out of it.
-        let knockout = panel_contrast_fg(&app.palette);
-        let name_x = row.x + AGENT_ROW_LABEL_X;
         assert_eq!(
             buf[(row.x + AGENT_LOCATION_HEADER_X, header_y)].style().fg,
-            Some(band_color)
+            Some(accent),
+            "the folder above the focused agent wears the same accent"
         );
-        assert_eq!(buf[(name_x, row.y)].style().fg, Some(knockout));
-        assert_eq!(buf[(name_x, row.y + 1)].style().fg, Some(knockout));
+        assert_eq!(buf[(name_x, row.y)].style().fg, Some(accent));
+        assert_eq!(buf[(name_x, row.y + 1)].style().fg, Some(accent));
     }
 
     #[test]
-    fn focused_agent_band_mutes_and_lifts_its_labels_while_the_host_window_is_unfocused() {
+    fn focused_agent_labels_mute_with_the_space_outline_while_the_host_window_is_unfocused() {
         let area = Rect::new(0, 0, 28, 24);
         let (app, terminal) =
             render_sidebar_list_with(area, |app| app.outer_terminal_focus = Some(false));
@@ -2478,36 +2355,28 @@ mod tests {
             .last()
             .expect("the space's agent should have a row")
             .rect;
-        let band = agent_row_band_rect(row).expect("the row is wide enough for a band");
         let buf = terminal.backend().buffer();
-
-        let muted = focus_accent(&app);
-        assert_ne!(muted, app.palette.focused_pane_border());
-        assert_eq!(buf[(band.x, band.y)].style().bg, Some(muted), "band fill");
-        assert_eq!(
-            buf[(band.x - 1, band.y)].style().fg,
-            Some(muted),
-            "band cap"
-        );
-        assert_eq!(
-            buf[(row.x + row.width - 1, band.y)].style().fg,
-            Some(muted),
-            "the space outline mutes with the band it belongs to"
-        );
-
-        // A knockout would be invisible against the muted band, so the labels
-        // sit on top of it instead.
+        let muted = super::super::panes::focus_accent(&app);
         let label_x = row.x + AGENT_ROW_LABEL_X;
+
+        assert_ne!(muted, app.palette.focused_pane_border());
+        assert_ne!(
+            buf[(label_x, row.y)].style().bg,
+            Some(muted),
+            "unfocused host does not fill the row"
+        );
+        assert_eq!(
+            buf[(row.x + row.width - 1, row.y)].style().fg,
+            Some(muted),
+            "the space outline mutes with the focused labels"
+        );
         assert_eq!(
             buf[(row.x + AGENT_LOCATION_HEADER_X, row.y - 1)].style().fg,
             Some(muted),
-            "the folder holding the focused pane mutes with the band it matches"
+            "the folder holding the focused pane mutes with it"
         );
-        assert_eq!(buf[(label_x, row.y)].style().fg, Some(app.palette.text));
-        assert_ne!(
-            buf[(label_x, row.y)].style().fg,
-            Some(panel_contrast_fg(&app.palette))
-        );
+        assert_eq!(buf[(label_x, row.y)].style().fg, Some(muted));
+        assert_eq!(buf[(label_x, row.y + 1)].style().fg, Some(muted));
     }
 
     #[test]

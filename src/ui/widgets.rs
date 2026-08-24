@@ -36,20 +36,6 @@ pub(super) fn panel_contrast_fg(p: &Palette) -> Color {
     }
 }
 
-pub(super) fn contrasting_label_fg(p: &Palette, fill: Color) -> Color {
-    let knockout = panel_contrast_fg(p);
-    let Some(fill) = super::panes::color_to_rgb(fill) else {
-        return knockout;
-    };
-    let contrast = |color: Color| {
-        super::panes::color_to_rgb(color).map(|rgb| super::panes::contrast_ratio(fill, rgb))
-    };
-    match (contrast(knockout), contrast(p.text)) {
-        (Some(knocked_out), Some(on_top)) if on_top > knocked_out => p.text,
-        _ => knockout,
-    }
-}
-
 pub(crate) fn centered_popup_rect(area: Rect, popup_w: u16, popup_h: u16) -> Option<Rect> {
     let popup_w = popup_w.min(area.width.saturating_sub(4));
     let popup_h = popup_h.min(area.height.saturating_sub(2));
