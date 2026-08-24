@@ -10,7 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
-use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{CloseHandle, GlobalFree, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
     SetClipboardData,
@@ -236,11 +236,18 @@ pub fn write_clipboard(bytes: &[u8]) -> bool {
             }
             let target = GlobalLock(handle);
             if target.is_null() {
+                GlobalFree(handle);
                 return false;
             }
             std::ptr::copy_nonoverlapping(wide.as_ptr(), target.cast::<u16>(), wide.len());
             GlobalUnlock(handle);
-            !SetClipboardData(CF_UNICODETEXT, handle).is_null()
+            if SetClipboardData(CF_UNICODETEXT, handle).is_null() {
+                GlobalFree(handle);
+                false
+            } else {
+                // Ownership moves to the clipboard after a successful call.
+                true
+            }
         })();
         CloseClipboard();
         committed
@@ -310,16 +317,49 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
     }
 }
 
-/// Wraps a clipboard DIB payload in a BITMAPFILEHEADER and re-encodes as
-/// PNG so downstream consumers get a normal image blob.
-fn dib_to_png(dib: &[u8]) -> Option<ClipboardImage> {
+/// Returns the byte offset of the pixels in a clipboard DIB.
+///
+/// A DIB does not contain the file-header field used by a BMP file. The
+/// pixel data starts after the bitmap header, any color masks, and any palette.
+fn dib_pixel_offset(dib: &[u8]) -> Option<usize> {
     if dib.len() < 40 {
         return None;
     }
-    let pixel_offset = u32::from_le_bytes([dib[8], dib[9], dib[10], dib[11]]) as usize;
-    if pixel_offset < 40 || pixel_offset > dib.len() {
+
+    let header_size = u32::from_le_bytes(dib[0..4].try_into().ok()?) as usize;
+    if header_size < 40 || header_size > dib.len() {
         return None;
     }
+
+    let bit_count = u16::from_le_bytes(dib[14..16].try_into().ok()?);
+    let compression = u32::from_le_bytes(dib[16..20].try_into().ok()?);
+    let colors_used = u32::from_le_bytes(dib[32..36].try_into().ok()?) as usize;
+
+    let mask_bytes = match compression {
+        3 => 12,
+        6 => 16,
+        _ => 0,
+    };
+    let palette_entries = if bit_count <= 8 {
+        if colors_used != 0 {
+            colors_used
+        } else {
+            1usize.checked_shl(bit_count.into())?
+        }
+    } else {
+        0
+    };
+
+    header_size
+        .checked_add(mask_bytes)?
+        .checked_add(palette_entries.checked_mul(4)?)
+        .filter(|offset| *offset <= dib.len())
+}
+
+/// Wraps a clipboard DIB payload in a BITMAPFILEHEADER and re-encodes as
+/// PNG so downstream consumers get a normal image blob.
+fn dib_to_png(dib: &[u8]) -> Option<ClipboardImage> {
+    let pixel_offset = dib_pixel_offset(dib)?;
 
     // BITMAPFILEHEADER: type, size, reserved, reserved, offset.
     let mut bmp = Vec::with_capacity(14 + dib.len());
@@ -409,6 +449,27 @@ mod tests {
             clipboard_copy_len(usize::MAX, MAX_CLIPBOARD_GLOBAL_BYTES),
             None
         );
+    }
+
+    #[test]
+    fn dib_pixel_offset_uses_header_masks_and_palette() {
+        use super::dib_pixel_offset;
+
+        let mut rgb = vec![0u8; 40 + 4];
+        rgb[0..4].copy_from_slice(&40u32.to_le_bytes());
+        rgb[14..16].copy_from_slice(&24u16.to_le_bytes());
+        assert_eq!(dib_pixel_offset(&rgb), Some(40));
+
+        let mut indexed = vec![0u8; 40 + 256 * 4 + 1];
+        indexed[0..4].copy_from_slice(&40u32.to_le_bytes());
+        indexed[14..16].copy_from_slice(&8u16.to_le_bytes());
+        assert_eq!(dib_pixel_offset(&indexed), Some(40 + 256 * 4));
+
+        let mut bitfields = vec![0u8; 52 + 4];
+        bitfields[0..4].copy_from_slice(&40u32.to_le_bytes());
+        bitfields[14..16].copy_from_slice(&32u16.to_le_bytes());
+        bitfields[16..20].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(dib_pixel_offset(&bitfields), Some(52));
     }
 
     #[test]

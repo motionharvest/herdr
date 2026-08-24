@@ -2926,6 +2926,11 @@ mod tests {
         app.agent_panel_scope = AgentPanelScope::AllWorkspaces;
 
         let (events, _) = tokio::sync::mpsc::channel(4);
+        let shell = if cfg!(windows) {
+            "powershell.exe"
+        } else {
+            "/bin/sh"
+        };
         let runtime = crate::terminal::TerminalRuntime::spawn(
             pane,
             24,
@@ -2933,7 +2938,7 @@ mod tests {
             live_cwd.clone(),
             0,
             crate::terminal_theme::TerminalTheme::default(),
-            crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
+            crate::pane::PaneShellConfig::new(shell, crate::config::ShellModeConfig::NonLogin),
             events,
             std::sync::Arc::new(tokio::sync::Notify::new()),
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

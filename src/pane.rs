@@ -71,10 +71,11 @@ struct PendingAgentRelease {
     until: std::time::Instant,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 struct SpawnInitialState<'a> {
     detected_agent: Option<Agent>,
     history_ansi: Option<&'a str>,
+    initial_cwd: Option<std::path::PathBuf>,
 }
 
 fn active_pending_release(
@@ -686,6 +687,7 @@ pub struct PaneRuntime {
     detect_reset_notify: Arc<Notify>,
     pending_release: Arc<Mutex<Option<PendingAgentRelease>>>,
     preserve_processes_on_drop: bool,
+    initial_cwd: Option<std::path::PathBuf>,
     // Task handles for deterministic shutdown
     detect_handle: tokio::task::AbortHandle,
 }
@@ -1308,7 +1310,7 @@ impl PaneRuntime {
         render_dirty: Arc<AtomicBool>,
     ) -> std::io::Result<Self> {
         let mut cmd = pane_shell_command_builder(shell_config)?;
-        cmd.cwd(cwd);
+        cmd.cwd(cwd.clone());
         cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
         apply_pane_terminal_env(&mut cmd);
         crate::integration::apply_pane_env(&mut cmd, pane_id);
@@ -1326,6 +1328,7 @@ impl PaneRuntime {
             SpawnInitialState {
                 detected_agent: None,
                 history_ansi: initial_history_ansi,
+                initial_cwd: Some(cwd),
             },
         )
     }
@@ -1348,7 +1351,7 @@ impl PaneRuntime {
             let mut cmd = CommandBuilder::new("cmd.exe");
             cmd.arg("/C");
             cmd.arg(command);
-            cmd.cwd(cwd);
+            cmd.cwd(cwd.clone());
             cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
             apply_pane_terminal_env(&mut cmd);
             crate::integration::apply_pane_env(&mut cmd, pane_id);
@@ -1366,7 +1369,10 @@ impl PaneRuntime {
                 render_dirty,
                 cmd,
                 "failed to spawn command pane",
-                SpawnInitialState::default(),
+                SpawnInitialState {
+                    initial_cwd: Some(cwd),
+                    ..Default::default()
+                },
             )
         }
         #[cfg(unix)]
@@ -1374,7 +1380,7 @@ impl PaneRuntime {
             let mut cmd = CommandBuilder::new("/bin/sh");
             cmd.arg("-c");
             cmd.arg(command);
-            cmd.cwd(cwd);
+            cmd.cwd(cwd.clone());
             cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
             apply_pane_terminal_env(&mut cmd);
             crate::integration::apply_pane_env(&mut cmd, pane_id);
@@ -1392,7 +1398,10 @@ impl PaneRuntime {
                 render_dirty,
                 cmd,
                 "failed to spawn command pane",
-                SpawnInitialState::default(),
+                SpawnInitialState {
+                    initial_cwd: Some(cwd),
+                    ..Default::default()
+                },
             )
         }
     }
@@ -1419,7 +1428,7 @@ impl PaneRuntime {
         for arg in args {
             cmd.arg(arg);
         }
-        cmd.cwd(cwd);
+        cmd.cwd(cwd.clone());
         cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
         apply_pane_terminal_env(&mut cmd);
         crate::integration::apply_pane_env(&mut cmd, pane_id);
@@ -1434,7 +1443,10 @@ impl PaneRuntime {
             render_dirty,
             cmd,
             "failed to spawn argv command pane",
-            SpawnInitialState::default(),
+            SpawnInitialState {
+                initial_cwd: Some(cwd),
+                ..Default::default()
+            },
         )
     }
 
@@ -1685,6 +1697,7 @@ impl PaneRuntime {
         };
 
         // --- Detection task ---
+        let initial_cwd = initial_state.initial_cwd.clone();
         let (detect_handle, detect_reset_notify, pending_release) = {
             use crate::detect;
             use std::time::{Duration, Instant};
@@ -2008,6 +2021,7 @@ impl PaneRuntime {
             detect_reset_notify,
             pending_release,
             preserve_processes_on_drop: false,
+            initial_cwd,
             detect_handle,
         })
     }
@@ -2290,22 +2304,40 @@ impl PaneRuntime {
             return Some(reported);
         }
         let pid = self.child_pid.load(Ordering::Relaxed);
-        crate::platform::process_cwd(pid)
+        crate::platform::process_cwd(pid).or_else(|| {
+            #[cfg(windows)]
+            {
+                self.initial_cwd.clone()
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        })
     }
 
-    /// The directory the pane reported with OSC 7, if the process group that
-    /// reported it still holds the foreground.
+    /// The directory the pane reported with OSC 7.
     ///
-    /// This is what makes a Windows shell running through WSL interop track:
-    /// its Linux-side relay stub keeps the launch directory in `/proc` forever,
-    /// so the report is the only truth available.
+    /// Unix checks that the reporting process group still owns the pane. Windows
+    /// has no equivalent foreground-group query, so it uses the latest valid
+    /// report instead.
     fn reported_cwd(&self) -> Option<std::path::PathBuf> {
         let (reported, owner_pgid) = self.terminal.reported_cwd()?;
-        let pid = self.child_pid.load(Ordering::Acquire);
-        let current_pgid = self.foreground_pgid(pid)?;
-        if current_pgid != owner_pgid {
-            return None;
+
+        #[cfg(unix)]
+        {
+            let pid = self.child_pid.load(Ordering::Acquire);
+            let current_pgid = self.foreground_pgid(pid)?;
+            if current_pgid != owner_pgid {
+                return None;
+            }
         }
+
+        // Windows has no foreground process-group API. OSC 7 is the best
+        // available source there, so accept the shell's latest valid report.
+        #[cfg(windows)]
+        let _ = owner_pgid;
+
         let path = if crate::wsl::is_wsl() {
             crate::wsl::translate_reported_path(&reported)?
         } else {
@@ -2314,6 +2346,7 @@ impl PaneRuntime {
         (path.is_absolute() && path.is_dir()).then_some(path)
     }
 
+    #[cfg(unix)]
     fn foreground_pgid(&self, shell_pid: u32) -> Option<u32> {
         #[cfg(unix)]
         {
@@ -2435,6 +2468,7 @@ impl PaneRuntime {
                 detect_reset_notify: Arc::new(Notify::new()),
                 pending_release: Arc::new(Mutex::new(None)),
                 preserve_processes_on_drop: true,
+                initial_cwd: None,
                 detect_handle: tokio::spawn(async {}).abort_handle(),
             },
             rx,
@@ -2814,6 +2848,7 @@ mod tests {
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
             preserve_processes_on_drop: true,
+            initial_cwd: None,
             detect_handle: tokio::spawn(async {}).abort_handle(),
         };
 
@@ -2842,6 +2877,7 @@ mod tests {
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
             preserve_processes_on_drop: true,
+            initial_cwd: None,
             detect_handle: tokio::spawn(async {}).abort_handle(),
         };
 

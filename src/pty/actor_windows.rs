@@ -132,6 +132,13 @@ impl PtyIoActorHandle {
     }
 
     pub(crate) fn shutdown(&self) {
+        {
+            let mut user_writes = self
+                .user_writes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            user_writes.accepting = false;
+        }
         let _ = self.control_tx.send(ControlCommand::Shutdown);
     }
 

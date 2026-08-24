@@ -46,6 +46,8 @@ jobs:
           # link the macOS 26 SDK shipped on macos-latest (macos-26 image).
           - os: macos-15
             nextest_filter: not binary(live_handoff)
+          - os: windows-latest
+            nextest_filter: all()
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
