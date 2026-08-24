@@ -15,11 +15,12 @@
 //! for, so that prompt becomes the title instead: the summary column then says
 //! what a Codex agent is working on rather than staying blank. Grok does name
 //! a session, but only after the first prompt, and then freezes that name.
-//! The latest typed prompt lives in `chat_history.jsonl` as a `<user_query>`,
-//! so that is what fills the column once one exists — the same "what is this
-//! agent working on" the Codex rollout already answers. `generated_title` in
-//! `summary.json` still stands in until a prompt has been parsed, and the
-//! same file still carries `current_model_id` and `reasoning_effort`.
+//! The latest typed prompt lives in `chat_history.jsonl` as a `<user_query>`.
+//! The column does not take the whole message: it takes the part that asks
+//! for work, folded to a short headline, so a rambling follow-up still reads
+//! as a task. `generated_title` in `summary.json` still stands in until a
+//! prompt has been parsed, and the same file still carries `current_model_id`
+//! and `reasoning_effort`.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -484,7 +485,7 @@ fn parse_codex_rollout_title(tail: &str) -> Option<String> {
         else {
             continue;
         };
-        if let Some(title) = session_title_from_prompt(text) {
+        if let Some(title) = action_title_from_prompt(text) {
             return Some(title);
         }
     }
@@ -570,10 +571,341 @@ fn grok_title_from_user_text(text: &str) -> Option<String> {
             Some(end) => rest.get(..end)?,
             None => rest,
         };
-        return session_title_from_prompt(inner);
+        return action_title_from_prompt(inner);
     }
-    session_title_from_prompt(text)
+    action_title_from_prompt(text)
 }
+
+/// Verbs that, as the first word, mean the sentence is asking for work.
+const TASK_VERBS: &[&str] = &[
+    "add",
+    "allow",
+    "build",
+    "change",
+    "close",
+    "commit",
+    "drop",
+    "edit",
+    "enable",
+    "fill",
+    "fix",
+    "follow",
+    "give",
+    "hide",
+    "highlight",
+    "improve",
+    "keep",
+    "land",
+    "make",
+    "move",
+    "open",
+    "paint",
+    "paste",
+    "point",
+    "put",
+    "read",
+    "remove",
+    "rename",
+    "replace",
+    "restore",
+    "revert",
+    "run",
+    "scroll",
+    "set",
+    "show",
+    "split",
+    "start",
+    "stop",
+    "summarize",
+    "switch",
+    "update",
+    "use",
+    "wire",
+    "write",
+];
+
+/// Hedging that leads a request without being the request.
+const HEDGE_PREFIXES: &[&str] = &[
+    "i kinda meant that ",
+    "i kind of meant that ",
+    "i kinda meant ",
+    "i meant that ",
+    "i think that ",
+    "i think ",
+    "i want you to ",
+    "i want it to ",
+    "i need you to ",
+    "i would like you to ",
+    "i would like ",
+    "i want ",
+    "i need ",
+    "can you please ",
+    "could you please ",
+    "can you ",
+    "could you ",
+    "would you ",
+    "please ",
+    "okay so ",
+    "ok so ",
+    "okay, ",
+    "ok, ",
+    "oof. ",
+    "oof, ",
+    "oof ",
+    "yeah, ",
+    "yeah ",
+    "well, ",
+    "so, ",
+];
+
+/// A short headline for the work a prompt is asking for, not the whole
+/// message. A quoted imperative is preferred when the user named the task.
+/// Otherwise the sentence that most looks like a request is kept, hedging is
+/// stripped, and the line is cut to what a table cell can hold.
+fn action_title_from_prompt(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('<') || trimmed.starts_with("# AGENTS.md instructions") {
+        return None;
+    }
+    let condensed = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    if condensed.is_empty() {
+        return None;
+    }
+
+    if let Some(quoted) = quoted_action_headline(&condensed) {
+        return finish_action_title(quoted);
+    }
+
+    let sentences = split_sentences(&condensed);
+    let chosen = sentences
+        .iter()
+        .copied()
+        .max_by_key(|sentence| action_score(sentence))
+        .filter(|sentence| action_score(sentence) > 0)
+        .or_else(|| {
+            sentences
+                .iter()
+                .copied()
+                .find(|sentence| !sentence.is_empty())
+        })
+        .unwrap_or(condensed.as_str());
+    let stripped = strip_hedges(chosen);
+    let source = if stripped.len() == chosen.trim().len() {
+        stripped
+    } else {
+        capitalize_first(&stripped)
+    };
+    finish_action_title(&source)
+}
+
+fn capitalize_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn quoted_action_headline(text: &str) -> Option<&str> {
+    for span in quoted_spans(text) {
+        let inner = span.trim();
+        let words = inner.split_whitespace().count();
+        if !(3..=ACTION_TITLE_MAX_WORDS).contains(&words) {
+            continue;
+        }
+        if first_word_is_task_verb(inner) {
+            return Some(inner);
+        }
+    }
+    None
+}
+
+fn quoted_spans(text: &str) -> Vec<&str> {
+    let mut spans = Vec::new();
+    let mut rest = text;
+    while let Some(open_at) = rest.find(['"', '\u{201c}']) {
+        let open = rest[open_at..]
+            .chars()
+            .next()
+            .expect("find returned a char");
+        let close = if open == '\u{201c}' { '\u{201d}' } else { '"' };
+        let after_open = open_at + open.len_utf8();
+        let inner = &rest[after_open..];
+        let Some(close_at) = inner.find(close) else {
+            break;
+        };
+        spans.push(&inner[..close_at]);
+        rest = &inner[close_at + close.len_utf8()..];
+    }
+    spans
+}
+
+fn split_sentences(text: &str) -> Vec<&str> {
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let is_end = matches!(bytes[i], b'.' | b'?' | b'!');
+        let next_is_break = i + 1 == bytes.len()
+            || bytes
+                .get(i + 1)
+                .is_some_and(|next| next.is_ascii_whitespace());
+        if is_end && next_is_break {
+            let piece = text[start..i].trim();
+            if !piece.is_empty() {
+                sentences.push(piece);
+            }
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            start = i;
+            continue;
+        }
+        i += 1;
+    }
+    let piece = text[start..].trim();
+    if !piece.is_empty() {
+        sentences.push(piece);
+    }
+    if sentences.is_empty() {
+        sentences.push(text.trim());
+    }
+    sentences
+}
+
+fn action_score(sentence: &str) -> i32 {
+    let trimmed = sentence.trim();
+    if trimmed.is_empty() {
+        return -100;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if matches!(
+        lower.trim_end_matches(['.', '?', '!']),
+        "oof"
+            | "yeah"
+            | "ok"
+            | "okay"
+            | "you know"
+            | "something like that"
+            | "thanks"
+            | "thank you"
+    ) {
+        return -50;
+    }
+
+    let mut score = 0;
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if first_word_is_task_verb(trimmed) {
+        score += 6;
+    }
+    if lower.starts_with("can you")
+        || lower.starts_with("could you")
+        || lower.starts_with("can the")
+        || lower.starts_with("could the")
+        || lower.starts_with("can it")
+    {
+        score += 5;
+    }
+    if lower.starts_with("i want")
+        || lower.starts_with("i need")
+        || lower.starts_with("i kinda")
+        || lower.starts_with("please")
+        || lower.starts_with("this one might be")
+    {
+        score += 5;
+    }
+    if lower.contains(" should ") || lower.starts_with("should ") {
+        score += 4;
+    }
+    if lower.contains(" make it ") || lower.contains("can it") {
+        score += 2;
+    }
+    if lower.starts_with("that doesn't")
+        || lower.starts_with("that does not")
+        || lower.starts_with("it currently")
+    {
+        score -= 3;
+    }
+    let n = words.len();
+    if (4..=16).contains(&n) {
+        score += 2;
+    }
+    if n < 3 {
+        score -= 2;
+    }
+    score
+}
+
+fn first_word_is_task_verb(text: &str) -> bool {
+    let Some(word) = text.split_whitespace().next() else {
+        return false;
+    };
+    let cleaned: String = word
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect();
+    TASK_VERBS.contains(&cleaned.as_str())
+}
+
+fn strip_hedges(text: &str) -> String {
+    let mut rest = text.trim().to_string();
+    loop {
+        let lower = rest.to_ascii_lowercase();
+        let Some(prefix) = HEDGE_PREFIXES
+            .iter()
+            .find(|prefix| lower.starts_with(*prefix))
+        else {
+            break;
+        };
+        rest = rest.chars().skip(prefix.chars().count()).collect();
+        rest = rest
+            .trim_start_matches(|ch: char| ch == ',' || ch == '.' || ch.is_whitespace())
+            .to_string();
+    }
+    rest
+}
+
+fn finish_action_title(text: &str) -> Option<String> {
+    let trimmed = text
+        .trim()
+        .trim_end_matches(['.', '?', '!', ',', ';']);
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut words: Vec<&str> = trimmed.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+    if words.len() > ACTION_TITLE_MAX_WORDS {
+        words.truncate(ACTION_TITLE_MAX_WORDS);
+    }
+    let mut title = words.join(" ");
+    if title.chars().count() > ACTION_TITLE_MAX_CHARS {
+        let mut kept = String::new();
+        for word in title.split_whitespace() {
+            let next_len =
+                kept.chars().count() + word.chars().count() + usize::from(!kept.is_empty());
+            if next_len > ACTION_TITLE_MAX_CHARS {
+                break;
+            }
+            if !kept.is_empty() {
+                kept.push(' ');
+            }
+            kept.push_str(word);
+        }
+        if kept.is_empty() {
+            return None;
+        }
+        title = kept;
+    }
+    Some(title)
+}
+
+const ACTION_TITLE_MAX_CHARS: usize = 72;
+const ACTION_TITLE_MAX_WORDS: usize = 12;
 
 /// `current_model_id` plus `reasoning_effort` from the same summary file.
 fn parse_grok_summary_tail(content: &str) -> Option<AgentModelInfo> {
@@ -997,6 +1329,50 @@ mod tests {
     }
 
     #[test]
+    fn action_title_uses_a_quoted_imperative_headline() {
+        let prompt = concat!(
+            "Oof. That doesn't help tell me what the agent did. ",
+            "I kinda meant that I want it to summarize the part of the prompt that encites action. ",
+            r#"this one might be "Improve Agent Summary to be useful". You know? something like that."#
+        );
+        assert_eq!(
+            action_title_from_prompt(prompt).as_deref(),
+            Some("Improve Agent Summary to be useful")
+        );
+    }
+
+    #[test]
+    fn action_title_picks_the_ask_out_of_a_rambling_prompt() {
+        let prompt = concat!(
+            "Can the Summary update based on what the user has sent next. ",
+            "It currently is set when the first message comes back. ",
+            "but can it also be evaluated to contain a summary of what the user submitted as a prompt?"
+        );
+        assert_eq!(
+            action_title_from_prompt(prompt).as_deref(),
+            Some("Can the Summary update based on what the user has sent next")
+        );
+    }
+
+    #[test]
+    fn action_title_prefers_the_command_over_the_setup() {
+        assert_eq!(
+            action_title_from_prompt("Can you see the Test Section. Change it to green.")
+                .as_deref(),
+            Some("Change it to green")
+        );
+    }
+
+    #[test]
+    fn action_title_strips_hedging_from_a_request() {
+        assert_eq!(
+            action_title_from_prompt("I kinda meant that I want it to summarize the action.")
+                .as_deref(),
+            Some("Summarize the action")
+        );
+    }
+
+    #[test]
     fn grok_chat_title_is_absent_until_the_user_asks_for_something() {
         let tail = [
             grok_user_line("<user_info>\nOS Version: linux\n</user_info>"),
@@ -1058,7 +1434,7 @@ mod tests {
 
         assert_eq!(
             refreshed.entry.title.as_deref(),
-            Some("Can the Summary update based on what the user has sent next?")
+            Some("Can the Summary update based on what the user has sent next")
         );
         assert_eq!(refreshed.entry.session_file, history);
         assert_eq!(
