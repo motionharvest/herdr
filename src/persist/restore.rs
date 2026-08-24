@@ -2014,10 +2014,14 @@ mod tests {
             .title_name = Some("herdr-pane-title".into());
 
         let terminals = restore_terminals(&snapshot);
+        assert_eq!(
+            terminals.get(&first).and_then(|t| t.title_name.as_deref()),
+            Some("herdr-pane-title")
+        );
         let names = crate::pane_names::assigned_names(&terminals);
         assert_eq!(
             names.get(&first).map(String::as_str),
-            Some("herdr-pane-title")
+            Some(crate::pane_names::base_name_for(&first.to_string()))
         );
     }
 

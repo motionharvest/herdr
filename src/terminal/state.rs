@@ -74,8 +74,8 @@ pub struct TerminalState {
     /// announces one. It stands in only when no reported title exists, so a
     /// harness that names its own sessions always wins.
     pub session_title: Option<String>,
-    /// Assigned-name slug taken from the first session title this terminal
-    /// received. Later title refreshes do not overwrite it.
+    /// Unused leftover of title-derived assigned names. Restored sessions may
+    /// still carry it; display names come from the first-name word list.
     pub title_name: Option<String>,
     hook_report_sequences: HashMap<String, u64>,
     metadata_report_sequences: HashMap<String, u64>,
@@ -774,22 +774,8 @@ impl TerminalState {
         self.agent_name = None;
     }
 
-    pub fn freeze_title_name(&mut self) {
-        if self.title_name.is_some() {
-            return;
-        }
-        let Some(title) = self
-            .effective_title()
-            .or_else(|| self.session_title.clone())
-        else {
-            return;
-        };
-        self.title_name = crate::pane_names::summary_name(&title);
-    }
-
     pub fn set_session_title(&mut self, title: Option<String>) {
         self.session_title = title.filter(|title| !title.trim().is_empty());
-        self.freeze_title_name();
     }
 
     pub fn clear_agent_runtime_identity_after_respawn(&mut self) {
@@ -997,25 +983,20 @@ mod tests {
     }
 
     #[test]
-    fn freeze_title_name_takes_the_first_session_title() {
+    fn a_session_title_does_not_become_the_assigned_name() {
         let mut terminal = test_terminal();
         terminal.set_session_title(Some("Commit work and land herdr worktree".into()));
-        assert_eq!(terminal.title_name.as_deref(), Some("work-committer"));
+        assert_eq!(terminal.title_name, None);
+        assert_eq!(
+            terminal.session_title.as_deref(),
+            Some("Commit work and land herdr worktree")
+        );
         terminal.set_session_title(Some("Something else entirely now".into()));
-        assert_eq!(terminal.title_name.as_deref(), Some("work-committer"));
+        assert_eq!(terminal.title_name, None);
         assert_eq!(
             terminal.session_title.as_deref(),
             Some("Something else entirely now")
         );
-    }
-
-    #[test]
-    fn freeze_title_name_ignores_unusable_titles() {
-        let mut terminal = test_terminal();
-        terminal.set_session_title(Some("!!!".into()));
-        assert_eq!(terminal.title_name, None);
-        terminal.set_session_title(Some("Fix the parser".into()));
-        assert_eq!(terminal.title_name.as_deref(), Some("parser-fixer"));
     }
 
     #[test]

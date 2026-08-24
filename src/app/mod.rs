@@ -2655,9 +2655,7 @@ mod tests {
         assert_eq!(resolved.terminal_id, terminal_id.to_string());
     }
 
-    fn app_with_peeked_hidden_agent(
-        title_name: &str,
-    ) -> (
+    fn app_with_peeked_hidden_agent() -> (
         App,
         crate::layout::PaneId,
         tokio::sync::mpsc::Receiver<bytes::Bytes>,
@@ -2684,7 +2682,6 @@ mod tests {
                 .get_mut(&terminal_id)
                 .expect("hidden terminal");
             terminal.set_agent_name("codex".into());
-            terminal.title_name = Some(title_name.into());
         }
         app.state.workspaces[0].layout.focus_pane(hidden);
         app.state.close_pane();
@@ -2700,13 +2697,13 @@ mod tests {
             .build()
             .expect("test runtime");
         let _runtime_guard = rt.enter();
-        let (app, hidden, _input_rx) = app_with_peeked_hidden_agent("peeked-lander");
+        let (app, hidden, _input_rx) = app_with_peeked_hidden_agent();
         let name = crate::ui::agent_panel_entries(&app.state)
             .into_iter()
             .find(|entry| entry.pane_id == hidden)
             .expect("hidden table row")
             .name;
-        assert_eq!(name, "peeked-lander");
+        assert!(!name.is_empty());
 
         let resolved = app
             .resolve_terminal_target(&name)
@@ -2724,7 +2721,7 @@ mod tests {
             .build()
             .expect("test runtime");
         let _runtime_guard = rt.enter();
-        let (mut app, hidden, mut input_rx) = app_with_peeked_hidden_agent("peeked-lander");
+        let (mut app, hidden, mut input_rx) = app_with_peeked_hidden_agent();
         let name = crate::ui::agent_panel_entries(&app.state)
             .into_iter()
             .find(|entry| entry.pane_id == hidden)

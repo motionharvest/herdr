@@ -9,6 +9,7 @@
 - Git Status no longer writes `Landed` when a linked worktree has uncommitted files. The label used to follow the dirty marker whenever that checkout's latest commit was already on the parent, so a dirty tree still looked finished.
 
 ### Changed
+- An agent's assigned name is the first-name word list again (`Olivia`, `Olivia-2` on collision). Session titles used to become job-title slugs (`yellow-banner-hider`), which made the Agent Name column hard to match to a person. A manual rename still wins. The session title stays in the summary.
 - The focused agent in the spaces sidebar is marked in the accent as text, on the same background as the rest of the list. It used to fill the row with that accent and knock the name out of the fill, which made the selected agent harder to read than the ones around it.
 - The Directory and Task fields no longer draw a `❯` prompt in front of what is typed.
 - Clicking the composer Directory control keeps the chosen folder in the field, with the cursor at the end, so the path can be edited. While typing, the best match fills in the letters not yet typed, muted. `Tab` takes that guess. `Enter` takes only what was typed.

@@ -70,11 +70,6 @@ impl App {
                     if still_current && terminal.session_title != result.entry.title {
                         terminal.set_session_title(result.entry.title.clone());
                         changed = true;
-                    } else if still_current && terminal.title_name.is_none() {
-                        terminal.freeze_title_name();
-                        if terminal.title_name.is_some() {
-                            changed = true;
-                        }
                     }
                 }
                 self.agent_model_cache
