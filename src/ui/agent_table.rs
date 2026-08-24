@@ -25,7 +25,7 @@ use ratatui::{
     Frame,
 };
 
-use super::panes::{focus_accent, mute_when_host_unfocused};
+use super::panes::mute_when_host_unfocused;
 use crate::app::state::Palette;
 use crate::app::AppState;
 use crate::detect::AgentState;
@@ -1112,16 +1112,21 @@ fn cell_line<'a>(
 ) -> Line<'a> {
     match column {
         COL_NAME => {
-            // Set-down names take the accent so they stay findable; the rest
-            // of that row stays muted. Selected names keep the focus accent.
+            // The name matches Summary until the row is selected. Then a
+            // docked name is the default foreground and a hidden name is
+            // the accent.
             let style = if selected {
-                Style::default()
-                    .fg(focus_accent(app))
-                    .add_modifier(Modifier::BOLD)
-            } else if entry.docked {
-                Style::default().fg(detail_fg(app, entry))
+                if entry.docked {
+                    Style::default()
+                        .fg(app.palette.text)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(app.palette.accent)
+                        .add_modifier(Modifier::BOLD)
+                }
             } else {
-                Style::default().fg(app.palette.accent)
+                Style::default().fg(detail_fg(app, entry))
             };
             Line::styled(pad(text, width), style)
         }
@@ -1497,7 +1502,7 @@ mod tests {
         let (state, pane_id) = state_with_a_set_down_agent();
         let row = row_of(&state, pane_id);
         let folders = FolderColors::new();
-        for column in [COL_SUMMARY, COL_AGENT, COL_RUN, COL_IDLE] {
+        for column in [COL_NAME, COL_SUMMARY, COL_AGENT, COL_RUN, COL_IDLE] {
             let line = cell_line(&state, &row, column, "x", 8, false, &folders);
             assert_eq!(
                 line.style.fg,
@@ -1508,13 +1513,32 @@ mod tests {
     }
 
     #[test]
-    fn a_hidden_agent_name_uses_the_accent_color() {
-        let (state, pane_id) = state_with_a_set_down_agent();
+    fn a_selected_docked_agent_name_uses_the_primary_color() {
+        let state = state_with_agents(1);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
         let row = row_of(&state, pane_id);
         let folders = FolderColors::new();
+        let name = cell_line(&state, &row, COL_NAME, "x", 8, true, &folders);
+        assert!(row.docked);
+        assert_eq!(name.style.fg, Some(state.palette.text));
+        assert!(name.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn a_synthwave_hidden_name_matches_summary_until_it_is_selected() {
+        let (mut state, pane_id) = state_with_a_set_down_agent();
+        state.palette = Palette::synthwave();
+        let row = row_of(&state, pane_id);
+        let folders = FolderColors::new();
+        let summary = cell_line(&state, &row, COL_SUMMARY, "x", 8, false, &folders);
         let name = cell_line(&state, &row, COL_NAME, "x", 8, false, &folders);
-        assert_eq!(name.style.fg, Some(state.palette.accent));
-        assert!(!name.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!row.docked);
+        assert_eq!(name.style.fg, summary.style.fg);
+        assert_eq!(name.style.fg, Some(state.palette.overlay0));
+        assert_ne!(name.style.fg, Some(state.palette.accent));
+
+        let selected = cell_line(&state, &row, COL_NAME, "x", 8, true, &folders);
+        assert_eq!(selected.style.fg, Some(state.palette.accent));
     }
 
     fn state_with_a_set_down_agent_and_a_docked_agent() -> (AppState, PaneId, PaneId) {
@@ -1564,7 +1588,9 @@ mod tests {
         let row = row_of(&state, pane_id);
         let folders = FolderColors::new();
         let name = cell_line(&state, &row, COL_NAME, "x", 8, true, &folders);
-        assert_eq!(name.style.fg, Some(focus_accent(&state)));
+        assert!(!row.docked);
+        assert_eq!(name.style.fg, Some(state.palette.accent));
+        assert!(name.style.add_modifier.contains(Modifier::BOLD));
         for column in [COL_SUMMARY, COL_AGENT, COL_RUN, COL_IDLE] {
             let line = cell_line(&state, &row, column, "x", 8, true, &folders);
             assert_eq!(line.style.fg, Some(state.palette.text), "column {column}");
