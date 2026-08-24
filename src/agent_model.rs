@@ -14,9 +14,12 @@
 //! pane had nothing to show. The rollout does record what the user last asked
 //! for, so that prompt becomes the title instead: the summary column then says
 //! what a Codex agent is working on rather than staying blank. Grok does name
-//! a session, but only after the first prompt, and its hook reports the id at
-//! SessionStart, before that name exists. The generated title is written to
-//! the session's `summary.json`, so that file is what fills the column.
+//! a session, but only after the first prompt, and then freezes that name.
+//! The latest typed prompt lives in `chat_history.jsonl` as a `<user_query>`,
+//! so that is what fills the column once one exists — the same "what is this
+//! agent working on" the Codex rollout already answers. `generated_title` in
+//! `summary.json` still stands in until a prompt has been parsed, and the
+//! same file still carries `current_model_id` and `reasoning_effort`.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -106,13 +109,12 @@ fn refresh_job(job: AgentModelRefreshJob) -> Option<AgentModelRefreshResult> {
         return None;
     }
 
-    let session_file = job
-        .cached
-        .as_ref()
-        .map(|cached| cached.session_file.clone())
-        .filter(|file| file.is_file())
-        .or_else(|| resolve_session_file(job.agent, &job.session_id))?;
-    let modified = fs::metadata(&session_file).ok()?.modified().ok()?;
+    let session_file = resolve_job_session_file(&job)?;
+    let modified = if job.agent == Agent::Grok {
+        grok_sources_mtime(&session_file)?
+    } else {
+        fs::metadata(&session_file).ok()?.modified().ok()?
+    };
     if job
         .cached
         .as_ref()
@@ -121,11 +123,14 @@ fn refresh_job(job: AgentModelRefreshJob) -> Option<AgentModelRefreshResult> {
         return None;
     }
 
+    if job.agent == Agent::Grok {
+        return refresh_grok_job(job, session_file, modified);
+    }
+
     let tail = read_tail(&session_file, TAIL_READ_BYTES).ok()?;
     let info = match job.agent {
         Agent::Claude => parse_claude_transcript_tail(&tail),
         Agent::Codex => parse_codex_rollout_tail(&tail),
-        Agent::Grok => parse_grok_summary_tail(&tail),
         _ => None,
     }
     // The tail window can land past the last model-bearing entry (e.g. a huge
@@ -141,7 +146,6 @@ fn refresh_job(job: AgentModelRefreshJob) -> Option<AgentModelRefreshResult> {
                 .map(|cached| cached.title_scanned_len),
             parse_codex_rollout_title,
         ),
-        Agent::Grok => (parse_grok_summary_title(&tail), 0),
         _ => (None, 0),
     };
     let title = title.or_else(|| job.cached.and_then(|cached| cached.title));
@@ -151,6 +155,65 @@ fn refresh_job(job: AgentModelRefreshJob) -> Option<AgentModelRefreshResult> {
         entry: AgentModelCacheEntry {
             session_id: job.session_id,
             session_file,
+            modified,
+            info,
+            title,
+            title_scanned_len,
+        },
+    })
+}
+
+fn resolve_job_session_file(job: &AgentModelRefreshJob) -> Option<PathBuf> {
+    if job.agent == Agent::Grok {
+        if let Some(cached) = job.cached.as_ref() {
+            if let Some(preferred) = grok_preferred_file(&cached.session_file) {
+                return Some(preferred);
+            }
+        }
+        return resolve_session_file(job.agent, &job.session_id);
+    }
+    job.cached
+        .as_ref()
+        .map(|cached| cached.session_file.clone())
+        .filter(|file| file.is_file())
+        .or_else(|| resolve_session_file(job.agent, &job.session_id))
+}
+
+fn refresh_grok_job(
+    job: AgentModelRefreshJob,
+    session_file: PathBuf,
+    modified: SystemTime,
+) -> Option<AgentModelRefreshResult> {
+    let (summary_path, history_path) = grok_session_paths(&session_file);
+    let summary_text = fs::read_to_string(&summary_path).ok();
+    let info = summary_text
+        .as_deref()
+        .and_then(parse_grok_summary_tail)
+        .or_else(|| job.cached.as_ref().and_then(|cached| cached.info.clone()));
+
+    let scanned_from = job
+        .cached
+        .as_ref()
+        .filter(|cached| cached.session_file == history_path)
+        .map(|cached| cached.title_scanned_len);
+    let (title, title_scanned_len) = if history_path.is_file() {
+        scan_session_title(&history_path, scanned_from, parse_grok_chat_title)
+    } else {
+        (None, 0)
+    };
+    let title = title
+        .or_else(|| job.cached.as_ref().and_then(|cached| cached.title.clone()))
+        .or_else(|| summary_text.as_deref().and_then(parse_grok_summary_title));
+
+    Some(AgentModelRefreshResult {
+        terminal_id: job.terminal_id,
+        entry: AgentModelCacheEntry {
+            session_id: job.session_id,
+            session_file: if history_path.is_file() {
+                history_path
+            } else {
+                summary_path
+            },
             modified,
             info,
             title,
@@ -198,15 +261,53 @@ fn codex_session_file(codex_home: &Path, session_id: &str) -> Option<PathBuf> {
     find_file_with_suffix(&codex_home.join("sessions"), &suffix, 4)
 }
 
-/// Grok sessions live at `<home>/sessions/<encoded-cwd>/<session-id>/summary.json`.
+/// Grok sessions live at `<home>/sessions/<encoded-cwd>/<session-id>/`.
+/// Prefer `chat_history.jsonl` (the growing prompt log) and fall back to
+/// `summary.json` for a session that has been named but has no history yet.
 fn grok_session_file(grok_home: &Path, session_id: &str) -> Option<PathBuf> {
     for entry in fs::read_dir(grok_home.join("sessions")).ok()?.flatten() {
-        let candidate = entry.path().join(session_id).join("summary.json");
-        if candidate.is_file() {
-            return Some(candidate);
+        let dir = entry.path().join(session_id);
+        if let Some(preferred) = grok_preferred_file(&dir.join("summary.json")) {
+            return Some(preferred);
         }
     }
     None
+}
+
+fn grok_session_paths(session_file: &Path) -> (PathBuf, PathBuf) {
+    let dir = grok_session_dir(session_file);
+    (dir.join("summary.json"), dir.join("chat_history.jsonl"))
+}
+
+fn grok_session_dir(session_file: &Path) -> &Path {
+    session_file.parent().unwrap_or(session_file)
+}
+
+fn grok_preferred_file(cached_file: &Path) -> Option<PathBuf> {
+    let dir = grok_session_dir(cached_file);
+    let history = dir.join("chat_history.jsonl");
+    if history.is_file() {
+        return Some(history);
+    }
+    let summary = dir.join("summary.json");
+    if summary.is_file() {
+        return Some(summary);
+    }
+    cached_file.is_file().then(|| cached_file.to_path_buf())
+}
+
+fn grok_sources_mtime(session_file: &Path) -> Option<SystemTime> {
+    let (summary, history) = grok_session_paths(session_file);
+    let mut latest: Option<SystemTime> = None;
+    for path in [&summary, &history] {
+        if let Ok(modified) = fs::metadata(path).and_then(|metadata| metadata.modified()) {
+            latest = Some(match latest {
+                Some(previous) => previous.max(modified),
+                None => modified,
+            });
+        }
+    }
+    latest.or_else(|| fs::metadata(session_file).ok()?.modified().ok())
 }
 
 fn find_file_with_suffix(dir: &Path, suffix: &str, depth: u8) -> Option<PathBuf> {
@@ -393,8 +494,10 @@ fn parse_codex_rollout_title(tail: &str) -> Option<String> {
 /// The title Grok generated for the session, taken from `summary.json`.
 ///
 /// Grok writes that name after the first prompt and regenerates it a couple of
-/// times before freezing it. A missing or blank `generated_title` is a session
-/// that has not been named yet, so the column stays empty until one appears.
+/// times before freezing it. It is the fallback for a session whose chat
+/// history has no typed prompt yet. A missing or blank `generated_title` is a
+/// session that has not been named yet, so the column stays empty until a
+/// prompt or a generated title appears.
 fn parse_grok_summary_title(content: &str) -> Option<String> {
     let entry = serde_json::from_str::<serde_json::Value>(content).ok()?;
     session_title_from_prompt(
@@ -402,6 +505,74 @@ fn parse_grok_summary_title(content: &str) -> Option<String> {
             .get("generated_title")
             .and_then(|title| title.as_str())?,
     )
+}
+
+/// The last thing the user actually asked for, taken from the newest `user`
+/// record in `chat_history.jsonl`.
+///
+/// Grok writes more than typed prompts into that role: `<user_info>`,
+/// `<system-reminder>`, and other injected blocks, often marked
+/// `synthetic_reason`. Those are the harness talking to its own model, not a
+/// task. A record that carries `synthetic_reason` is skipped. A record whose
+/// text contains a `<user_query>` uses that inner text. Anything else is the
+/// same filter Codex uses: a message that opens a tag is not a title.
+fn parse_grok_chat_title(tail: &str) -> Option<String> {
+    for line in tail.lines().rev() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if entry.get("type").and_then(|entry_type| entry_type.as_str()) != Some("user") {
+            continue;
+        }
+        if entry.get("synthetic_reason").is_some() {
+            continue;
+        }
+        let Some(text) = grok_user_text(&entry) else {
+            continue;
+        };
+        if let Some(title) = grok_title_from_user_text(&text) {
+            return Some(title);
+        }
+    }
+    None
+}
+
+fn grok_user_text(entry: &serde_json::Value) -> Option<String> {
+    let content = entry.get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let mut text = String::new();
+    for part in content.as_array()? {
+        if part.get("type").and_then(|kind| kind.as_str()) != Some("text") {
+            continue;
+        }
+        let Some(piece) = part.get("text").and_then(|text| text.as_str()) else {
+            continue;
+        };
+        if piece.trim().is_empty() {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(piece);
+    }
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn grok_title_from_user_text(text: &str) -> Option<String> {
+    const OPEN: &str = "<user_query>";
+    const CLOSE: &str = "</user_query>";
+    if let Some(start) = text.find(OPEN) {
+        let rest = text.get(start + OPEN.len()..)?;
+        let inner = match rest.find(CLOSE) {
+            Some(end) => rest.get(..end)?,
+            None => rest,
+        };
+        return session_title_from_prompt(inner);
+    }
+    session_title_from_prompt(text)
 }
 
 /// `current_model_id` plus `reasoning_effort` from the same summary file.
@@ -800,6 +971,175 @@ mod tests {
         );
     }
 
+    fn grok_user_line(text: &str) -> String {
+        format!(
+            r#"{{"type":"user","content":[{{"type":"text","text":{}}}]}}"#,
+            serde_json::to_string(text).unwrap()
+        )
+    }
+
+    #[test]
+    fn grok_chat_title_is_the_latest_typed_prompt() {
+        let tail = [
+            grok_user_line("<user_info>\nOS Version: linux\n</user_info>"),
+            grok_user_line("<user_query>\nfix the pane border\n</user_query>"),
+            r#"{"type":"user","synthetic_reason":"system_reminder","content":[{"type":"text","text":"<system-reminder>\nskills\n</system-reminder>"}]}"#.to_string(),
+            grok_user_line("<user_query>\nreorder\n  the   agent list\n</user_query>"),
+            r#"{"type":"assistant","content":[{"type":"text","text":"on it"}]}"#.to_string(),
+        ]
+        .join("\n");
+
+        assert_eq!(
+            parse_grok_chat_title(&tail).as_deref(),
+            Some("reorder the agent list"),
+            "the newest typed prompt wins, on one line, past injected context"
+        );
+    }
+
+    #[test]
+    fn grok_chat_title_is_absent_until_the_user_asks_for_something() {
+        let tail = [
+            grok_user_line("<user_info>\nOS Version: linux\n</user_info>"),
+            r#"{"type":"user","synthetic_reason":"compaction_meta","content":[{"type":"text","text":"continued from a previous conversation"}]}"#.to_string(),
+            r#"{"type":"assistant","content":[{"type":"text","text":"ready"}]}"#.to_string(),
+        ]
+        .join("\n");
+
+        assert_eq!(parse_grok_chat_title(&tail), None);
+    }
+
+    #[test]
+    fn grok_refresh_prefers_the_latest_user_query_over_generated_title() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-agent-model-grok-prompt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let summary = root.join("summary.json");
+        let history = root.join("chat_history.jsonl");
+        fs::write(
+            &summary,
+            r#"{
+              "generated_title": "Update Summary from Subsequent User Prompts",
+              "current_model_id": "grok-4.6",
+              "reasoning_effort": "high"
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            &history,
+            format!(
+                "{}\n{}\n",
+                grok_user_line("<user_query>\nCan the Summary update based on the first prompt?\n</user_query>"),
+                grok_user_line("<user_query>\nCan the Summary update based on what the user has sent next?\n</user_query>")
+            ),
+        )
+        .unwrap();
+        let modified = fs::metadata(&summary).unwrap().modified().unwrap();
+
+        let refreshed = refresh_job(AgentModelRefreshJob {
+            terminal_id: TerminalId::alloc(),
+            agent: Agent::Grok,
+            session_id: "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c".into(),
+            cached: Some(AgentModelCacheEntry {
+                session_id: "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c".into(),
+                session_file: summary,
+                modified: modified - std::time::Duration::from_secs(60),
+                info: None,
+                title: Some("Update Summary from Subsequent User Prompts".into()),
+                title_scanned_len: 0,
+            }),
+        })
+        .unwrap();
+
+        assert_eq!(
+            refreshed.entry.title.as_deref(),
+            Some("Can the Summary update based on what the user has sent next?")
+        );
+        assert_eq!(refreshed.entry.session_file, history);
+        assert_eq!(
+            refreshed.entry.info,
+            Some(AgentModelInfo {
+                model: "grok-4.6".into(),
+                effort: Some("high".into()),
+            })
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn grok_refresh_keeps_a_prompt_title_when_only_the_generated_name_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-agent-model-grok-keep-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let summary = root.join("summary.json");
+        let history = root.join("chat_history.jsonl");
+        let first = format!(
+            "{}\n",
+            grok_user_line("<user_query>\nfix the pane border\n</user_query>")
+        );
+        fs::write(&history, &first).unwrap();
+        fs::write(
+            &summary,
+            r#"{"generated_title":"Fix The Pane Border","current_model_id":"grok-4.6"}"#,
+        )
+        .unwrap();
+
+        let stale = fs::metadata(&history).unwrap().modified().unwrap()
+            - std::time::Duration::from_secs(60);
+        let first_pass = refresh_job(AgentModelRefreshJob {
+            terminal_id: TerminalId::alloc(),
+            agent: Agent::Grok,
+            session_id: "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c".into(),
+            cached: Some(AgentModelCacheEntry {
+                session_id: "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c".into(),
+                session_file: summary.clone(),
+                modified: stale,
+                info: None,
+                title: None,
+                title_scanned_len: 0,
+            }),
+        })
+        .unwrap();
+        assert_eq!(
+            first_pass.entry.title.as_deref(),
+            Some("fix the pane border")
+        );
+
+        fs::write(
+            &summary,
+            r#"{"generated_title":"A Frozen Generated Title","current_model_id":"grok-4.6"}"#,
+        )
+        .unwrap();
+        let mut cached = first_pass.entry.clone();
+        cached.modified -= std::time::Duration::from_secs(60);
+        let second_pass = refresh_job(AgentModelRefreshJob {
+            terminal_id: TerminalId::alloc(),
+            agent: Agent::Grok,
+            session_id: "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c".into(),
+            cached: Some(cached),
+        })
+        .unwrap();
+        assert_eq!(
+            second_pass.entry.title.as_deref(),
+            Some("fix the pane border"),
+            "a later generated_title must not replace a prompt already on the row"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn grok_session_file_resolves_cwd_grouped_summaries() {
         let root = std::env::temp_dir().join(format!(
@@ -820,7 +1160,15 @@ mod tests {
 
         assert_eq!(
             grok_session_file(&root, "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c"),
-            Some(summary)
+            Some(summary.clone())
+        );
+
+        let history = session.join("chat_history.jsonl");
+        fs::write(&history, "{}\n").unwrap();
+        assert_eq!(
+            grok_session_file(&root, "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c"),
+            Some(history),
+            "the prompt log is preferred once it exists"
         );
         assert_eq!(grok_session_file(&root, "missing"), None);
 
