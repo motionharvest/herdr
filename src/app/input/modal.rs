@@ -728,15 +728,10 @@ pub(super) fn apply_context_menu_action(
             refresh_summary(state, pane_id);
         }
         (ContextMenuKind::Pane { pane_id, .. }, Some("Clear pane name")) => {
-            if let Some(ws_idx) = state.active {
-                if let Some(ws) = state.workspaces.get(ws_idx) {
-                    if let Some(pane) = ws.pane_state(pane_id) {
-                        let terminal_id = pane.attached_terminal_id.clone();
-                        if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
-                            terminal.clear_manual_label();
-                            state.mark_session_dirty();
-                        }
-                    }
+            if let Some(terminal_id) = state.terminal_id_for_any_pane(pane_id) {
+                if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
+                    terminal.clear_manual_label();
+                    state.mark_session_dirty();
                 }
             }
             state.mode = Mode::Terminal;

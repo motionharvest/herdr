@@ -5,7 +5,7 @@ use tracing::{info, warn};
 
 use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
-use crate::layout::{find_in_direction, NavDirection, PaneId};
+use crate::layout::{find_in_direction, DropZone, NavDirection, PaneId};
 use crate::selection::Selection;
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
 use crate::workspace::WorkspaceGitStatus;
@@ -2012,11 +2012,19 @@ impl AppState {
 
     pub fn toggle_pane_dimmed(&mut self, pane_id: PaneId) {
         if let Some(pane) = self
-            .active
-            .and_then(|i| self.workspaces.get_mut(i))
-            .and_then(|ws| ws.pane_state_mut(pane_id))
+            .workspaces
+            .iter_mut()
+            .find_map(|ws| ws.pane_state_mut(pane_id))
         {
             pane.dimmed = !pane.dimmed;
+            return;
+        }
+        if let Some(detached) = self
+            .detached_agents
+            .iter_mut()
+            .find(|detached| detached.pane_id == pane_id)
+        {
+            detached.pane.dimmed = !detached.pane.dimmed;
         }
     }
 
@@ -2025,11 +2033,8 @@ impl AppState {
     /// harnesses whose reset command herdr does not know, return `None` so the
     /// reset action stays hidden instead of typing a guess into the pane.
     pub(crate) fn agent_reset_command_for_pane(&self, pane_id: PaneId) -> Option<&'static str> {
-        let terminal_id = self
-            .workspaces
-            .iter()
-            .find_map(|ws| ws.terminal_id(pane_id))?;
-        let agent = self.terminals.get(terminal_id)?.effective_known_agent()?;
+        let terminal_id = self.terminal_id_for_any_pane(pane_id)?;
+        let agent = self.terminals.get(&terminal_id)?.effective_known_agent()?;
         crate::detect::agent_reset_command(agent)
     }
 
@@ -2049,15 +2054,7 @@ impl AppState {
         let Some(command) = self.agent_reset_command_for_pane(pane_id) else {
             return false;
         };
-        let Some(ws_idx) = self
-            .workspaces
-            .iter()
-            .position(|ws| ws.terminal_id(pane_id).is_some())
-        else {
-            return false;
-        };
-        let Some(runtime) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
-        else {
+        let Some(runtime) = self.runtime_for_agent_pane(terminal_runtimes, pane_id) else {
             return false;
         };
 
@@ -2148,9 +2145,7 @@ impl AppState {
     }
 
     pub fn toggle_zoom(&mut self) {
-        if self.agent_peek.take().is_some() {
-            return;
-        }
+        let _ = self.commit_peek_into_layout();
         if let Some(tab) = self
             .active
             .and_then(|i| self.workspaces.get_mut(i))
@@ -2217,6 +2212,32 @@ impl AppState {
 
     pub(crate) fn clear_agent_peek(&mut self) {
         self.agent_peek = None;
+    }
+
+    /// Put the peeked overlay into the current space so pane actions apply to
+    /// it, not the layout underneath. A set-down agent takes the focused pane's
+    /// slot. If the peeked pane is already in a space, that space is focused.
+    pub(crate) fn commit_peek_into_layout(&mut self) -> bool {
+        let Some(peeked) = self.agent_peek else {
+            return false;
+        };
+        if let Some(ws_idx) = self.workspace_index_for_pane(peeked) {
+            self.agent_peek = None;
+            self.focus_pane_in_workspace(ws_idx, peeked);
+            return true;
+        }
+        let Some(target) = self
+            .active
+            .and_then(|idx| self.workspaces.get(idx))
+            .and_then(crate::workspace::Workspace::focused_pane_id)
+        else {
+            return false;
+        };
+        if peeked == target {
+            self.agent_peek = None;
+            return true;
+        }
+        self.dock_detached_agent(peeked, target, DropZone::Over)
     }
 
     pub(crate) fn terminal_id_for_any_pane(
@@ -5404,8 +5425,8 @@ mod tests {
         state.peek_agent(pane_id);
         state.toggle_zoom();
         assert_eq!(state.agent_peek, None);
-        assert!(!state.workspaces[0].zoomed);
-        assert!(state.workspaces[0].pane_state(target).is_some());
+        assert!(state.workspaces[0].pane_state(pane_id).is_some());
+        assert!(state.workspaces[0].pane_state(target).is_none());
     }
 
     #[test]

@@ -587,6 +587,7 @@ impl AppState {
         // Actual PTY spawning happens in Workspace::split_focused
         // which needs events channel — this is called from navigate_key
         // where we don't have async context, so the workspace handles it
+        let _ = self.commit_peek_into_layout();
         let (rows, cols) = self.estimate_pane_size();
         let new_rows = (rows / 2).max(4);
         let new_cols = (cols / 2).max(10);

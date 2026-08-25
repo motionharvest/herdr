@@ -1415,28 +1415,20 @@ impl AppState {
             }
 
             MouseEventKind::Down(MouseButton::Right) if !in_table => {
+                if let Some(pane_id) = self.agent_peek {
+                    self.context_menu = Some(ContextMenuState {
+                        kind: self.pane_context_menu_kind(pane_id),
+                        x: mouse.column,
+                        y: mouse.row,
+                        list: MenuListState::new(0),
+                    });
+                    self.mode = Mode::ContextMenu;
+                    return None;
+                }
                 if let Some(info) = self.pane_mouse_target(mouse.column, mouse.row).cloned() {
                     self.focus_pane(info.id);
-                    let pane = self
-                        .active
-                        .and_then(|ws_idx| self.workspaces.get(ws_idx))
-                        .and_then(|ws| ws.pane_state(info.id));
-                    let dimmed = pane.is_some_and(|pane| pane.dimmed);
-                    let terminal =
-                        pane.and_then(|pane| self.terminals.get(&pane.attached_terminal_id));
-                    let has_manual_label = terminal
-                        .and_then(|terminal| terminal.manual_label.as_ref())
-                        .is_some();
-                    let has_agent = terminal.is_some_and(|terminal| terminal.is_agent_terminal());
-                    let can_reset = self.agent_reset_command_for_pane(info.id).is_some();
                     self.context_menu = Some(ContextMenuState {
-                        kind: ContextMenuKind::Pane {
-                            pane_id: info.id,
-                            has_manual_label,
-                            dimmed,
-                            has_agent,
-                            can_reset,
-                        },
+                        kind: self.pane_context_menu_kind(info.id),
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
@@ -1640,6 +1632,34 @@ impl AppState {
     pub(super) fn pane_mouse_target(&self, col: u16, row: u16) -> Option<&PaneInfo> {
         self.pane_at(col, row)
             .or_else(|| self.pane_frame_at(col, row))
+    }
+
+    fn pane_context_menu_kind(&self, pane_id: crate::layout::PaneId) -> ContextMenuKind {
+        let dimmed = self
+            .workspaces
+            .iter()
+            .find_map(|ws| ws.pane_state(pane_id))
+            .map(|pane| pane.dimmed)
+            .or_else(|| {
+                self.detached_agents
+                    .iter()
+                    .find(|detached| detached.pane_id == pane_id)
+                    .map(|detached| detached.pane.dimmed)
+            })
+            .unwrap_or(false);
+        let terminal = self.terminal_state_for_pane(pane_id);
+        let has_manual_label = terminal
+            .and_then(|terminal| terminal.manual_label.as_ref())
+            .is_some();
+        let has_agent = terminal.is_some_and(|terminal| terminal.is_agent_terminal());
+        let can_reset = self.agent_reset_command_for_pane(pane_id).is_some();
+        ContextMenuKind::Pane {
+            pane_id,
+            has_manual_label,
+            dimmed,
+            has_agent,
+            can_reset,
+        }
     }
 
     pub(crate) fn pane_info_by_id(&self, pane_id: crate::layout::PaneId) -> Option<&PaneInfo> {
@@ -4836,6 +4856,79 @@ mod tests {
             .iter()
             .all(|detached| detached.pane_id != pane_id));
         assert!(app.state.workspaces[0].pane_state(remaining).is_none());
+    }
+
+    #[test]
+    fn right_clicking_a_peeked_pane_opens_its_menu_not_the_layout_underneath() {
+        let (mut app, pane_id, remaining) = app_with_hidden_agent();
+        let row = hidden_agent_row(&app, pane_id);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.rect.x + 1,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            row.rect.x + 1,
+            row.rect.y,
+        ));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let inner = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == pane_id)
+            .expect("peeked pane")
+            .inner_rect;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            inner.x + 1,
+            inner.y + 1,
+        ));
+
+        let menu = app.state.context_menu.as_ref().expect("peeked pane menu");
+        match &menu.kind {
+            ContextMenuKind::Pane {
+                pane_id: menu_pane, ..
+            } => {
+                assert_eq!(*menu_pane, pane_id);
+                assert_ne!(*menu_pane, remaining);
+            }
+            other => panic!("peeked overlay should open its pane menu, got {other:?}"),
+        }
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(remaining));
+        assert_eq!(app.state.agent_peek, Some(pane_id));
+    }
+
+    #[tokio::test]
+    async fn splitting_while_peeking_splits_the_peeked_pane_not_the_layout_underneath() {
+        let (mut app, pane_id, remaining) = app_with_hidden_agent();
+        app.state.default_shell = "/usr/bin/true".into();
+        app.state.peek_agent(pane_id);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        app.state.split_pane_with_placement(
+            &mut app.terminal_runtimes,
+            Direction::Horizontal,
+            crate::layout::SplitPlacement::After,
+        );
+
+        assert_eq!(app.state.agent_peek, None);
+        assert!(app.state.workspaces[0].pane_state(pane_id).is_some());
+        assert!(app.state.workspaces[0].pane_state(remaining).is_none());
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 2);
+        assert!(app
+            .state
+            .detached_agents
+            .iter()
+            .any(|detached| detached.pane_id == remaining));
+
+        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
+        for (_terminal_id, runtime) in runtimes {
+            runtime.shutdown();
+        }
     }
 
     #[test]
