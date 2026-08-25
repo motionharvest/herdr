@@ -62,6 +62,7 @@ pub(super) enum SettingsAction {
     SavePaneHeaderField(PaneHeaderField, bool),
     SavePaneHistory(bool),
     SaveSwitchAsciiInputSourceInPrefix(bool),
+    SaveRefreshSummaryWithGrok(bool),
     InstallRecommendedIntegrations,
 }
 
@@ -85,6 +86,11 @@ fn experiment_toggle_action(state: &AppState, idx: usize) -> Option<SettingsActi
                 !ExperimentSetting::SwitchAsciiInputSourceInPrefix.enabled(state),
             ))
         }
+        ExperimentSetting::RefreshSummaryWithGrok => {
+            Some(SettingsAction::SaveRefreshSummaryWithGrok(
+                !ExperimentSetting::RefreshSummaryWithGrok.enabled(state),
+            ))
+        }
     }
 }
 
@@ -105,6 +111,9 @@ impl App {
                 }
                 SettingsAction::SaveSwitchAsciiInputSourceInPrefix(enabled) => {
                     self.save_switch_ascii_input_source_in_prefix(enabled)
+                }
+                SettingsAction::SaveRefreshSummaryWithGrok(enabled) => {
+                    self.save_refresh_summary_with_grok(enabled)
                 }
                 SettingsAction::InstallRecommendedIntegrations => {
                     self.install_recommended_integrations()
@@ -834,6 +843,34 @@ mod tests {
         assert_eq!(
             action,
             Some(SettingsAction::SaveSwitchAsciiInputSourceInPrefix(true))
+        );
+        assert_eq!(state.mode, Mode::Settings);
+    }
+
+    #[test]
+    fn settings_experiments_toggles_refresh_summary_with_grok() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.refresh_summary_with_grok = false;
+        open_settings_at(&mut state, SettingsSection::Experiments);
+
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+        assert_eq!(state.settings.list.selected, 2);
+
+        let action = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+
+        assert_eq!(
+            action,
+            Some(SettingsAction::SaveRefreshSummaryWithGrok(true))
         );
         assert_eq!(state.mode, Mode::Settings);
     }

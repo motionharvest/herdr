@@ -552,6 +552,60 @@ impl App {
         cleared
     }
 
+    pub(crate) fn start_pending_summary_refresh(&mut self) -> bool {
+        let Some(pane_id) = self.state.request_refresh_summary.take() else {
+            return false;
+        };
+        self.start_summary_refresh(pane_id);
+        true
+    }
+
+    fn start_summary_refresh(&mut self, pane_id: crate::layout::PaneId) {
+        let Some(terminal_id) = self.state.terminal_id_for_any_pane(pane_id) else {
+            return;
+        };
+        if !self.summary_refresh_in_flight.insert(terminal_id.clone()) {
+            return;
+        }
+        let Some(terminal) = self.state.terminals.get(&terminal_id) else {
+            self.summary_refresh_in_flight.remove(&terminal_id);
+            return;
+        };
+        let Some((agent, session_id)) = terminal.model_probe_session() else {
+            self.summary_refresh_in_flight.remove(&terminal_id);
+            return;
+        };
+        let grok_job = crate::agent_summary::GrokSummaryJob {
+            terminal_id: terminal_id.clone(),
+            session_id: session_id.clone(),
+            agent,
+            cwd: terminal.cwd.clone(),
+            latest_requests: crate::agent_model::latest_user_requests(agent, &session_id, 3),
+        };
+        let heuristic_job = crate::agent_model::AgentModelRefreshJob {
+            terminal_id: terminal_id.clone(),
+            agent,
+            session_id: session_id.clone(),
+            cached: None,
+        };
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let title = crate::agent_summary::run_grok_summary(&grok_job)
+                .ok()
+                .or_else(|| {
+                    crate::agent_model::refresh_agent_model_infos(vec![heuristic_job])
+                        .into_iter()
+                        .next()
+                        .and_then(|result| result.entry.title)
+                });
+            let _ = event_tx.blocking_send(AppEvent::SummaryRefreshed {
+                terminal_id: grok_job.terminal_id,
+                session_id: grok_job.session_id,
+                title,
+            });
+        });
+    }
+
     pub(crate) fn agent_model_refresh_deadline(&self) -> Option<Instant> {
         (!self.agent_model_refresh_in_flight && !self.state.terminals.is_empty())
             .then_some(self.last_agent_model_refresh + AGENT_MODEL_REFRESH_INTERVAL)

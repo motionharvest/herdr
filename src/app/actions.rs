@@ -2976,6 +2976,7 @@ impl AppState {
                 Vec::new()
             }
             AppEvent::AgentModelRefreshed { .. } => Vec::new(),
+            AppEvent::SummaryRefreshed { .. } => Vec::new(),
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::WorktreeLandFinished(_) => Vec::new(),

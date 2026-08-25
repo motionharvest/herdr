@@ -19,8 +19,10 @@
 //! The column does not take the whole message: it takes the part that asks
 //! for work, folded to a short headline. The first fill sticks on the row.
 //! Refresh Summary reads the latest prompt on command, the same way the
-//! automatic update used to. `generated_title` in `summary.json` still stands
-//! in until a prompt has been parsed, and the same file still carries
+//! automatic update used to. With `[ui] refresh_summary_with_grok`, that
+//! command instead asks a headless `grok -p` session for a 5–8 word sentence
+//! naming the latest user request. `generated_title` in `summary.json` still
+//! stands in until a prompt has been parsed, and the same file still carries
 //! `current_model_id` and `reasoning_effort`.
 
 use std::fs;
@@ -564,17 +566,159 @@ fn grok_user_text(entry: &serde_json::Value) -> Option<String> {
 }
 
 fn grok_title_from_user_text(text: &str) -> Option<String> {
+    action_title_from_prompt(&raw_user_request_text(text)?)
+}
+
+/// Inner `<user_query>` text, or the message itself when it is not wrapped in
+/// a harness tag. Injected blocks that open a tag are skipped.
+fn raw_user_request_text(text: &str) -> Option<String> {
     const OPEN: &str = "<user_query>";
     const CLOSE: &str = "</user_query>";
-    if let Some(start) = text.find(OPEN) {
+    let inner = if let Some(start) = text.find(OPEN) {
         let rest = text.get(start + OPEN.len()..)?;
-        let inner = match rest.find(CLOSE) {
+        match rest.find(CLOSE) {
             Some(end) => rest.get(..end)?,
             None => rest,
-        };
-        return action_title_from_prompt(inner);
+        }
+    } else {
+        text
+    };
+    let trimmed = inner.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('<')
+        || trimmed.starts_with("# AGENTS.md instructions")
+    {
+        return None;
     }
-    action_title_from_prompt(text)
+    Some(trimmed.to_string())
+}
+
+const LATEST_USER_REQUEST_CHARS: usize = 1500;
+
+/// Newest typed user requests from the session log, newest first.
+pub(crate) fn latest_user_requests(agent: Agent, session_id: &str, limit: usize) -> Vec<String> {
+    if limit == 0 || !valid_probe_session_id(session_id) {
+        return Vec::new();
+    }
+    let Some(session_file) = resolve_session_file(agent, session_id) else {
+        return Vec::new();
+    };
+    match agent {
+        Agent::Grok => grok_latest_user_requests(&session_file, limit),
+        Agent::Codex => collect_latest_from_file(&session_file, limit, parse_codex_user_request),
+        Agent::Claude => collect_latest_from_file(&session_file, limit, parse_claude_user_request),
+        _ => Vec::new(),
+    }
+}
+
+fn grok_latest_user_requests(session_file: &Path, limit: usize) -> Vec<String> {
+    let (_, history_path) = grok_session_paths(session_file);
+    if !history_path.is_file() {
+        return Vec::new();
+    }
+    collect_latest_from_file(&history_path, limit, parse_grok_user_request)
+}
+
+fn collect_latest_from_file(
+    path: &Path,
+    limit: usize,
+    parse_line: fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let Ok(tail) = read_tail(path, TITLE_FIRST_SCAN_BYTES) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for line in tail.lines().rev() {
+        let Some(text) = parse_line(line) else {
+            continue;
+        };
+        found.push(truncate_user_request(&text));
+        if found.len() >= limit {
+            break;
+        }
+    }
+    found
+}
+
+fn truncate_user_request(text: &str) -> String {
+    let condensed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if condensed.chars().count() <= LATEST_USER_REQUEST_CHARS {
+        condensed
+    } else {
+        condensed.chars().take(LATEST_USER_REQUEST_CHARS).collect()
+    }
+}
+
+fn parse_grok_user_request(line: &str) -> Option<String> {
+    let entry = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    if entry.get("type").and_then(|entry_type| entry_type.as_str()) != Some("user") {
+        return None;
+    }
+    if entry.get("synthetic_reason").is_some() {
+        return None;
+    }
+    raw_user_request_text(&grok_user_text(&entry)?)
+}
+
+fn parse_codex_user_request(line: &str) -> Option<String> {
+    let entry = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    if entry.get("type").and_then(|entry_type| entry_type.as_str()) != Some("response_item") {
+        return None;
+    }
+    let payload = entry.get("payload")?;
+    if payload.get("type").and_then(|kind| kind.as_str()) != Some("message")
+        || payload.get("role").and_then(|role| role.as_str()) != Some("user")
+    {
+        return None;
+    }
+    let text = payload
+        .get("content")
+        .and_then(|content| content.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part.get("text").and_then(|text| text.as_str()))
+        .find(|text| !text.trim().is_empty())?;
+    raw_user_request_text(text)
+}
+
+fn parse_claude_user_request(line: &str) -> Option<String> {
+    let entry = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    if entry.get("type").and_then(|entry_type| entry_type.as_str()) != Some("user") {
+        return None;
+    }
+    if entry
+        .get("isSidechain")
+        .and_then(|sidechain| sidechain.as_bool())
+        == Some(true)
+    {
+        return None;
+    }
+    let content = entry.get("message")?.get("content")?;
+    let text = if let Some(text) = content.as_str() {
+        text.to_string()
+    } else {
+        let mut text = String::new();
+        for part in content.as_array()? {
+            if part.get("type").and_then(|kind| kind.as_str()) != Some("text") {
+                continue;
+            }
+            let Some(piece) = part.get("text").and_then(|text| text.as_str()) else {
+                continue;
+            };
+            if piece.trim().is_empty() {
+                continue;
+            }
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(piece);
+        }
+        if text.trim().is_empty() {
+            return None;
+        }
+        text
+    };
+    raw_user_request_text(&text)
 }
 
 /// Verbs that, as the first word, mean the sentence is asking for work.
@@ -1325,6 +1469,43 @@ mod tests {
             Some("reorder the agent list"),
             "the newest typed prompt wins, on one line, past injected context"
         );
+    }
+
+    #[test]
+    fn grok_latest_user_requests_are_newest_first_and_skip_injected_blocks() {
+        let tail = [
+            grok_user_line("<user_info>\nOS Version: linux\n</user_info>"),
+            grok_user_line("<user_query>\nImprove Agent Summary to be useful\n</user_query>"),
+            r#"{"type":"user","synthetic_reason":"system_reminder","content":[{"type":"text","text":"<system-reminder>\nskills\n</system-reminder>"}]}"#.to_string(),
+            grok_user_line("<user_query>\nLand this on parent\n</user_query>"),
+        ]
+        .join("\n");
+        let requests = collect_latest_from_file_for_test(&tail, 3, parse_grok_user_request);
+        assert_eq!(
+            requests,
+            vec![
+                "Land this on parent".to_string(),
+                "Improve Agent Summary to be useful".to_string(),
+            ]
+        );
+    }
+
+    fn collect_latest_from_file_for_test(
+        tail: &str,
+        limit: usize,
+        parse_line: fn(&str) -> Option<String>,
+    ) -> Vec<String> {
+        let mut found = Vec::new();
+        for line in tail.lines().rev() {
+            let Some(text) = parse_line(line) else {
+                continue;
+            };
+            found.push(truncate_user_request(&text));
+            if found.len() >= limit {
+                break;
+            }
+        }
+        found
     }
 
     #[test]

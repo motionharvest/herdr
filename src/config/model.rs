@@ -384,6 +384,10 @@ pub struct UiConfig {
     pub toast: ToastConfig,
     /// Play sounds when agents change state in background workspaces.
     pub sound: SoundConfig,
+    /// Refresh Summary asks a headless `grok -p` session for a 5–8 word
+    /// headline of the latest user request. Off, it reads the latest prompt
+    /// from the session log the way the automatic fill does.
+    pub refresh_summary_with_grok: bool,
 }
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.
@@ -563,6 +567,7 @@ impl Default for UiConfig {
             notify_active_tab: false,
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
+            refresh_summary_with_grok: false,
         }
     }
 }
@@ -1156,6 +1161,18 @@ delivery = "terminal"
             config.advanced.scrollback_limit_bytes,
             DEFAULT_SCROLLBACK_LIMIT_BYTES
         );
+    }
+
+    #[test]
+    fn refresh_summary_with_grok_is_opt_in() {
+        assert!(!Config::default().ui.refresh_summary_with_grok);
+
+        let toml = r#"
+[ui]
+refresh_summary_with_grok = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.ui.refresh_summary_with_grok);
     }
 
     #[test]

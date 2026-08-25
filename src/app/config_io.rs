@@ -132,4 +132,12 @@ impl App {
             self.apply_config_from_disk(false);
         }
     }
+
+    pub(super) fn save_refresh_summary_with_grok(&mut self, enabled: bool) {
+        if self.update_config_file("refresh summary with grok", |content| {
+            crate::config::upsert_section_bool(content, "ui", "refresh_summary_with_grok", enabled)
+        }) {
+            self.apply_config_from_disk(false);
+        }
+    }
 }

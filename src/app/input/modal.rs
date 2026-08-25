@@ -325,36 +325,44 @@ pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::Pan
 }
 
 pub(super) fn refresh_summary(state: &mut AppState, pane_id: crate::layout::PaneId) {
-    let Some(terminal_id) = terminal_id_for_pane(state, pane_id) else {
+    if state.refresh_summary_with_grok() {
+        state.request_refresh_summary = Some(pane_id);
         leave_modal(state);
         return;
+    }
+    apply_heuristic_summary(state, pane_id);
+    leave_modal(state);
+}
+
+fn apply_heuristic_summary(state: &mut AppState, pane_id: crate::layout::PaneId) {
+    let Some(terminal_id) = state.terminal_id_for_any_pane(pane_id) else {
+        return;
     };
-    let job = {
-        let Some(terminal) = state.terminals.get(&terminal_id) else {
-            leave_modal(state);
-            return;
-        };
-        let Some((agent, session_id)) = terminal.model_probe_session() else {
-            leave_modal(state);
-            return;
-        };
-        crate::agent_model::AgentModelRefreshJob {
-            terminal_id: terminal_id.clone(),
-            agent,
-            session_id,
-            cached: None,
-        }
+    let Some(title) = heuristic_summary_title(state, &terminal_id) else {
+        return;
     };
-    if let Some(result) = crate::agent_model::refresh_agent_model_infos(vec![job])
+    if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
+        terminal.adopt_probed_title(Some(title), true);
+        state.mark_session_dirty();
+    }
+}
+
+fn heuristic_summary_title(
+    state: &AppState,
+    terminal_id: &crate::terminal::TerminalId,
+) -> Option<String> {
+    let terminal = state.terminals.get(terminal_id)?;
+    let (agent, session_id) = terminal.model_probe_session()?;
+    let job = crate::agent_model::AgentModelRefreshJob {
+        terminal_id: terminal_id.clone(),
+        agent,
+        session_id,
+        cached: None,
+    };
+    crate::agent_model::refresh_agent_model_infos(vec![job])
         .into_iter()
         .next()
-    {
-        if let Some(terminal) = state.terminals.get_mut(&result.terminal_id) {
-            terminal.adopt_probed_title(result.entry.title, true);
-            state.mark_session_dirty();
-        }
-    }
-    leave_modal(state);
+        .and_then(|result| result.entry.title)
 }
 
 fn land_agent_prompt_target(state: &AppState, pane_id: crate::layout::PaneId) -> String {
@@ -1265,6 +1273,51 @@ mod tests {
 
         std::env::remove_var("GROK_HOME");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_summary_with_grok_queues_a_headless_session() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.ensure_test_terminals();
+        state.refresh_summary_with_grok = true;
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("agent terminal")
+            .set_session_title(Some("Improve Agent Summary to be useful".into()));
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::Agent {
+                ws_idx: 0,
+                pane_id,
+                space: SpaceMenuKind::Plain,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        let idx = menu
+            .items()
+            .iter()
+            .position(|item| item == "Refresh Summary")
+            .expect("refresh summary item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
+
+        assert_eq!(state.mode, Mode::Terminal);
+        assert_eq!(state.request_refresh_summary, Some(pane_id));
+        assert_eq!(
+            state
+                .terminals
+                .get(&terminal_id)
+                .expect("agent terminal")
+                .session_title
+                .as_deref(),
+            Some("Improve Agent Summary to be useful"),
+            "the grok -p summary is filled when the headless session returns"
+        );
     }
 
     #[test]

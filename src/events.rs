@@ -112,6 +112,12 @@ pub enum AppEvent {
     AgentModelRefreshed {
         results: Vec<crate::agent_model::AgentModelRefreshResult>,
     },
+    /// Refresh Summary finished a headless `grok -p` (or heuristic fallback).
+    SummaryRefreshed {
+        terminal_id: crate::terminal::TerminalId,
+        session_id: String,
+        title: Option<String>,
+    },
     /// Background `git worktree add` completed.
     WorktreeAddFinished(WorktreeAddResult),
     /// Background `git worktree remove` completed.

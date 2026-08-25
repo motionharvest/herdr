@@ -297,6 +297,7 @@ show_agent_labels_on_pane_borders = false
 agent_panel_scope = "all"
 accent = "cyan"
 notify_active_tab = false
+refresh_summary_with_grok = false
 ```
 
 `sidebar_min_width` and `sidebar_max_width` control the expanded sidebar's resize bounds in columns. The defaults are 18 and 36.
@@ -333,6 +334,8 @@ git_status = false
 ```
 
 `working_directory` is the last folder of the pane's cwd. `parent_directory` is the folder above it. Both together write `parent/current`, the same pair the agent table's Directory column uses. `git_branch` and `git_status` follow in parentheses when the pane is in a repository (`main !`). Settings → pane labels toggles the same keys.
+
+`refresh_summary_with_grok` controls `Refresh Summary` on an agent row. Off (the default), Herdr reads the latest typed prompt from that agent's session log. On, it starts a headless `grok -p` session that names the most recent user request in 5–8 words. For a Grok pane it forks that session so the live chat is not written. For other harnesses it passes the latest typed requests as prompt context. If Grok is missing or the one-shot fails, the command falls back to the session-log prompt. Settings → experiments toggles the same key.
 
 ## Notifications
 

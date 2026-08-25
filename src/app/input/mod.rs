@@ -349,6 +349,9 @@ impl App {
                     SettingsAction::SaveSwitchAsciiInputSourceInPrefix(enabled) => {
                         self.save_switch_ascii_input_source_in_prefix(enabled)
                     }
+                    SettingsAction::SaveRefreshSummaryWithGrok(enabled) => {
+                        self.save_refresh_summary_with_grok(enabled)
+                    }
                     SettingsAction::InstallRecommendedIntegrations => {
                         self.install_recommended_integrations()
                     }

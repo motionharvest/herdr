@@ -126,6 +126,7 @@ pub struct App {
     pub(crate) git_status_cache: HashMap<std::path::PathBuf, crate::workspace::GitStatusCacheEntry>,
     pub(crate) last_agent_model_refresh: Instant,
     pub(crate) agent_model_refresh_in_flight: bool,
+    pub(crate) summary_refresh_in_flight: HashSet<crate::terminal::TerminalId>,
     pub(crate) agent_model_cache:
         HashMap<crate::terminal::TerminalId, crate::agent_model::AgentModelCacheEntry>,
     pub(crate) last_pane_click: Option<PaneClickState>,
@@ -413,6 +414,7 @@ impl App {
             worktree_auto_land: config.worktrees.auto_land,
             request_land_worktree: None,
             request_land_agent_prompt: None,
+            request_refresh_summary: None,
             landing_worktrees: std::collections::HashSet::new(),
             landing_failures: std::collections::HashMap::new(),
             request_complete_onboarding: false,
@@ -505,6 +507,7 @@ impl App {
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             pane_header: config.ui.pane_header,
             pane_history_persistence: config.experimental.pane_history,
+            refresh_summary_with_grok: config.ui.refresh_summary_with_grok,
             reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
             cjk_ime_agent_filter_configured: !config.experimental.cjk_ime_agents.is_empty(),
             cjk_ime_agents: parse_cjk_ime_agents(&config.experimental.cjk_ime_agents),
@@ -583,6 +586,7 @@ impl App {
             git_status_cache: HashMap::new(),
             last_agent_model_refresh: Instant::now() - AGENT_MODEL_REFRESH_INTERVAL,
             agent_model_refresh_in_flight: false,
+            summary_refresh_in_flight: HashSet::new(),
             agent_model_cache: HashMap::new(),
             last_pane_click: None,
             last_agent_name_click: None,
@@ -813,6 +817,10 @@ impl App {
 
             if let Some((target, text)) = self.state.request_land_agent_prompt.take() {
                 self.submit_land_prompt(&target, &text);
+                needs_render = true;
+            }
+
+            if self.start_pending_summary_refresh() {
                 needs_render = true;
             }
 
@@ -1221,6 +1229,7 @@ impl App {
             self.state.sound = config.ui.sound.clone();
             self.state.notify_active_tab = config.ui.notify_active_tab;
             self.state.toast_config = config.ui.toast.clone();
+            self.state.refresh_summary_with_grok = config.ui.refresh_summary_with_grok;
         }
 
         if !invalid_section("experimental") {
@@ -1836,6 +1845,53 @@ mod tests {
     }
 
     #[test]
+    fn summary_refreshed_replaces_the_session_title() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("summary-refresh");
+        let pane = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(pane)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        let session_id = "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c";
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:grok".into(),
+                agent: "grok".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id(session_id).unwrap(),
+            });
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_session_title(Some("Improve Agent Summary to be useful".into()));
+        app.summary_refresh_in_flight.insert(terminal_id.clone());
+
+        app.handle_internal_event(AppEvent::SummaryRefreshed {
+            terminal_id: terminal_id.clone(),
+            session_id: session_id.into(),
+            title: Some("Land the herdr worktree".into()),
+        });
+
+        assert_eq!(
+            app.state
+                .terminals
+                .get(&terminal_id)
+                .unwrap()
+                .session_title
+                .as_deref(),
+            Some("Land the herdr worktree")
+        );
+        assert!(!app.summary_refresh_in_flight.contains(&terminal_id));
+    }
+
+    #[test]
     fn clipboard_feedback_does_not_replace_notification_toast() {
         let mut app = test_app();
         app.state.toast = Some(crate::app::state::ToastNotification {
@@ -2210,6 +2266,30 @@ mod tests {
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
+
+    #[test]
+    fn settings_save_refresh_summary_with_grok_persists_then_applies_live_config() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("settings-save-refresh-summary-grok");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "onboarding = false\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        assert!(!app.state.refresh_summary_with_grok);
+
+        app.save_refresh_summary_with_grok(true);
+
+        assert!(app.state.refresh_summary_with_grok);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[ui]"));
+        assert!(content.contains("refresh_summary_with_grok = true"));
+        assert!(app.state.config_diagnostic.is_none());
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[test]
     fn settings_save_pane_history_persists_then_applies_live_config() {
         let _guard = config_env_lock().lock().unwrap();

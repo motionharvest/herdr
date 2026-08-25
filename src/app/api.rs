@@ -54,6 +54,29 @@ impl App {
             return;
         }
 
+        if let AppEvent::SummaryRefreshed {
+            terminal_id,
+            session_id,
+            title,
+        } = ev
+        {
+            self.summary_refresh_in_flight.remove(&terminal_id);
+            if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                let still_current = terminal
+                    .model_probe_session()
+                    .is_some_and(|(_, current)| current == session_id);
+                if still_current {
+                    if title.is_some() {
+                        terminal.adopt_probed_title(title, true);
+                        self.state.mark_session_dirty();
+                    }
+                    self.render_dirty.store(true, Ordering::Release);
+                    self.render_notify.notify_one();
+                }
+            }
+            return;
+        }
+
         if let AppEvent::AgentModelRefreshed { results } = ev {
             self.agent_model_refresh_in_flight = false;
             self.last_agent_model_refresh = Instant::now();

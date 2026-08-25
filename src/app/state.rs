@@ -1038,10 +1038,15 @@ impl SettingsSection {
 pub(crate) enum ExperimentSetting {
     PaneHistory,
     SwitchAsciiInputSourceInPrefix,
+    RefreshSummaryWithGrok,
 }
 
 impl ExperimentSetting {
-    pub(crate) const ALL: [Self; 2] = [Self::PaneHistory, Self::SwitchAsciiInputSourceInPrefix];
+    pub(crate) const ALL: [Self; 3] = [
+        Self::PaneHistory,
+        Self::SwitchAsciiInputSourceInPrefix,
+        Self::RefreshSummaryWithGrok,
+    ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -1049,6 +1054,7 @@ impl ExperimentSetting {
             Self::SwitchAsciiInputSourceInPrefix => {
                 "switch to ascii input source in prefix (macOS)"
             }
+            Self::RefreshSummaryWithGrok => "refresh summary with grok",
         }
     }
 
@@ -1058,6 +1064,7 @@ impl ExperimentSetting {
             Self::SwitchAsciiInputSourceInPrefix => {
                 state.switch_ascii_input_source_in_prefix_enabled()
             }
+            Self::RefreshSummaryWithGrok => state.refresh_summary_with_grok(),
         }
     }
 }
@@ -1661,6 +1668,7 @@ pub struct AppState {
     pub worktree_auto_land: bool,
     pub request_land_worktree: Option<usize>,
     pub request_land_agent_prompt: Option<(String, String)>,
+    pub request_refresh_summary: Option<PaneId>,
     pub landing_worktrees: std::collections::HashSet<String>,
     pub landing_failures: std::collections::HashMap<String, String>,
     pub request_complete_onboarding: bool,
@@ -1749,6 +1757,9 @@ pub struct AppState {
     pub show_agent_labels_on_pane_borders: bool,
     pub pane_header: PaneHeaderConfig,
     pub pane_history_persistence: bool,
+    /// Refresh Summary asks a headless `grok -p` session for a 5–8 word
+    /// headline. Off, it reads the latest prompt from the session log.
+    pub refresh_summary_with_grok: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`. See `[experimental] reveal_hidden_cursor_for_cjk_ime`.
     pub reveal_hidden_cursor_for_cjk_ime: bool,
@@ -1856,6 +1867,10 @@ impl AppState {
 
     pub fn pane_history_persistence_enabled(&self) -> bool {
         self.pane_history_persistence
+    }
+
+    pub fn refresh_summary_with_grok(&self) -> bool {
+        self.refresh_summary_with_grok
     }
 
     pub fn switch_ascii_input_source_in_prefix_enabled(&self) -> bool {
@@ -2090,6 +2105,7 @@ impl AppState {
             worktree_auto_land: false,
             request_land_worktree: None,
             request_land_agent_prompt: None,
+            request_refresh_summary: None,
             landing_worktrees: std::collections::HashSet::new(),
             landing_failures: std::collections::HashMap::new(),
             request_complete_onboarding: false,
@@ -2169,6 +2185,7 @@ impl AppState {
             show_agent_labels_on_pane_borders: true,
             pane_header: PaneHeaderConfig::default(),
             pane_history_persistence: false,
+            refresh_summary_with_grok: false,
             reveal_hidden_cursor_for_cjk_ime: false,
             cjk_ime_agent_filter_configured: false,
             cjk_ime_agents: Vec::new(),

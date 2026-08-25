@@ -1589,6 +1589,11 @@ impl HeadlessServer {
             crate::render_prof::event("full_render_cause.deferred_land_prompt");
         }
 
+        if self.app.start_pending_summary_refresh() {
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_refresh_summary");
+        }
+
         if self.app.state.request_submit_worktree_create {
             self.app.state.request_submit_worktree_create = false;
             self.app.start_worktree_add();

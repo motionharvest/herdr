@@ -662,6 +662,19 @@ mod tests {
     }
 
     #[test]
+    fn experiments_renders_refresh_summary_with_grok_row() {
+        let mut app = AppState::test_new();
+        app.refresh_summary_with_grok = true;
+        app.settings.section = SettingsSection::Experiments;
+        app.settings.list.selected = 2;
+        app.mode = Mode::Settings;
+
+        let rendered = rendered_settings(&app);
+
+        assert!(rendered.contains("refresh summary with grok [✓]"));
+    }
+
+    #[test]
     fn pane_header_lists_each_field_with_a_checkbox() {
         let mut app = AppState::test_new();
         app.pane_header.working_directory = true;
