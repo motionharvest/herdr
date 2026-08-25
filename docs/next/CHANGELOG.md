@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- The composer Directory comes back with the folder it was showing after a restart, the same way the agent already does. A path that is no longer a folder is dropped.
 - Right-clicking an agent in the table or the spaces sidebar now offers `Refresh Summary`. It reads the current prompt into the Summary column the way the automatic update used to, but only when you ask. Settings → experiments has `refresh summary with grok`: when that is on, the command starts a headless `grok -p` session that names the latest user request in 5–8 words. Off, or when Grok fails, it still reads the latest prompt from the session log. The same key lives at `[ui] refresh_summary_with_grok`.
 - Dragging an agent from the table or the sidebar onto `+ new` flies it out into its own space, the same way dragging a pane name already did. A set-down agent dropped there becomes the root of that space. Those drags used to only reorder rows, so the button under the list did nothing with them.
 - Dragging a pane by its name over another space in the sidebar switches to that space while the drag is still held, so the pane can be dropped onto the layout there. Release on the space card docks it beside the pane that had focus. It used to only rearrange panes in the space you started in, or fly out onto `+ new`. The name on a peeked pane, or on the only pane in a space, is the same handle.

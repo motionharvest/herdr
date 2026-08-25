@@ -285,6 +285,7 @@ impl App {
         let mut restored_detached_agents = Vec::new();
         let mut restored_agent_order = Vec::new();
         let mut restored_composer_agent = None;
+        let mut restored_composer_folder = None;
         let mut restored_sidebar_width = None;
         let mut restored_sidebar_section_split = None;
         let mut restored_collapsed_space_keys = std::collections::HashSet::new();
@@ -296,6 +297,7 @@ impl App {
         } else if let Some(snap) = crate::persist::load() {
             restored_agent_order = snap.agent_order.clone();
             restored_composer_agent = snap.composer_agent.clone();
+            restored_composer_folder = snap.composer_folder.clone();
             restored_sidebar_width = snap.sidebar_width;
             restored_sidebar_section_split = snap.sidebar_section_split;
             restored_collapsed_space_keys = snap.collapsed_space_keys.clone();
@@ -366,6 +368,9 @@ impl App {
         let mut composer = crate::composer::ComposerState::default();
         if let Some(agent) = restored_composer_agent {
             composer.restore_agent(&agent);
+        }
+        if let Some(folder) = restored_composer_folder {
+            composer.restore_folder(&folder);
         }
 
         let (sidebar_min_width, sidebar_max_width) = crate::config::validated_sidebar_bounds(
@@ -662,6 +667,9 @@ impl App {
         // band whose first Enter fails.
         if let Some(agent) = snapshot.composer_agent.as_deref() {
             app.state.composer.restore_agent(agent);
+        }
+        if let Some(folder) = snapshot.composer_folder.as_deref() {
+            app.state.composer.restore_folder(folder);
         }
         if let Some(width) = snapshot.sidebar_width {
             app.state.sidebar_width = width;

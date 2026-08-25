@@ -1825,7 +1825,10 @@ impl AppState {
             return None;
         }
         match self.composer.take_typed_folder() {
-            Ok(()) => None,
+            Ok(()) => {
+                self.mark_session_dirty();
+                None
+            }
             Err(err) => Some(err.message()),
         }
     }
@@ -1921,8 +1924,12 @@ impl AppState {
         let Some(index) = self.composer_dropdown_item_at(self.view.composer.dropdown.x, row) else {
             return;
         };
+        let folder = self.composer.open == Some(crate::composer::Focus::Folder);
         self.composer.point_at(index);
         self.composer.take_pointed();
+        if folder {
+            self.mark_session_dirty();
+        }
     }
 
     fn composer_dropdown_item_at(&self, col: u16, row: u16) -> Option<usize> {

@@ -153,6 +153,25 @@ impl ComposerState {
         true
     }
 
+    /// Restore a saved folder only when it is still a directory. A path that
+    /// has gone missing is dropped rather than shown as a broken choice. A
+    /// linked worktree is offered as its parent, the same way a running pane
+    /// in one is.
+    pub(crate) fn restore_folder(&mut self, path: &Path) -> bool {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if !path.is_dir() {
+            return false;
+        }
+        let Some(folder) = crate::workspace::composer_folder_path(&path) else {
+            return false;
+        };
+        if !folder.is_dir() {
+            return false;
+        }
+        self.add_folder(folder);
+        true
+    }
+
     /// A list of the tests' choosing, in place of what this machine happens to
     /// have installed.
     #[cfg(test)]
@@ -763,6 +782,20 @@ mod tests {
         composer
     }
 
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "herdr-composer-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
     #[test]
     fn restoring_an_agent_choice_uses_its_name_not_its_old_row() {
         let mut composer = composer_with_named_agents();
@@ -780,6 +813,34 @@ mod tests {
         assert!(!composer.restore_agent("Gemini"));
 
         assert_eq!(composer.agent, "Auto");
+    }
+
+    #[test]
+    fn restoring_a_folder_puts_it_on_show() {
+        let folder = unique_temp_dir("restore-folder");
+        let mut composer = ComposerState::default();
+
+        assert!(composer.restore_folder(&folder));
+
+        assert_eq!(
+            composer
+                .folder_path()
+                .and_then(|path| path.canonicalize().ok()),
+            Some(folder.canonicalize().unwrap())
+        );
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn restoring_a_missing_folder_keeps_nothing_on_show() {
+        let mut composer = ComposerState::default();
+
+        assert!(
+            !composer.restore_folder(Path::new("/this/does/not/exist-for-herdr-composer-restore"))
+        );
+
+        assert_eq!(composer.folder_path(), None);
+        assert_eq!(composer.folder, None);
     }
 
     #[test]

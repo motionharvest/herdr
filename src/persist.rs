@@ -1,4 +1,5 @@
-//! Session persistence — save/restore workspaces, layouts, and working directories.
+//! Session persistence — save/restore workspaces, layouts, working directories,
+//! and the composer Directory.
 //!
 //! Stored at `~/.config/herdr/session.json`.
 //! Optional pane screen history is stored separately at `session-history.json`.

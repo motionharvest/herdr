@@ -133,7 +133,9 @@ impl crate::app::AppState {
     /// a space that closes takes its folder off the list and there is no second
     /// record of where the work is to fall out of step with the first. A folder
     /// typed by hand is the one exception: it is kept until something runs in
-    /// it, because it was put there to be started in.
+    /// it, because it was put there to be started in. The folder on show is also
+    /// written with the session, so a restart puts it back even when nothing is
+    /// running in it yet.
     ///
     /// This is asked for at the moments the list is consulted — reaching the
     /// band, and opening its folder list — rather than on every frame. A pane's
@@ -346,5 +348,16 @@ mod tests {
             .args(["worktree", "remove", "--force", second.to_str().unwrap()])
             .status();
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn a_chosen_folder_stays_on_show_when_no_pane_is_in_it() {
+        let mut state = AppState::test_new();
+        let folder = std::env::temp_dir();
+        state.composer.add_folder(folder.clone());
+
+        state.refresh_composer_folders(&TerminalRuntimeRegistry::default());
+
+        assert_eq!(state.composer.folder_path(), Some(folder.as_path()));
     }
 }

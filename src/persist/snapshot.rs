@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ratatui::layout::Direction;
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,11 @@ pub struct SessionSnapshot {
     /// can differ between the session that wrote this and the one that reads it.
     #[serde(default)]
     pub composer_agent: Option<String>,
+    /// The folder the composer Directory was left showing. A path rather than a
+    /// row because the list is rebuilt from running work, and the chosen folder
+    /// has to outlive that list the way the agent name outlives the harness table.
+    #[serde(default)]
+    pub composer_folder: Option<PathBuf>,
     /// Manual order of the session-wide agent table. Terminal ids are stable
     /// across pane rearrangement and are restored from pane snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -56,6 +61,7 @@ impl Default for SessionSnapshot {
             active: None,
             selected: 0,
             composer_agent: None,
+            composer_folder: None,
             agent_order: Vec::new(),
             detached_agents: Vec::new(),
             sidebar_width: None,
@@ -305,6 +311,8 @@ struct RawSessionSnapshot {
     #[serde(default)]
     composer_agent: Option<String>,
     #[serde(default)]
+    composer_folder: Option<PathBuf>,
+    #[serde(default)]
     agent_order: Vec<crate::terminal::TerminalId>,
     #[serde(default)]
     detached_agents: Vec<DetachedAgentSnapshot>,
@@ -333,6 +341,7 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
         active: raw.active,
         selected: raw.selected,
         composer_agent: raw.composer_agent,
+        composer_folder: raw.composer_folder,
         agent_order: raw.agent_order,
         detached_agents: raw.detached_agents,
         sidebar_width: raw.sidebar_width,
@@ -405,6 +414,7 @@ pub fn capture(
         active: state.active,
         selected: state.selected,
         composer_agent: Some(state.composer.agent.clone()),
+        composer_folder: state.composer.folder_path().map(Path::to_path_buf),
         agent_order: state
             .agent_order
             .iter()
@@ -1257,6 +1267,36 @@ mod tests {
             crate::agent_resume::AgentSessionRefKind::Id
         );
         assert_eq!(agent_session.value, "opencode-session");
+    }
+
+    #[test]
+    fn capture_saves_the_composer_folder() {
+        let mut state = AppState::test_new();
+        let folder = std::env::temp_dir();
+        state.composer.add_folder(folder.clone());
+
+        let snapshot = capture_from_state(&state);
+
+        assert_eq!(snapshot.composer_folder.as_deref(), Some(folder.as_path()));
+    }
+
+    #[test]
+    fn old_snapshots_without_composer_folder_still_parse() {
+        let json = r#"{"version":3,"workspaces":[],"active":null,"selected":0}"#;
+        let snap = parse_snapshot(json).unwrap();
+        assert_eq!(snap.composer_folder, None);
+    }
+
+    #[test]
+    fn composer_folder_round_trips_through_json() {
+        let folder = PathBuf::from("/home/aaron/lab/herdr");
+        let snap = SessionSnapshot {
+            composer_folder: Some(folder.clone()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        let restored = parse_snapshot(&json).unwrap();
+        assert_eq!(restored.composer_folder, Some(folder));
     }
 
     #[test]

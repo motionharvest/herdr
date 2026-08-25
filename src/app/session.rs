@@ -22,7 +22,10 @@ impl App {
             return;
         }
 
-        if self.state.workspaces.is_empty() && self.state.detached_agents.is_empty() {
+        if self.state.workspaces.is_empty()
+            && self.state.detached_agents.is_empty()
+            && self.state.composer.folder_path().is_none()
+        {
             crate::persist::clear();
         } else {
             let snap = crate::persist::capture(&self.state, &self.terminal_runtimes);

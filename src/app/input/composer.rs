@@ -125,18 +125,28 @@ pub(crate) fn handle_composer_key(
             }
             KeyCode::Tab if open == Focus::Folder => {
                 return match state.composer.take_folder() {
-                    Ok(()) => ComposerKeyOutcome::Edited,
+                    Ok(()) => {
+                        state.mark_session_dirty();
+                        ComposerKeyOutcome::Edited
+                    }
                     Err(err) => ComposerKeyOutcome::Trouble(err.message()),
                 };
             }
             KeyCode::Enter if open == Focus::Folder => {
                 return match state.composer.take_typed_folder() {
-                    Ok(()) => ComposerKeyOutcome::Edited,
+                    Ok(()) => {
+                        state.mark_session_dirty();
+                        ComposerKeyOutcome::Edited
+                    }
                     Err(err) => ComposerKeyOutcome::Trouble(err.message()),
                 };
             }
             KeyCode::Enter | KeyCode::Tab => {
+                let folder = open == Focus::Folder;
                 state.composer.take_pointed();
+                if folder {
+                    state.mark_session_dirty();
+                }
                 return ComposerKeyOutcome::Edited;
             }
             KeyCode::Char(' ') if open == Focus::Agent => {
@@ -202,8 +212,18 @@ fn closed_dropdown_key(
 ) -> ComposerKeyOutcome {
     let which = state.composer.focus;
     match code {
-        KeyCode::Up => state.composer.step(which, -1),
-        KeyCode::Down => state.composer.step(which, 1),
+        KeyCode::Up => {
+            state.composer.step(which, -1);
+            if which == Focus::Folder {
+                state.mark_session_dirty();
+            }
+        }
+        KeyCode::Down => {
+            state.composer.step(which, 1);
+            if which == Focus::Folder {
+                state.mark_session_dirty();
+            }
+        }
         KeyCode::Char(' ') if which == Focus::Agent => {
             state.composer.open_dropdown(Focus::Agent);
         }
@@ -655,6 +675,11 @@ mod tests {
             Some(root.join("herdr-old").as_path())
         );
         assert_eq!(state.composer.focus, Focus::Agent);
+        assert!(
+            state.session_dirty,
+            "a chosen folder has to be written before a restart"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
