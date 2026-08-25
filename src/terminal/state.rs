@@ -74,6 +74,9 @@ pub struct TerminalState {
     /// announces one. It stands in only when no reported title exists, so a
     /// harness that names its own sessions always wins.
     pub session_title: Option<String>,
+    /// A summary the user set from the agent menu. It wins over the harness
+    /// title and the probed session title until it is cleared.
+    pub manual_summary: Option<String>,
     /// Unused leftover of title-derived assigned names. Restored sessions may
     /// still carry it; display names come from the first-name word list.
     pub title_name: Option<String>,
@@ -115,6 +118,7 @@ impl TerminalState {
             agent_name: None,
             model_info: None,
             session_title: None,
+            manual_summary: None,
             title_name: None,
             hook_report_sequences: HashMap::new(),
             metadata_report_sequences: HashMap::new(),
@@ -778,6 +782,15 @@ impl TerminalState {
         self.session_title = title.filter(|title| !title.trim().is_empty());
     }
 
+    pub fn set_manual_summary(&mut self, summary: String) {
+        let summary = summary.trim().to_string();
+        self.manual_summary = (!summary.is_empty()).then_some(summary);
+    }
+
+    pub fn clear_manual_summary(&mut self) {
+        self.manual_summary = None;
+    }
+
     pub fn clear_agent_runtime_identity_after_respawn(&mut self) {
         self.detected_agent = None;
         self.fallback_state = AgentState::Unknown;
@@ -790,6 +803,7 @@ impl TerminalState {
         self.persisted_agent_session = None;
         self.model_info = None;
         self.session_title = None;
+        self.manual_summary = None;
         self.title_name = None;
         self.agent_metadata.clear();
         self.state = AgentState::Unknown;

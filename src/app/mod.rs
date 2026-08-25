@@ -1429,7 +1429,7 @@ impl App {
                     input::ComposerKeyOutcome::Edited => {}
                 }
             }
-            Mode::RenameWorkspace | Mode::RenamePane => {
+            Mode::RenameWorkspace | Mode::RenamePane | Mode::UpdateSummary => {
                 input::handle_rename_key(&mut self.state, key_event);
             }
             Mode::NewLinkedWorktree => {

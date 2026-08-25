@@ -88,7 +88,7 @@ impl App {
                     Mode::ReleaseNotes => self.handle_release_notes_key(key_event),
                     Mode::ProductAnnouncement => self.handle_product_announcement_key(key_event),
                     Mode::Prefix | Mode::Navigate | Mode::Copy | Mode::Composer => unreachable!(),
-                    Mode::RenameWorkspace | Mode::RenamePane => {
+                    Mode::RenameWorkspace | Mode::RenamePane | Mode::UpdateSummary => {
                         handle_rename_key(&mut self.state, key_event)
                     }
                     Mode::NewLinkedWorktree => self.handle_worktree_create_key(key_event),

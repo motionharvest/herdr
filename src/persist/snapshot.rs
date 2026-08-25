@@ -214,6 +214,8 @@ pub struct PaneSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<PaneAgentSessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
@@ -523,6 +525,7 @@ fn capture_pane(
         label: terminal.and_then(|terminal| terminal.manual_label.clone()),
         agent_name: terminal.and_then(|terminal| terminal.agent_name.clone()),
         title_name: terminal.and_then(|terminal| terminal.title_name.clone()),
+        summary: terminal.and_then(|terminal| terminal.manual_summary.clone()),
         agent_session,
         launch_argv: terminal.and_then(|terminal| terminal.launch_argv.clone()),
         seen: pane.seen,
@@ -772,6 +775,7 @@ mod tests {
                 completed: false,
                 agent_timing: None,
                 title_name: None,
+                summary: None,
             },
         );
         panes.insert(
@@ -787,6 +791,7 @@ mod tests {
                 completed: false,
                 agent_timing: None,
                 title_name: None,
+                summary: None,
             },
         );
 
@@ -1263,6 +1268,7 @@ mod tests {
                 completed: false,
                 agent_timing: None,
                 title_name: None,
+                summary: None,
             },
         );
         panes.insert(
@@ -1280,6 +1286,7 @@ mod tests {
                 completed: false,
                 agent_timing: None,
                 title_name: None,
+                summary: None,
             },
         );
 

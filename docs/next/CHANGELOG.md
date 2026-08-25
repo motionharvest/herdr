@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Right-clicking an agent in the table or the spaces sidebar now offers `Update Summary`. It opens the same kind of field as rename, filled with the current summary. Save keeps that text on the row even if the harness later writes another title. Clearing it and saving lets the probed title come back.
 - Dragging an agent from the table or the sidebar onto `+ new` flies it out into its own space, the same way dragging a pane name already did. A set-down agent dropped there becomes the root of that space. Those drags used to only reorder rows, so the button under the list did nothing with them.
 - Dragging a pane by its name over another space in the sidebar switches to that space while the drag is still held, so the pane can be dropped onto the layout there. Release on the space card docks it beside the pane that had focus. It used to only rearrange panes in the space you started in, or fly out onto `+ new`.
 - The spaces and agents sidebar is back on the left of the frame. Composer, the agent table, and the panes keep their places to its right. Click a space to switch, click an agent to focus it, drag a pane onto `+ new` to fly it out, and `prefix+b` folds the sidebar to a strip.

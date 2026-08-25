@@ -342,9 +342,10 @@ impl TerminalState {
         enforce_ttl: bool,
     ) -> EffectivePresentation {
         let mut presentation = EffectivePresentation::empty();
-        presentation.title = self
-            .newest_metadata_title(now, enforce_ttl)
-            .or_else(|| self.session_title.clone());
+        presentation.title = self.manual_summary.clone().or_else(|| {
+            self.newest_metadata_title(now, enforce_ttl)
+                .or_else(|| self.session_title.clone())
+        });
         presentation.display_agent = self.newest_metadata_display_agent(now, enforce_ttl);
         presentation.state_labels = self.effective_metadata_state_labels(now, enforce_ttl);
         presentation.custom_status =
@@ -516,6 +517,27 @@ mod tests {
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())
+    }
+
+    #[test]
+    fn manual_summary_wins_over_a_probed_session_title() {
+        let mut terminal = test_terminal();
+        terminal.set_session_title(Some("probed title".into()));
+        terminal.set_manual_summary("Improve Agent Summary to be useful".into());
+        assert_eq!(
+            terminal.effective_title().as_deref(),
+            Some("Improve Agent Summary to be useful")
+        );
+        terminal.set_session_title(Some("later probed title".into()));
+        assert_eq!(
+            terminal.effective_title().as_deref(),
+            Some("Improve Agent Summary to be useful")
+        );
+        terminal.clear_manual_summary();
+        assert_eq!(
+            terminal.effective_title().as_deref(),
+            Some("later probed title")
+        );
     }
 
     fn set_metadata_custom_status(

@@ -634,6 +634,7 @@ fn restore_pane(
     let saved_label = saved_pane.and_then(|p| p.label.clone());
     let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
     let saved_title_name = saved_pane.and_then(|p| p.title_name.clone());
+    let saved_summary = saved_pane.and_then(|p| p.summary.clone());
     let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
     let saved_agent_timing = saved_pane.and_then(|p| p.agent_timing.as_ref());
     let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
@@ -678,6 +679,9 @@ fn restore_pane(
         }
         if let Some(title_name) = saved_title_name {
             terminal.title_name = Some(title_name);
+        }
+        if let Some(summary) = saved_summary {
+            terminal.set_manual_summary(summary);
         }
         if let Some(timing) = saved_agent_timing {
             timing.restore_into(&mut terminal);
@@ -783,6 +787,9 @@ fn restore_pane(
             }
             if let Some(title_name) = saved_title_name {
                 terminal.title_name = Some(title_name);
+            }
+            if let Some(summary) = saved_summary {
+                terminal.set_manual_summary(summary);
             }
             if let Some(timing) = saved_agent_timing {
                 timing.restore_into(&mut terminal);
@@ -1300,6 +1307,7 @@ mod tests {
                     completed: false,
                     agent_timing: None,
                     title_name: None,
+                    summary: None,
                 },
                 seen: false,
                 completed: true,
@@ -1363,6 +1371,7 @@ mod tests {
                     completed: false,
                     agent_timing: None,
                     title_name: None,
+                    summary: None,
                 },
                 seen: true,
                 completed: false,
@@ -1427,6 +1436,7 @@ mod tests {
                             completed: false,
                             agent_timing: None,
                             title_name: None,
+                            summary: None,
                         },
                     )]),
                     zoomed: false,
@@ -1494,6 +1504,7 @@ mod tests {
                 completed,
                 agent_timing: None,
                 title_name: None,
+                summary: None,
             }
         };
         let snapshot = SessionSnapshot {
@@ -1623,6 +1634,7 @@ mod tests {
                             completed: false,
                             agent_timing: None,
                             title_name: None,
+                            summary: None,
                         },
                     )]),
                     zoomed: false,
@@ -1704,6 +1716,7 @@ mod tests {
                             completed: false,
                             agent_timing: None,
                             title_name: None,
+                            summary: None,
                         },
                     )]),
                     zoomed: false,
@@ -1872,6 +1885,7 @@ mod tests {
                 completed: false,
                 agent_timing: None,
                 title_name: None,
+                summary: None,
             },
         );
         let history = SessionHistorySnapshot {
@@ -1932,6 +1946,7 @@ mod tests {
             completed: false,
             agent_timing: None,
             title_name: None,
+            summary: None,
         };
         SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -2000,6 +2015,33 @@ mod tests {
         let names = crate::pane_names::assigned_names(&terminals);
         let first_name = names.get(&first).expect("restored terminal keeps a name");
         assert!(first_name.starts_with(crate::pane_names::base_name_for(&first.to_string())));
+    }
+
+    #[tokio::test]
+    async fn restore_preserves_manual_summary() {
+        let cwd = std::env::current_dir().unwrap();
+        let first = TerminalId::alloc();
+        let mut snapshot = snapshot_with_pane_terminal_ids(cwd, Some(first.clone()), None);
+        snapshot.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&0)
+            .unwrap()
+            .summary = Some("Improve Agent Summary to be useful".into());
+
+        let terminals = restore_terminals(&snapshot);
+        assert_eq!(
+            terminals
+                .get(&first)
+                .and_then(|t| t.manual_summary.as_deref()),
+            Some("Improve Agent Summary to be useful")
+        );
+        assert_eq!(
+            terminals
+                .get(&first)
+                .and_then(|t| t.effective_title())
+                .as_deref(),
+            Some("Improve Agent Summary to be useful")
+        );
     }
 
     #[tokio::test]

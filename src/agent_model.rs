@@ -869,9 +869,7 @@ fn strip_hedges(text: &str) -> String {
 }
 
 fn finish_action_title(text: &str) -> Option<String> {
-    let trimmed = text
-        .trim()
-        .trim_end_matches(['.', '?', '!', ',', ';']);
+    let trimmed = text.trim().trim_end_matches(['.', '?', '!', ',', ';']);
     if trimmed.is_empty() {
         return None;
     }

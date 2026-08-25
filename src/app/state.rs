@@ -919,6 +919,7 @@ pub enum Mode {
     Composer,
     RenameWorkspace,
     RenamePane,
+    UpdateSummary,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
@@ -1461,7 +1462,11 @@ impl ContextMenuState {
                 },
             ],
             ContextMenuKind::Agent { space, .. } => {
-                let mut items = vec!["Rename agent".into(), "Delete agent".into()];
+                let mut items = vec![
+                    "Rename agent".into(),
+                    "Update Summary".into(),
+                    "Delete agent".into(),
+                ];
                 match space {
                     SpaceMenuKind::Plain => {}
                     SpaceMenuKind::Repo => {
@@ -2320,6 +2325,7 @@ mod tests {
             menu.items(),
             vec![
                 "Rename agent",
+                "Update Summary",
                 "Delete agent",
                 "Land on main",
                 "Delete agent + worktree",
@@ -2339,6 +2345,7 @@ mod tests {
             items,
             vec![
                 "Rename agent",
+                "Update Summary",
                 "Delete agent",
                 "New worktree",
                 "Open worktree...",
@@ -2357,10 +2364,15 @@ mod tests {
         let menu = agent_menu(SpaceMenuKind::Plain);
         assert_eq!(
             menu.items(),
-            vec!["Rename agent", "Delete agent", "Delete agent + worktree",]
-                .into_iter()
-                .map(str::to_string)
-                .collect::<Vec<_>>()
+            vec![
+                "Rename agent",
+                "Update Summary",
+                "Delete agent",
+                "Delete agent + worktree",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
         );
         assert!(!menu.item_enabled(worktree_delete_idx(&menu)));
     }
