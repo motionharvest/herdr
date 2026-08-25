@@ -801,6 +801,7 @@ impl AppState {
                                         mouse.row,
                                         press.pane_id,
                                     ),
+                                    create_space: false,
                                 },
                             });
                         }
@@ -817,6 +818,7 @@ impl AppState {
                                         press.pane_id,
                                         mouse.row,
                                     ),
+                                    create_space: false,
                                 },
                             });
                         }
@@ -851,9 +853,11 @@ impl AppState {
                     }
                 }
 
-                // A table-row drag rearranges rows, never pane geometry. A
-                // set-down agent may still be carried out of the table to dock
-                // on a pane, preserving that distinct interaction.
+                // A table-row drag rearranges rows, never pane geometry, except
+                // `+ new` which flies the agent out the same way a pane-name
+                // drag does. A set-down agent may still be carried out of the
+                // table to dock on a pane, or onto `+ new` for a space of its
+                // own.
                 if let Some(press) = self.agent_press.as_ref() {
                     let pane_id = press.pane_id;
                     let docked = press.docked;
@@ -868,6 +872,7 @@ impl AppState {
                                 target: DragTarget::AgentReorder {
                                     source_pane_id: pane_id,
                                     insert_idx,
+                                    create_space: false,
                                 },
                             });
                         }
@@ -883,6 +888,7 @@ impl AppState {
                                 pane_id,
                                 hovered_pane_id: None,
                                 drop_zone: crate::layout::DropZone::Over,
+                                create_space: false,
                             },
                         });
                     } else if let Some(DragState {
@@ -1008,6 +1014,8 @@ impl AppState {
                     self.set_manual_sidebar_width(mouse.column);
                 }
 
+                self.apply_create_space_hover(mouse.column, mouse.row);
+
                 if let Some(drag) = &self.drag {
                     match &drag.target {
                         DragTarget::PaneSwap { .. }
@@ -1116,9 +1124,21 @@ impl AppState {
                     Some(DragState {
                         target:
                             DragTarget::SidebarAgentReorder {
+                                source_pane_id,
+                                create_space: true,
+                                ..
+                            },
+                    }) => {
+                        self.fly_pane_to_new_workspace(source_pane_id);
+                        self.mode = Mode::Terminal;
+                    }
+                    Some(DragState {
+                        target:
+                            DragTarget::SidebarAgentReorder {
                                 ws_idx,
                                 source_pane_id,
                                 insert_idx: Some(insert_idx),
+                                ..
                             },
                     }) => {
                         self.move_agent_in_folder(ws_idx, source_pane_id, insert_idx);
@@ -1137,7 +1157,19 @@ impl AppState {
                         target:
                             DragTarget::AgentReorder {
                                 source_pane_id,
+                                create_space: true,
+                                ..
+                            },
+                    }) => {
+                        self.fly_pane_to_new_workspace(source_pane_id);
+                        self.mode = Mode::Terminal;
+                    }
+                    Some(DragState {
+                        target:
+                            DragTarget::AgentReorder {
+                                source_pane_id,
                                 insert_idx: Some(insert_idx),
+                                ..
                             },
                     }) => {
                         self.move_agent_to_index(source_pane_id, insert_idx);
@@ -1146,8 +1178,20 @@ impl AppState {
                         target:
                             DragTarget::AgentDock {
                                 pane_id,
+                                create_space: true,
+                                ..
+                            },
+                    }) => {
+                        self.fly_pane_to_new_workspace(pane_id);
+                        self.mode = Mode::Terminal;
+                    }
+                    Some(DragState {
+                        target:
+                            DragTarget::AgentDock {
+                                pane_id,
                                 hovered_pane_id: Some(target_pane_id),
                                 drop_zone,
+                                ..
                             },
                     }) => {
                         self.dock_detached_agent(pane_id, target_pane_id, drop_zone);
@@ -1643,6 +1687,55 @@ impl AppState {
                 terminal_runtimes,
                 self.screen_rect(),
             );
+        }
+    }
+
+    /// Hovering `+ new` while carrying an agent or pane. A docked last pane
+    /// cannot fly out, so it does not light the button.
+    fn apply_create_space_hover(&mut self, col: u16, row: u16) {
+        let pane_id = match self.drag.as_ref().map(|drag| &drag.target) {
+            Some(DragTarget::AgentReorder { source_pane_id, .. }) => Some(*source_pane_id),
+            Some(DragTarget::AgentDock { pane_id, .. }) => Some(*pane_id),
+            Some(DragTarget::SidebarAgentReorder { source_pane_id, .. }) => Some(*source_pane_id),
+            _ => None,
+        };
+        let Some(pane_id) = pane_id else {
+            return;
+        };
+        let create_space = rect_contains(self.sidebar_new_button_rect(), col, row)
+            && self.can_fly_pane_to_new_workspace(pane_id);
+        match self.drag.as_mut().map(|drag| &mut drag.target) {
+            Some(DragTarget::AgentReorder {
+                insert_idx,
+                create_space: flag,
+                ..
+            }) => {
+                *flag = create_space;
+                if create_space {
+                    *insert_idx = None;
+                }
+            }
+            Some(DragTarget::AgentDock {
+                hovered_pane_id,
+                create_space: flag,
+                ..
+            }) => {
+                *flag = create_space;
+                if create_space {
+                    *hovered_pane_id = None;
+                }
+            }
+            Some(DragTarget::SidebarAgentReorder {
+                insert_idx,
+                create_space: flag,
+                ..
+            }) => {
+                *flag = create_space;
+                if create_space {
+                    *insert_idx = None;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -3463,6 +3556,236 @@ mod tests {
         assert!(app.state.workspaces[0].pane_state(sibling).is_some());
         assert!(app.state.workspaces[1].pane_state(source).is_some());
         assert!(app.state.workspaces[1].pane_state(dest).is_some());
+    }
+
+    fn name_split_agents(app: &mut crate::app::App, panes: &[crate::layout::PaneId]) {
+        for pane_id in panes {
+            let terminal_id = app.state.workspaces[0]
+                .pane_state(*pane_id)
+                .expect("agent pane")
+                .attached_terminal_id
+                .clone();
+            let terminal = app
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("agent terminal");
+            terminal.set_agent_name("codex".into());
+            terminal.detected_agent = Some(crate::detect::Agent::Codex);
+        }
+    }
+
+    fn new_space_button_point(app: &crate::app::App) -> (u16, u16) {
+        let button = app.state.sidebar_new_button_rect();
+        assert!(
+            button.width > 0 && button.height > 0,
+            "sidebar + new button should be on screen"
+        );
+        (button.x + button.width / 2, button.y + button.height / 2)
+    }
+
+    fn drag_from_to(app: &mut crate::app::App, start: (u16, u16), dest: (u16, u16)) {
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            start.0,
+            start.1,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            start.0 + PANE_DRAG_THRESHOLD,
+            start.1,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            dest.0,
+            dest.1,
+        ));
+    }
+
+    #[test]
+    fn dropping_an_agent_table_row_on_new_space_flies_it_out() {
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("space");
+        let source = workspace.tabs[0].root_pane;
+        let sibling = workspace.test_split(Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        name_split_agents(&mut app, &[source, sibling]);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 32));
+
+        let table_row = app
+            .state
+            .view
+            .agent_table
+            .rows
+            .iter()
+            .find(|row| row.pane_id == source)
+            .expect("source table row")
+            .rect;
+        let (drop_col, drop_row) = new_space_button_point(&app);
+
+        drag_from_to(
+            &mut app,
+            (table_row.x + 2, table_row.y),
+            (drop_col, drop_row),
+        );
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::AgentReorder {
+                source_pane_id,
+                create_space: true,
+                ..
+            }) if *source_pane_id == source
+        ));
+        assert_eq!(app.state.workspaces.len(), 1);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            drop_col,
+            drop_row,
+        ));
+
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert!(app.state.workspaces[0].pane_state(source).is_none());
+        assert!(app.state.workspaces[0].pane_state(sibling).is_some());
+        assert!(app.state.workspaces[1].pane_state(source).is_some());
+        assert_eq!(app.state.workspaces[1].layout.pane_count(), 1);
+        assert_eq!(app.state.active, Some(1));
+        assert_eq!(app.state.workspaces[1].focused_pane_id(), Some(source));
+    }
+
+    #[test]
+    fn dropping_a_sidebar_agent_on_new_space_flies_it_out() {
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("space");
+        let source = workspace.tabs[0].root_pane;
+        let sibling = workspace.test_split(Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        name_split_agents(&mut app, &[source, sibling]);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 32));
+
+        let agent_row = app
+            .state
+            .view
+            .agent_row_areas
+            .iter()
+            .find(|row| row.pane_id == source)
+            .expect("source sidebar row")
+            .rect;
+        let (drop_col, drop_row) = new_space_button_point(&app);
+
+        drag_from_to(
+            &mut app,
+            (agent_row.x + 2, agent_row.y),
+            (drop_col, drop_row),
+        );
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::SidebarAgentReorder {
+                source_pane_id,
+                create_space: true,
+                insert_idx: None,
+                ..
+            }) if *source_pane_id == source
+        ));
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            drop_col,
+            drop_row,
+        ));
+
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert!(app.state.workspaces[0].pane_state(source).is_none());
+        assert!(app.state.workspaces[0].pane_state(sibling).is_some());
+        assert!(app.state.workspaces[1].pane_state(source).is_some());
+        assert_eq!(app.state.active, Some(1));
+    }
+
+    #[test]
+    fn dropping_a_hidden_agent_on_new_space_docks_it_there() {
+        let (mut app, pane_id, remaining) = app_with_hidden_agent();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 32));
+        let row = hidden_agent_row(&app, pane_id);
+        let (drop_col, drop_row) = new_space_button_point(&app);
+
+        drag_from_to(&mut app, (row.rect.x + 1, row.rect.y), (drop_col, drop_row));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::AgentDock {
+                pane_id: dragged,
+                create_space: true,
+                hovered_pane_id: None,
+                ..
+            }) if *dragged == pane_id
+        ));
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            drop_col,
+            drop_row,
+        ));
+
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert!(app.state.workspaces[0].pane_state(remaining).is_some());
+        assert!(app.state.workspaces[1].pane_state(pane_id).is_some());
+        assert!(app
+            .state
+            .detached_agents
+            .iter()
+            .all(|detached| detached.pane_id != pane_id));
+        assert_eq!(app.state.agent_peek, None);
+        assert_eq!(app.state.active, Some(1));
+    }
+
+    #[test]
+    fn dropping_the_last_docked_agent_on_new_space_leaves_it() {
+        let mut app = app_for_mouse_test();
+        let workspace = Workspace::test_new("space");
+        let source = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        name_split_agents(&mut app, &[source]);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 32));
+
+        let table_row = app
+            .state
+            .view
+            .agent_table
+            .rows
+            .iter()
+            .find(|row| row.pane_id == source)
+            .expect("source table row")
+            .rect;
+        let (drop_col, drop_row) = new_space_button_point(&app);
+
+        drag_from_to(
+            &mut app,
+            (table_row.x + 2, table_row.y),
+            (drop_col, drop_row),
+        );
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::AgentReorder {
+                create_space: false,
+                ..
+            })
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            drop_col,
+            drop_row,
+        ));
+
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert!(app.state.workspaces[0].pane_state(source).is_some());
     }
 
     #[test]

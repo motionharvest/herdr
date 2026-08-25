@@ -1085,6 +1085,7 @@ fn render_agent_drop_indicator(
             ws_idx,
             source_pane_id,
             insert_idx: Some(insert_idx),
+            ..
         }) => {
             let Some((key, _)) = agent_folder_position(app, *ws_idx, *source_pane_id) else {
                 return;
@@ -1169,6 +1170,15 @@ fn pane_swap_create_space_hover(app: &AppState) -> bool {
         Some(crate::app::state::DragTarget::PaneSwap {
             create_space: true,
             moved: true,
+            ..
+        }) | Some(crate::app::state::DragTarget::AgentReorder {
+            create_space: true,
+            ..
+        }) | Some(crate::app::state::DragTarget::AgentDock {
+            create_space: true,
+            ..
+        }) | Some(crate::app::state::DragTarget::SidebarAgentReorder {
+            create_space: true,
             ..
         })
     )

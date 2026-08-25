@@ -1183,10 +1183,12 @@ pub(crate) enum DragTarget {
     },
     /// Reordering an agent row among the agents it shares a folder with in
     /// the sidebar. Display order only — the pane layout is untouched.
+    /// Hovering `+ new` instead flies the pane out into its own space.
     SidebarAgentReorder {
         ws_idx: usize,
         source_pane_id: PaneId,
         insert_idx: Option<usize>,
+        create_space: bool,
     },
     /// Reordering a whole folder, and every agent under it, among its space's
     /// folders. Display order only.
@@ -1200,18 +1202,21 @@ pub(crate) enum DragTarget {
     },
     SidebarDivider,
     /// Reordering the session-wide agent table. This changes presentation
-    /// order only; pane placement and workspace membership stay untouched.
+    /// order only; pane placement and workspace membership stay untouched,
+    /// except hovering `+ new` flies a docked pane out into its own space.
     AgentReorder {
         source_pane_id: PaneId,
         insert_idx: Option<usize>,
+        create_space: bool,
     },
     /// Carrying a set-down agent out of the table. Dropped against a pane's
     /// edge it cuts that pane in two and docks there; dropped over the middle
-    /// it takes the pane whole.
+    /// it takes the pane whole; dropped on `+ new` it becomes its own space.
     AgentDock {
         pane_id: PaneId,
         hovered_pane_id: Option<PaneId>,
         drop_zone: crate::layout::DropZone,
+        create_space: bool,
     },
     PaneSplit {
         path: Vec<bool>,

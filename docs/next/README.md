@@ -30,7 +30,7 @@ this is the **motionharvest fork** of [ogulcancelik/herdr](https://github.com/og
 
 - **sidebar tabs for spaces** — the sidebar got a `spaces` tab layout, making it faster to switch between workspaces
 - **redesigned workspace cards** — more room in the sidebar for the agent list
-- **drag a panel to the New workspace button** — drag any pane onto `+ new` in the sidebar to fly it out into its own workspace
+- **drag a panel to the New workspace button** — drag a pane, or an agent from the table or sidebar, onto `+ new` in the sidebar to fly it out into its own workspace
 - **drag a pane onto another space** — drag a pane name over another space in the sidebar to switch there without letting go, then drop it onto that space's layout
 - **fixed agent toggle** — the `agents all` toggle in the sidebar works reliably
 - **calmer pane titles** — the entire pane title is muted on unfocused panes, and the agent label color stays distinct even when git info is shown

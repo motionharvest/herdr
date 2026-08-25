@@ -1153,6 +1153,36 @@ impl AppState {
         true
     }
 
+    /// A docked pane can fly out only when its tab still has another pane to
+    /// keep. A set-down agent can always become a space of its own.
+    pub(crate) fn can_fly_pane_to_new_workspace(&self, pane_id: crate::layout::PaneId) -> bool {
+        if self
+            .detached_agents
+            .iter()
+            .any(|detached| detached.pane_id == pane_id)
+        {
+            return !self.workspaces.is_empty();
+        }
+        self.workspaces.iter().any(|ws| {
+            ws.find_tab_index_for_pane(pane_id)
+                .and_then(|tab_idx| ws.tabs.get(tab_idx))
+                .is_some_and(|tab| !tab.zoomed && tab.layout.pane_count() > 1)
+        })
+    }
+
+    /// Fly a docked pane or a set-down agent out onto `+ new`.
+    pub fn fly_pane_to_new_workspace(&mut self, pane_id: crate::layout::PaneId) -> bool {
+        if self
+            .detached_agents
+            .iter()
+            .any(|detached| detached.pane_id == pane_id)
+        {
+            self.promote_detached_agent_to_new_workspace(pane_id)
+        } else {
+            self.promote_pane_to_new_workspace(pane_id)
+        }
+    }
+
     pub fn promote_pane_to_new_workspace(&mut self, source_pane_id: crate::layout::PaneId) -> bool {
         let Some(ws_idx) = self
             .workspaces
@@ -1185,6 +1215,64 @@ impl AppState {
             return false;
         };
 
+        self.clear_selection_if_pane(pane_id);
+        self.push_workspace_from_existing_pane(
+            pane_id,
+            pane_state,
+            identity_cwd,
+            events,
+            render_notify,
+            render_dirty,
+        );
+        true
+    }
+
+    fn promote_detached_agent_to_new_workspace(&mut self, pane_id: crate::layout::PaneId) -> bool {
+        let Some(position) = self
+            .detached_agents
+            .iter()
+            .position(|detached| detached.pane_id == pane_id)
+        else {
+            return false;
+        };
+        let Some(ws) = self
+            .active
+            .and_then(|idx| self.workspaces.get(idx))
+            .or_else(|| self.workspaces.first())
+        else {
+            return false;
+        };
+        let Some(tab) = ws.active_tab().or_else(|| ws.tabs.first()) else {
+            return false;
+        };
+        let events = tab.events.clone();
+        let render_notify = tab.render_notify.clone();
+        let render_dirty = tab.render_dirty.clone();
+        let fallback_cwd = ws.identity_cwd.clone();
+
+        let detached = self.detached_agents.remove(position);
+        if self.agent_peek == Some(pane_id) {
+            self.agent_peek = None;
+        }
+        let identity_cwd = self
+            .terminals
+            .get(&detached.pane.attached_terminal_id)
+            .map(|terminal| terminal.cwd.clone())
+            .unwrap_or(fallback_cwd);
+
+        self.clear_selection_if_pane(detached.pane_id);
+        self.push_workspace_from_existing_pane(
+            detached.pane_id,
+            detached.pane,
+            identity_cwd,
+            events,
+            render_notify,
+            render_dirty,
+        );
+        true
+    }
+
+    fn clear_selection_if_pane(&mut self, pane_id: crate::layout::PaneId) {
         if self
             .selection
             .as_ref()
@@ -1193,7 +1281,17 @@ impl AppState {
             self.selection = None;
             self.selection_autoscroll = None;
         }
+    }
 
+    fn push_workspace_from_existing_pane(
+        &mut self,
+        pane_id: crate::layout::PaneId,
+        pane_state: crate::pane::PaneState,
+        identity_cwd: std::path::PathBuf,
+        events: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
+        render_notify: std::sync::Arc<tokio::sync::Notify>,
+        render_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
         let workspace = crate::workspace::Workspace::from_existing_pane(
             pane_id,
             pane_state,
@@ -1209,7 +1307,6 @@ impl AppState {
         self.switch_workspace(new_idx);
         self.mode = Mode::Terminal;
         self.mark_session_dirty();
-        true
     }
 
     pub(crate) fn workspace_index_for_pane(&self, pane_id: PaneId) -> Option<usize> {
