@@ -4903,6 +4903,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn copying_a_selection_on_a_peeked_pane_writes_the_clipboard() {
+        let (mut app, pane_id, remaining) = app_with_hidden_agent();
+        let terminal_id = app
+            .state
+            .terminal_id_for_any_pane(pane_id)
+            .expect("peeked pane terminal");
+        app.terminal_runtimes.insert(
+            terminal_id,
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                80,
+                24,
+                16 * 1024,
+                &numbered_lines_bytes(8),
+            ),
+        );
+        app.state.peek_agent(pane_id);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let inner = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == pane_id)
+            .expect("peeked pane")
+            .inner_rect;
+        let mut selection = crate::selection::Selection::anchor(pane_id, 0, 0, None);
+        selection.drag(inner.x + 10, inner.y, inner, None);
+        app.state.selection = Some(selection);
+
+        app.state.copy_selection(&app.terminal_runtimes);
+
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(remaining));
+        let copied = app
+            .state
+            .request_clipboard_write
+            .as_ref()
+            .expect("peeked selection should copy");
+        assert!(!copied.is_empty());
+    }
+
+    #[tokio::test]
     async fn splitting_while_peeking_splits_the_peeked_pane_not_the_layout_underneath() {
         let (mut app, pane_id, remaining) = app_with_hidden_agent();
         app.state.default_shell = "/usr/bin/true".into();

@@ -11,6 +11,7 @@
 
 ### Fixed
 - Split, zoom, and the pane right-click menu follow the peeked overlay. They used to act on the pane underneath, because peek is not a space and layout focus stayed on that hidden pane. Ctrl-Alt-arrows dock the peeked agent into the current space, then split it. Right-click on the overlay opens that pane's menu.
+- Dragging a selection on a peeked pane copies it. Copy looked up the runtime in the workspace layout, so a set-down overlay had nothing to copy.
 - The pane name is a drag handle even when that pane is the only one in the space, or when it is peeked over the layout. Those titles used to do nothing, so a full-bleed pane that is not a split could not be dropped onto another space. Dragging the last pane of a space onto another space takes it there and closes the empty one. `+ new` still refuses a last pane, because that space would have nothing left.
 - Clicks in Settings now land on the drawn tabs, toggles, and buttons. Hit testing centered the overlay in the main column, to the right of the sidebar, while the overlay itself was drawn on the whole frame, so the clickable area sat about half a sidebar to the left of what was on screen. Rename, keybinds, and the worktree dialogs used the same split.
 - Escape now leaves a peeked pane. It used to go to the agent, so the overlay stayed up unless you hit EXIT.

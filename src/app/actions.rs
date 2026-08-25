@@ -2354,12 +2354,12 @@ impl AppState {
         col: u16,
     ) -> bool {
         // Resolve the active pane cell the double-click landed on.
-        let Some(ws_idx) = self
+        if self
             .active
-            .filter(|idx| self.workspaces.get(*idx).is_some())
-        else {
+            .is_none_or(|idx| self.workspaces.get(idx).is_none())
+        {
             return false;
-        };
+        }
 
         let Some(info) = self.pane_info_by_id(pane_id) else {
             return false;
@@ -2369,8 +2369,7 @@ impl AppState {
         }
 
         // Leave mouse input to terminal apps that requested it.
-        let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
-        else {
+        let Some(rt) = self.runtime_for_agent_pane(terminal_runtimes, pane_id) else {
             return false;
         };
         if rt
@@ -2423,15 +2422,18 @@ impl AppState {
         viewport_row: u16,
         col: u16,
     ) -> Option<String> {
-        let ws_idx = self
+        if self
             .active
-            .filter(|idx| self.workspaces.get(*idx).is_some())?;
+            .is_none_or(|idx| self.workspaces.get(idx).is_none())
+        {
+            return None;
+        }
         let info = self.pane_info_by_id(pane_id)?;
         if viewport_row >= info.inner_rect.height || col >= info.inner_rect.width {
             return None;
         }
 
-        let rt = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)?;
+        let rt = self.runtime_for_agent_pane(terminal_runtimes, pane_id)?;
         let screen_col = info.inner_rect.x.saturating_add(col);
         let screen_row = info.inner_rect.y.saturating_add(viewport_row);
         if let Some((_, _, uri)) = rt
@@ -2463,13 +2465,15 @@ impl AppState {
             return;
         }
 
-        let ws_idx = match self.active {
-            Some(ws_idx) if self.workspaces.get(ws_idx).is_some() => ws_idx,
-            _ => return,
-        };
+        if self
+            .active
+            .is_none_or(|idx| self.workspaces.get(idx).is_none())
+        {
+            return;
+        }
 
         let text = self
-            .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, sel.pane_id)
+            .runtime_for_agent_pane(terminal_runtimes, sel.pane_id)
             .and_then(|rt| rt.extract_selection(&sel));
         if let Some(text) = text {
             if !text.is_empty() {
