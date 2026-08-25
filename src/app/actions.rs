@@ -1360,16 +1360,17 @@ impl AppState {
         };
         if !self.workspaces[target_ws].dock_detached_at_edge(target, side, (pane_id, pane.clone()))
         {
-            if let Some(anchor) = self.workspaces[source_ws].focused_pane_id() {
-                let _ = self.workspaces[source_ws].dock_detached_at_edge(
-                    anchor,
-                    crate::layout::SplitSide::Right,
-                    (pane_id, pane),
-                );
-            }
+            self.restore_stolen_pane(source_ws, pane_id, pane);
             return false;
         }
-        self.focus_pane_in_workspace(target_ws, pane_id);
+        let mut dest_ws = target_ws;
+        if self.workspaces[source_ws].is_vacant() {
+            self.remove_vacant_workspace(source_ws);
+            if dest_ws > source_ws {
+                dest_ws -= 1;
+            }
+        }
+        self.focus_pane_in_workspace(dest_ws, pane_id);
         self.mark_session_dirty();
         true
     }
@@ -1826,6 +1827,45 @@ impl AppState {
             self.ensure_workspace_visible(self.selected);
         }
         self.mark_session_dirty();
+    }
+
+    fn restore_stolen_pane(
+        &mut self,
+        ws_idx: usize,
+        pane_id: PaneId,
+        pane: crate::pane::PaneState,
+    ) {
+        if let Some(ws) = self.workspaces.get_mut(ws_idx) {
+            ws.restore_taken_pane(pane_id, pane);
+        }
+    }
+
+    fn remove_vacant_workspace(&mut self, ws_idx: usize) {
+        if ws_idx >= self.workspaces.len() || !self.workspaces[ws_idx].is_vacant() {
+            return;
+        }
+        if let Some(workspace_id) = self.workspaces.get(ws_idx).map(|ws| ws.id.clone()) {
+            crate::logging::workspace_closed(&workspace_id);
+        }
+        self.workspaces.remove(ws_idx);
+        if self.workspaces.is_empty() {
+            self.active = None;
+            self.selected = 0;
+            return;
+        }
+        if self.selected >= self.workspaces.len() {
+            self.selected = self.workspaces.len() - 1;
+        } else if ws_idx < self.selected {
+            self.selected -= 1;
+        }
+        if let Some(active) = self.active {
+            if active == ws_idx {
+                self.active = Some(self.selected);
+            } else if active > ws_idx {
+                self.active = Some(active - 1);
+            }
+        }
+        self.ensure_workspace_visible(self.selected);
     }
 }
 
@@ -5555,6 +5595,22 @@ mod tests {
         assert!(state.workspaces[0].pane_state(sibling).is_some());
         assert_eq!(state.workspaces[0].tabs[0].layout.pane_count(), 2);
         assert!(state.workspaces[1].pane_state(source).is_none());
+    }
+
+    #[test]
+    fn moving_the_only_pane_into_another_space_closes_the_empty_one() {
+        let mut state = app_with_workspaces(&["one", "two"]);
+        let source = state.workspaces[0].tabs[0].root_pane;
+        let dest = state.workspaces[1].tabs[0].root_pane;
+        state.ensure_test_terminals();
+
+        assert!(state.move_pane_into_workspace(source, 1));
+
+        assert_eq!(state.workspaces.len(), 1);
+        assert!(state.workspaces[0].pane_state(source).is_some());
+        assert!(state.workspaces[0].pane_state(dest).is_some());
+        assert_eq!(state.workspaces[0].tabs[0].layout.pane_count(), 2);
+        assert_eq!(state.active, Some(0));
     }
 
     #[test]

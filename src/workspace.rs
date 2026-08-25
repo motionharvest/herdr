@@ -801,13 +801,51 @@ impl Workspace {
 
     pub fn take_pane(&mut self, pane_id: PaneId) -> Option<(PaneId, PaneState)> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
-        let tab = self.tabs.get_mut(tab_idx)?;
-        if tab.zoomed || tab.layout.pane_count() <= 1 {
+        if self.tabs.get(tab_idx)?.zoomed {
             return None;
         }
-        let detached = tab.take_pane(pane_id)?;
-        self.unregister_pane(detached.0);
-        Some(detached)
+        if self.tabs[tab_idx].layout.pane_count() > 1 {
+            let detached = self.tabs.get_mut(tab_idx)?.take_pane(pane_id)?;
+            self.unregister_pane(detached.0);
+            return Some(detached);
+        }
+        let pane = self.tabs[tab_idx].panes.remove(&pane_id)?;
+        self.unregister_pane(pane_id);
+        #[cfg(test)]
+        self.test_runtimes.remove(&pane_id);
+        if self.tabs.len() > 1 {
+            self.tabs.remove(tab_idx);
+            self.renumber_tabs();
+            if self.active_tab >= self.tabs.len() {
+                self.active_tab = self.tabs.len() - 1;
+            } else if tab_idx <= self.active_tab && self.active_tab > 0 {
+                self.active_tab -= 1;
+            }
+        }
+        Some((pane_id, pane))
+    }
+
+    pub fn is_vacant(&self) -> bool {
+        self.tabs.iter().all(|tab| tab.panes.is_empty())
+    }
+
+    pub fn restore_taken_pane(&mut self, pane_id: PaneId, pane: PaneState) {
+        if let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.layout.pane_ids().contains(&pane_id) || tab.panes.is_empty())
+        {
+            tab.panes.insert(pane_id, pane);
+            self.register_new_pane(pane_id);
+            return;
+        }
+        if let Some(anchor) = self.focused_pane_id() {
+            let _ = self.dock_detached_at_edge(
+                anchor,
+                crate::layout::SplitSide::Right,
+                (pane_id, pane),
+            );
+        }
     }
 
     /// Build a workspace whose single root pane keeps an existing PaneId/terminal.

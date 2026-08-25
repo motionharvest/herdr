@@ -627,15 +627,13 @@ impl AppState {
                             });
                             return None;
                         }
-                        if self.pane_swap_enabled() {
-                            self.focus_pane(hit.pane_id);
-                            self.pane_press = Some(PanePressState {
-                                pane_id: hit.pane_id,
-                                start_col: mouse.column,
-                                start_row: mouse.row,
-                            });
-                            return None;
-                        }
+                        self.focus_pane(hit.pane_id);
+                        self.pane_press = Some(PanePressState {
+                            pane_id: hit.pane_id,
+                            start_col: mouse.column,
+                            start_row: mouse.row,
+                        });
+                        return None;
                     }
 
                     if let Some(border) = self.find_border_at(mouse.column, mouse.row) {
@@ -776,9 +774,7 @@ impl AppState {
                     if let Some(press) = &self.pane_press {
                         let delta_col = mouse.column.abs_diff(press.start_col);
                         let delta_row = mouse.row.abs_diff(press.start_row);
-                        if self.pane_swap_enabled()
-                            && delta_col.max(delta_row) >= PANE_DRAG_THRESHOLD
-                        {
+                        if delta_col.max(delta_row) >= PANE_DRAG_THRESHOLD {
                             self.drag = Some(DragState {
                                 target: DragTarget::PaneSwap {
                                     source_pane_id: press.pane_id,
@@ -944,7 +940,8 @@ impl AppState {
                         self.pane_swap_hover_target(mouse.column, mouse.row, source_pane_id);
                     let zone = self.pane_drop_zone(hovered, mouse.column, mouse.row);
                     let create_space = hovered.is_none()
-                        && rect_contains(self.sidebar_new_button_rect(), mouse.column, mouse.row);
+                        && rect_contains(self.sidebar_new_button_rect(), mouse.column, mouse.row)
+                        && self.can_fly_pane_to_new_workspace(source_pane_id);
                     if let Some(DragState {
                         target:
                             DragTarget::PaneSwap {
@@ -1775,19 +1772,6 @@ impl AppState {
             return;
         }
         crate::ui::compute_view_with_runtime_registry(self, terminal_runtimes, area);
-    }
-
-    fn pane_swap_enabled(&self) -> bool {
-        let Some(ws_idx) = self.active else {
-            return false;
-        };
-        let Some(ws) = self.workspaces.get(ws_idx) else {
-            return false;
-        };
-        let Some(tab) = ws.active_tab() else {
-            return false;
-        };
-        !tab.zoomed && tab.layout.pane_count() > 1
     }
 
     fn pane_swap_hover_target(
@@ -4852,6 +4836,137 @@ mod tests {
             .iter()
             .all(|detached| detached.pane_id != pane_id));
         assert!(app.state.workspaces[0].pane_state(remaining).is_none());
+    }
+
+    #[test]
+    fn a_single_pane_title_is_a_drag_handle() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let source = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.ensure_test_terminals();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+
+        assert!(
+            app.state
+                .view
+                .pane_title_hit_areas
+                .iter()
+                .any(|hit| hit.pane_id == source),
+            "the only pane in a space still has a name you can drag"
+        );
+    }
+
+    #[test]
+    fn dragging_the_only_pane_into_another_space_moves_it_and_closes_the_empty_one() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let source = app.state.workspaces[0].tabs[0].root_pane;
+        let dest = app.state.workspaces[1].tabs[0].root_pane;
+        app.state.ensure_test_terminals();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+
+        let card = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("second space card")
+            .rect;
+        drag_pane_title_to(&mut app, source, card.x + 2, card.y + 1);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+
+        let dest_rect = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|pane| pane.id == dest)
+            .expect("destination pane after the space switch")
+            .rect;
+        let target_col = dest_rect.x + dest_rect.width / 2;
+        let target_row = dest_rect.y + dest_rect.height / 2;
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert!(app.state.workspaces[0].pane_state(source).is_some());
+        assert!(app.state.workspaces[0].pane_state(dest).is_some());
+        assert_eq!(app.state.active, Some(0));
+    }
+
+    #[test]
+    fn dragging_a_peeked_title_into_another_space_docks_it_there() {
+        let (mut app, pane_id, remaining) = app_with_hidden_agent();
+        app.state.workspaces.push(Workspace::test_new("other"));
+        let dest = app.state.workspaces[1].tabs[0].root_pane;
+        app.state.ensure_test_terminals();
+        let row = hidden_agent_row(&app, pane_id);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.rect.x + 1,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            row.rect.x + 1,
+            row.rect.y,
+        ));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+
+        let card = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("second space card")
+            .rect;
+        drag_pane_title_to(&mut app, pane_id, card.x + 2, card.y + 1);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+
+        let dest_rect = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|pane| pane.id == dest)
+            .expect("destination pane after the space switch")
+            .rect;
+        let target_col = dest_rect.x + dest_rect.width / 2;
+        let target_row = dest_rect.y + dest_rect.height / 2;
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            target_col,
+            target_row,
+        ));
+
+        assert_eq!(app.state.agent_peek, None);
+        assert!(app.state.workspaces[0].pane_state(remaining).is_some());
+        assert!(app.state.workspaces[0].pane_state(pane_id).is_none());
+        assert!(app.state.workspaces[1].pane_state(pane_id).is_some());
+        assert!(app
+            .state
+            .detached_agents
+            .iter()
+            .all(|detached| detached.pane_id != pane_id));
     }
 
     #[tokio::test]

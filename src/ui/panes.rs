@@ -1240,9 +1240,6 @@ pub(super) fn compute_pane_title_hit_areas(app: &AppState) -> Vec<PaneTitleHitAr
             .into_iter()
             .collect();
     }
-    if ws.layout.pane_count() <= 1 {
-        return Vec::new();
-    }
 
     let zoomed = ws.active_tab().map(|tab| tab.zoomed).unwrap_or(false);
     if zoomed {
