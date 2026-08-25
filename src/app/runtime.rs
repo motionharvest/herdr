@@ -5,7 +5,7 @@ use crossterm::terminal;
 use super::{
     auto_updates_enabled, repeat_key_identity, App, Mode, AGENT_MODEL_REFRESH_INTERVAL,
     ANIMATION_INTERVAL, AUTO_UPDATE_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL,
-    MIN_RENDER_INTERVAL, RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
+    MIN_RENDER_INTERVAL, PLAYER_POLL_INTERVAL, RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
 };
 use crate::detect::AgentState;
 use crate::events::AppEvent;
@@ -240,6 +240,7 @@ impl App {
 
         self.start_git_status_refresh_if_due(now);
         changed |= self.start_agent_model_refresh_if_due(now);
+        changed |= self.poll_player_if_due(now);
 
         if self
             .next_auto_update_check
@@ -454,6 +455,14 @@ impl App {
         std::thread::spawn(move || crate::update::auto_update(update_tx));
     }
 
+    pub(crate) fn poll_player_if_due(&mut self, now: Instant) -> bool {
+        if now.saturating_duration_since(self.last_player_poll) < PLAYER_POLL_INTERVAL {
+            return false;
+        }
+        self.last_player_poll = now;
+        crate::ui::player::snapshot_changed(&mut self.last_player_snapshot)
+    }
+
     pub(crate) fn start_git_status_refresh_if_due(&mut self, now: Instant) {
         let Some(deadline) = self.git_refresh_deadline() else {
             return;
@@ -599,6 +608,7 @@ impl App {
             include_git_refresh
                 .then(|| self.agent_model_refresh_deadline())
                 .flatten(),
+            include_git_refresh.then_some(self.last_player_poll + PLAYER_POLL_INTERVAL),
             self.next_auto_update_check,
             self.agent_metadata_deadline,
             self.pending_agent_resume_deadline,
@@ -869,6 +879,7 @@ mod tests {
         app.state.workspaces.push(Workspace::test_new("test"));
         let now = Instant::now();
         app.last_git_remote_status_refresh = now - super::super::GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        app.last_player_poll = now;
 
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, false),
@@ -1138,9 +1149,14 @@ mod tests {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
             dedupe_key: "herdr:codex\0codex\0Id\0codex-session".into(),
         });
-        app.pending_agent_resume_deadline = Some(Instant::now() - Duration::from_millis(1));
+        let now = Instant::now();
+        // App::new stamps last_player_poll in the past so the first real tick
+        // fetches immediately. That poll returns true when an earlier test left
+        // a non-default snapshot, which is not what this test is checking.
+        app.last_player_poll = now;
+        app.pending_agent_resume_deadline = Some(now - Duration::from_millis(1));
 
-        assert!(!app.handle_scheduled_tasks(Instant::now(), true));
+        assert!(!app.handle_scheduled_tasks(now, true));
         assert!(app.terminal_runtimes.get(&terminal_id).is_none());
         assert!(app
             .state

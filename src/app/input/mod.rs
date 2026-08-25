@@ -40,7 +40,8 @@ pub(crate) use self::agent_table::{
     handle_confirm_close_agent_key,
 };
 pub(crate) use self::composer::{
-    enter_composer_mode, handle_composer_key, leave_composer_mode, ComposerKeyOutcome,
+    enter_composer_mode, handle_composer_key, handle_player_link_key, leave_composer_mode,
+    ComposerKeyOutcome,
 };
 pub(crate) use self::{
     modal::{
@@ -69,7 +70,20 @@ impl App {
             return;
         }
         match self.state.mode {
-            Mode::Terminal => self.handle_terminal_key(key).await,
+            Mode::Terminal => {
+                if handle_player_link_key(&mut self.state, key) {
+                    return;
+                }
+                self.handle_terminal_key(key).await
+            }
+            Mode::PlayerInput => {
+                if handle_player_link_key(&mut self.state, key) {
+                    return;
+                }
+                if self.state.mode == Mode::Terminal {
+                    self.handle_terminal_key(key).await
+                }
+            }
             Mode::Prefix => self.handle_prefix_key(key),
             Mode::Navigate => self.handle_navigate_key(key),
             Mode::Copy => self.handle_copy_mode_key(key),
@@ -86,7 +100,11 @@ impl App {
                     Mode::Onboarding => self.handle_onboarding_key(key_event),
                     Mode::ReleaseNotes => self.handle_release_notes_key(key_event),
                     Mode::ProductAnnouncement => self.handle_product_announcement_key(key_event),
-                    Mode::Prefix | Mode::Navigate | Mode::Copy | Mode::Composer => unreachable!(),
+                    Mode::Prefix
+                    | Mode::Navigate
+                    | Mode::Copy
+                    | Mode::Composer
+                    | Mode::PlayerInput => unreachable!(),
                     Mode::RenameWorkspace | Mode::RenamePane => {
                         handle_rename_key(&mut self.state, key_event)
                     }
@@ -121,6 +139,12 @@ impl App {
     }
 
     pub(super) async fn handle_paste(&mut self, text: String) {
+        if self.state.mode == Mode::PlayerInput || self.state.player_input_focused {
+            let first = text.lines().next().unwrap_or_default();
+            self.state.player_link.insert_str(first);
+            return;
+        }
+
         if self.state.mode == Mode::Composer {
             match self.state.composer.focus {
                 // A pasted task keeps its lines: the field holds as many as it

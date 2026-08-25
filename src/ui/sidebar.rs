@@ -10,6 +10,7 @@ use ratatui::{
 use super::agent_table::agent_panel_entries;
 use super::agent_table::{agent_panel_entries_from, AgentLocation, AgentPanelEntry};
 use super::panes::{focus_accent, mute_when_host_unfocused};
+use super::player::player_rows_for_sidebar;
 use super::scrollbar::should_show_scrollbar;
 use super::widgets::contrasting_label_fg;
 use crate::app::state::Mode;
@@ -19,6 +20,16 @@ use crate::terminal::TerminalRuntimeRegistry;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 1;
 const WORKSPACE_SECTION_FOOTER_ROWS: u16 = 3;
+
+fn reserved_bottom_rows(app: &AppState, sidebar_h: u16) -> u16 {
+    let player = player_rows_for_sidebar(app, sidebar_h);
+    if spaces_section_collapsed(app) {
+        player
+    } else {
+        WORKSPACE_SECTION_FOOTER_ROWS + player
+    }
+}
+
 /// Fixed content rows per agent list entry: pane name, then status. Entries
 /// whose agent reports what it is doing add wrapped status text rows below
 /// these. The folder the agent works in is not counted here: it sits above the
@@ -468,11 +479,7 @@ pub(crate) fn workspace_list_body_rect(app: &AppState, area: Rect, has_scrollbar
         return Rect::default();
     }
 
-    let footer_rows = if spaces_section_collapsed(app) {
-        0
-    } else {
-        WORKSPACE_SECTION_FOOTER_ROWS
-    };
+    let footer_rows = reserved_bottom_rows(app, area.height);
     let body_y = area.y.saturating_add(WORKSPACE_SECTION_HEADER_ROWS);
     let footer_y = area.y + area.height.saturating_sub(footer_rows);
     let body_height = footer_y.saturating_sub(body_y);
@@ -657,12 +664,17 @@ fn new_workspace_button_rect_below(
     list_bottom: u16,
     list_scrolls: bool,
 ) -> Rect {
-    if spaces_section_collapsed(app) || ws_area.height < WORKSPACE_SECTION_FOOTER_ROWS {
+    let player = player_rows_for_sidebar(app, ws_area.height);
+    if spaces_section_collapsed(app) || ws_area.height < WORKSPACE_SECTION_FOOTER_ROWS + player {
         return Rect::default();
     }
     // A gap row keeps the button off the last entry and leaves room for the
-    // reorder drop indicator.
-    let floor = ws_area.y + ws_area.height.saturating_sub(WORKSPACE_SECTION_FOOTER_ROWS);
+    // reorder drop indicator. The player box sits on the sidebar floor, so
+    // the button's floor sits directly above it.
+    let floor = ws_area.y
+        + ws_area
+            .height
+            .saturating_sub(WORKSPACE_SECTION_FOOTER_ROWS + player);
     let y = if list_scrolls {
         floor
     } else {
@@ -686,6 +698,26 @@ pub(crate) fn compute_workspace_list_areas(
 /// Hit area and draw target for the sidebar's `+ new` button.
 pub(crate) fn new_workspace_button_rect(app: &AppState, area: Rect) -> Rect {
     workspace_list_layout(app, area).new_button
+}
+
+/// Player box at the bottom of the expanded sidebar, below `+ new`. Empty
+/// when the sidebar is collapsed to a single column. Height follows the
+/// collapsed/expanded player chrome.
+pub(crate) fn sidebar_player_rect(app: &AppState, area: Rect) -> Rect {
+    if app.sidebar_collapsed {
+        return Rect::default();
+    }
+    let rows = player_rows_for_sidebar(app, area.height);
+    let content = workspace_list_rect(app, area);
+    if content.width == 0 || content.height < rows {
+        return Rect::default();
+    }
+    Rect::new(
+        content.x,
+        content.y + content.height.saturating_sub(rows),
+        content.width,
+        rows,
+    )
 }
 
 pub(crate) fn compute_workspace_card_areas(
@@ -3230,7 +3262,7 @@ mod tests {
     fn overflowing_list_pins_the_new_button_to_the_sidebar_floor() {
         let area = Rect::new(0, 0, 26, 30);
         let mut app = app_with_agents(&[3, 4, 3]);
-        let floor = area.y + area.height - WORKSPACE_SECTION_FOOTER_ROWS;
+        let floor = area.y + area.height - WORKSPACE_SECTION_FOOTER_ROWS - player_rows_for_sidebar(&app, area.height);
         let max = workspace_list_max_scroll(&app, workspace_list_rect(&app, area));
         assert!(max > 0, "this list should overflow the sidebar");
 
@@ -3250,7 +3282,7 @@ mod tests {
     fn short_list_keeps_the_new_button_under_the_last_entry() {
         let area = Rect::new(0, 0, 26, 40);
         let app = app_with_agents(&[1]);
-        let floor = area.y + area.height - WORKSPACE_SECTION_FOOTER_ROWS;
+        let floor = area.y + area.height - WORKSPACE_SECTION_FOOTER_ROWS - player_rows_for_sidebar(&app, area.height);
         let rows = compute_workspace_list_areas(&app, area).1;
         let last = rows.last().expect("the space lists its agent").rect;
 
@@ -3260,6 +3292,41 @@ mod tests {
             "a list this short should let the button hug the entries: {button:?}"
         );
         assert!(button.y > last.y, "the button belongs below the last entry");
+    }
+
+    #[test]
+    fn player_box_sits_on_the_sidebar_floor_below_new() {
+        let area = Rect::new(0, 0, 26, 40);
+        let mut app = app_with_agents(&[1]);
+        let button = new_workspace_button_rect(&app, area);
+        let player = sidebar_player_rect(&app, area);
+        assert_eq!(player.height, crate::ui::player::PLAYER_COLLAPSED_ROWS);
+        assert_eq!(
+            player.y,
+            area.y + area.height - crate::ui::player::PLAYER_COLLAPSED_ROWS
+        );
+        assert!(
+            button.y + button.height <= player.y,
+            "+ new overlaps the player: button={button:?} player={player:?}"
+        );
+
+        app.player_expanded = true;
+        let expanded = sidebar_player_rect(&app, area);
+        let expected = crate::ui::player::player_rows_for_sidebar(&app, area.height);
+        assert_eq!(expanded.height, expected);
+        assert_eq!(
+            expanded.y,
+            area.y + area.height - expected
+        );
+        let button_expanded = new_workspace_button_rect(&app, area);
+        assert!(
+            button_expanded.y + button_expanded.height <= expanded.y,
+            "+ new overlaps expanded player: button={button_expanded:?} player={expanded:?}"
+        );
+        assert!(
+            expanded.height > player.height,
+            "expanding the player must steal rows from the list above it"
+        );
     }
 
     #[test]
@@ -3319,8 +3386,14 @@ mod tests {
             workspace_with_worktree_space("two", Some("repo-key"), "/repo/herdr-two"),
         ];
         // Short enough that one card fills the list, so scrolling to the end
-        // starts the render inside the group.
-        let area = Rect::new(0, 0, 30, 7);
+        // starts the render inside the group. Height includes collapsed player
+        // chrome under + new; without those rows the body is empty.
+        let area = Rect::new(
+            0,
+            0,
+            30,
+            7 + crate::ui::player::PLAYER_COLLAPSED_ROWS,
+        );
         app.workspace_scroll = normalized_workspace_scroll(&app, area, 2);
 
         let (cards, headers, _) = compute_workspace_list_areas(&app, area);
@@ -3343,7 +3416,14 @@ mod tests {
         app.active = None;
         app.mode = Mode::Terminal;
 
-        let ws_area = Rect::new(0, 0, 30, 8);
+        // Same packing as before the player: one card in the viewport, one
+        // notch of scroll. Extra rows are the collapsed player under + new.
+        let ws_area = Rect::new(
+            0,
+            0,
+            30,
+            8 + crate::ui::player::PLAYER_COLLAPSED_ROWS,
+        );
         let metrics = workspace_list_scroll_metrics(&app, ws_area);
 
         assert_eq!(metrics.viewport_rows, 1);

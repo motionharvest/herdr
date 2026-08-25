@@ -4,6 +4,35 @@ use crate::app::state::{AppState, Mode};
 
 use super::ScrollbarClickTarget;
 
+const HERDPLAYER_LABEL: &str = "herdplayer";
+
+/// The herdplay daemon shell (`shell.js`) is a sibling project, not part of
+/// this repo. Its location is resolved rather than hardcoded so this works
+/// on any machine that has it checked out: `HERDPLAYD_SHELL_PATH` overrides
+/// it explicitly, otherwise it falls back to the conventional sibling
+/// workspace layout under the user's home directory.
+fn herdplayer_shell_path() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("HERDPLAYD_SHELL_PATH") {
+        return Some(std::path::PathBuf::from(p));
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(
+        std::path::Path::new(&home)
+            .join("herdplay-workspace")
+            .join("herdplay")
+            .join("daemon")
+            .join("shell.js"),
+    )
+}
+
+fn herdplayer_launch_command() -> Option<String> {
+    let path = herdplayer_shell_path()?;
+    if !path.is_file() {
+        return None;
+    }
+    Some(format!("node '{}'\n", path.display()))
+}
+
 impl AppState {
     pub(super) fn workspace_list_rect(&self) -> Rect {
         let sidebar = self.view.sidebar_rect;
@@ -149,6 +178,177 @@ impl AppState {
             && col < rect.x + rect.width
             && row >= rect.y
             && row < rect.y + rect.height
+    }
+
+    pub(super) fn handle_player_pointer(
+        &mut self,
+        terminal_runtimes: &mut crate::terminal::TerminalRuntimeRegistry,
+        col: u16,
+        row: u16,
+    ) -> bool {
+        let Some(action) = crate::ui::player::player_action_at(self, col, row) else {
+            self.player_bg_click = None;
+            crate::ui::player::unfocus_player_input(self);
+            return false;
+        };
+        match action {
+            crate::ui::player::PlayerAction::Prev => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::post_prev();
+            }
+            crate::ui::player::PlayerAction::PlayPause => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::play_pause();
+            }
+            crate::ui::player::PlayerAction::Next => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::post_next();
+            }
+            crate::ui::player::PlayerAction::Loop => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::post_loop();
+            }
+            crate::ui::player::PlayerAction::Shuffle => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::post_shuffle();
+            }
+            crate::ui::player::PlayerAction::Add => {
+                self.player_bg_click = None;
+                crate::ui::player::submit_player_add(self);
+            }
+            crate::ui::player::PlayerAction::Load => {
+                self.player_bg_click = None;
+                crate::ui::player::submit_player_load(self);
+            }
+            crate::ui::player::PlayerAction::VolumeDown => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::nudge_volume(-0.1);
+            }
+            crate::ui::player::PlayerAction::VolumeUp => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::nudge_volume(0.1);
+            }
+            crate::ui::player::PlayerAction::VolumeSet => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                let hits = crate::ui::player::player_hit_areas(self);
+                crate::ui::player::post_volume_at_bar(hits.vol_bar, col);
+            }
+            crate::ui::player::PlayerAction::VolumeIdle => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+            }
+            crate::ui::player::PlayerAction::Seek => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                let hits = crate::ui::player::player_hit_areas(self);
+                crate::ui::player::post_seek_at_bar(hits.scrub, col);
+            }
+            crate::ui::player::PlayerAction::ScrubIdle => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+            }
+            crate::ui::player::PlayerAction::PlaylistLoad(index) => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::post_playlist_load(index);
+            }
+            crate::ui::player::PlayerAction::PlaylistRemove(index) => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::post_playlist_remove(index);
+            }
+            crate::ui::player::PlayerAction::FocusInput => {
+                self.player_bg_click = None;
+                crate::ui::player::focus_player_input(self, col);
+            }
+            crate::ui::player::PlayerAction::Toggle => {
+                self.player_bg_click = None;
+                crate::ui::player::unfocus_player_input(self);
+                self.player_expanded = !self.player_expanded;
+            }
+            crate::ui::player::PlayerAction::Background => {
+                crate::ui::player::unfocus_player_input(self);
+                let now = std::time::Instant::now();
+                let double = self.player_bg_click.is_some_and(|(x, y, at)| {
+                    now.duration_since(at) <= std::time::Duration::from_millis(350)
+                        && col.abs_diff(x) <= 1
+                        && row.abs_diff(y) <= 1
+                });
+                if double {
+                    self.player_bg_click = None;
+                    self.open_or_focus_herdplayer(terminal_runtimes);
+                } else {
+                    self.player_bg_click = Some((col, row, now));
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn find_herdplayer_pane(&self) -> Option<(usize, crate::layout::PaneId)> {
+        for (ws_idx, ws) in self.workspaces.iter().enumerate() {
+            for tab in &ws.tabs {
+                for (pane_id, pane) in &tab.panes {
+                    let Some(terminal) = self.terminals.get(&pane.attached_terminal_id) else {
+                        continue;
+                    };
+                    if terminal.manual_label.as_deref() == Some(HERDPLAYER_LABEL) {
+                        return Some((ws_idx, *pane_id));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub(crate) fn open_or_focus_herdplayer(
+        &mut self,
+        terminal_runtimes: &mut crate::terminal::TerminalRuntimeRegistry,
+    ) {
+        if let Some((ws_idx, pane_id)) = self.find_herdplayer_pane() {
+            self.focus_pane_in_workspace(ws_idx, pane_id);
+            self.mode = crate::app::state::Mode::Terminal;
+            return;
+        }
+
+        let previous = self.current_pane_focus_target();
+        self.split_pane_with_placement(
+            terminal_runtimes,
+            ratatui::layout::Direction::Vertical,
+            crate::layout::SplitPlacement::After,
+        );
+        if self.current_pane_focus_target() == previous {
+            return;
+        }
+        let Some(ws_idx) = self.active else {
+            return;
+        };
+        let Some(pane_id) = self.workspaces.get(ws_idx).and_then(|ws| ws.focused_pane_id()) else {
+            return;
+        };
+        let Some(terminal_id) = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.terminal_id(pane_id).cloned())
+        else {
+            return;
+        };
+        if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
+            terminal.set_manual_label(HERDPLAYER_LABEL.to_string());
+        }
+        if let Some(command) = herdplayer_launch_command() {
+            if let Some(runtime) = terminal_runtimes.get(&terminal_id) {
+                let _ = runtime.try_send_bytes(bytes::Bytes::from(command));
+            }
+        }
     }
 
     pub(super) fn set_manual_sidebar_width(&mut self, divider_col: u16) {
@@ -2044,5 +2244,45 @@ mod tests {
 
         assert_eq!(app.state.sidebar_width, 30);
         assert!(app.state.drag.is_none());
+    }
+
+    #[test]
+    fn herdplayer_reuse_focuses_existing_named_pane() {
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("one");
+        let root = workspace.tabs[0].root_pane;
+        let named = workspace.test_split(ratatui::layout::Direction::Vertical);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(named)
+            .expect("named pane")
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("named terminal")
+            .set_manual_label("herdplayer".into());
+        assert!(app.state.focus_pane_in_workspace(0, root));
+        let pane_count = app.state.workspaces[0].tabs[0].panes.len();
+
+        app.state
+            .open_or_focus_herdplayer(&mut app.terminal_runtimes);
+
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].panes.len(),
+            pane_count,
+            "second open must not spawn another pane"
+        );
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(named));
+        assert_eq!(app.state.find_herdplayer_pane(), Some((0, named)));
+        let label = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .and_then(|t| t.manual_label.clone());
+        assert_eq!(label.as_deref(), Some("herdplayer"));
     }
 }

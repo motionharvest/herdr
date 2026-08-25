@@ -14,6 +14,7 @@ mod mobile;
 mod navigator;
 mod onboarding;
 mod panes;
+pub(crate) mod player;
 mod release_notes;
 mod scrollbar;
 mod settings;
@@ -47,6 +48,7 @@ use self::navigator::render_navigator_overlay;
 pub(crate) use self::onboarding::onboarding_welcome_continue_rect;
 use self::onboarding::render_onboarding_overlay;
 use self::panes::{compute_pane_infos, render_panes, resize_tab_panes};
+use self::player::render_player;
 pub(crate) use self::release_notes::{
     product_announcement_display_lines, release_notes_close_button_rect,
     release_notes_display_lines, release_notes_wrapped_line_count, PRODUCT_ANNOUNCEMENT_MODAL_SIZE,
@@ -272,6 +274,7 @@ fn compute_view_internal(
         agent_table,
         agent_locations,
         terminal_area,
+        player_rect: sidebar::sidebar_player_rect(app, sidebar_rect),
         mobile_header_rect: Rect::default(),
         mobile_menu_hit_area: Rect::default(),
         toast_hit_area,
@@ -372,6 +375,7 @@ fn compute_mobile_view(
         agent_table: crate::ui::AgentTableLayout::default(),
         agent_locations: std::collections::HashMap::new(),
         terminal_area,
+        player_rect: Rect::default(),
         mobile_header_rect: header_rect,
         mobile_menu_hit_area: header_hits.menu,
         toast_hit_area,
@@ -405,6 +409,7 @@ pub fn render_with_runtime_registry(
     }
     if app.view.layout != ViewLayout::Mobile {
         render_sidebar(app, terminal_runtimes, frame, app.view.sidebar_rect);
+        render_player(app, frame, app.view.player_rect);
         let entries = agent_panel_entries_from(app, terminal_runtimes);
         render_agent_table(app, frame, &app.view.agent_table, &entries);
         render_global_launcher(app, frame);
@@ -442,7 +447,7 @@ pub fn render_with_runtime_registry(
         Mode::KeybindHelp => render_keybind_help_overlay(app, frame),
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),
         // The composer band is chrome, not an overlay: it draws itself above.
-        Mode::Composer | Mode::Terminal => {}
+        Mode::Composer | Mode::PlayerInput | Mode::Terminal => {}
     }
 
     // A config warning outranks whatever is open: a broken config is the one
@@ -613,6 +618,294 @@ mod tests {
             })
             .collect::<String>();
         assert_eq!(rendered.trim(), "menu");
+    }
+
+    #[test]
+    fn desktop_sidebar_shows_spaces_and_player_together() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one")];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+
+        compute_view(&mut app, Rect::new(0, 0, 100, 24));
+        assert_eq!(app.view.layout, ViewLayout::Desktop);
+        assert!(
+            app.view.sidebar_rect.width > 1,
+            "desktop sidebar should be expanded: {:?}",
+            app.view.sidebar_rect
+        );
+        assert_eq!(
+            app.view.player_rect.height,
+            crate::ui::player::PLAYER_COLLAPSED_ROWS
+        );
+        assert_eq!(
+            app.view.player_rect.y,
+            app.view.sidebar_rect.y + app.view.sidebar_rect.height
+                - crate::ui::player::PLAYER_COLLAPSED_ROWS,
+            "player should pin to the sidebar floor"
+        );
+        let new_btn = new_workspace_button_rect(&app, app.view.sidebar_rect);
+        assert!(new_btn.height > 0, "+ new missing: {new_btn:?}");
+        assert!(
+            new_btn.y + new_btn.height <= app.view.player_rect.y,
+            "+ new overlaps player: button={new_btn:?} player={:?}",
+            app.view.player_rect
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("test terminal");
+        terminal
+            .draw(|frame| render(&app, frame))
+            .expect("draw desktop UI");
+        let buffer = terminal.backend().buffer();
+        let screen = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            screen.contains("spaces") || screen.contains("+ new"),
+            "sidebar chrome missing:\n{screen}"
+        );
+        let player_band = (app.view.player_rect.y
+            ..app.view.player_rect.y + app.view.player_rect.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            player_band.contains("╭") && player_band.contains("╰"),
+            "player box missing rounded border:\n{player_band}\n{screen}"
+        );
+        assert!(
+            player_band.contains("♪"),
+            "cover tile missing in player box:\n{player_band}\n{screen}"
+        );
+        assert!(
+            player_band.contains("▶") && (player_band.contains("⏮") || player_band.contains("⏭")),
+            "transport chrome missing in player box:\n{player_band}\n{screen}"
+        );
+        assert!(
+            player_band.contains("▸"),
+            "collapsed toggle missing in player box:\n{player_band}\n{screen}"
+        );
+    }
+
+    #[test]
+    fn expanding_the_player_grows_the_box_and_shows_the_paste_row() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one")];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+        app.player_expanded = true;
+
+        compute_view(&mut app, Rect::new(0, 0, 100, 24));
+        let expected = crate::ui::player::player_rows_for_sidebar(&app, app.view.sidebar_rect.height);
+        assert_eq!(app.view.player_rect.height, expected);
+        assert!(
+            expected > crate::ui::player::PLAYER_COLLAPSED_ROWS,
+            "full mode must be taller than the bar, got {expected}"
+        );
+        assert_eq!(
+            app.view.player_rect.y,
+            app.view.sidebar_rect.y + app.view.sidebar_rect.height - expected
+        );
+        let new_btn = new_workspace_button_rect(&app, app.view.sidebar_rect);
+        assert!(
+            new_btn.y + new_btn.height <= app.view.player_rect.y,
+            "+ new overlaps expanded player: button={new_btn:?} player={:?}",
+            app.view.player_rect
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("test terminal");
+        terminal
+            .draw(|frame| render(&app, frame))
+            .expect("draw expanded player");
+        let buffer = terminal.backend().buffer();
+        let player_band = (app.view.player_rect.y
+            ..app.view.player_rect.y + app.view.player_rect.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            player_band.contains("╭") && player_band.contains("╰"),
+            "expanded player missing box:\n{player_band}"
+        );
+        assert!(
+            player_band.contains("♪")
+                && (player_band.contains("collapse") || player_band.contains("▾")),
+            "full-mode header missing:\n{player_band}"
+        );
+        assert!(
+            player_band.contains("Load") && player_band.to_lowercase().contains("link"),
+            "paste/Load row missing:\n{player_band}"
+        );
+        assert!(
+            player_band.contains("hidden tab") || player_band.contains("mirrors"),
+            "full-mode embed missing:\n{player_band}"
+        );
+        assert!(
+            !player_band.contains("▸"),
+            "expanded player still shows collapsed chevron:\n{player_band}"
+        );
+    }
+
+    /// A common terminal size used in live testing. Collapsed player must
+    /// match `+ new`'s 3-row box; expanded must steal two more sidebar rows
+    /// for the paste row.
+    #[test]
+    fn player_box_at_120x32_collapsed_and_expanded() {
+        fn sidebar_strip(buffer: &ratatui::buffer::Buffer, width: u16) -> String {
+            (0..buffer.area.height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one")];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+
+        compute_view(&mut app, Rect::new(0, 0, 120, 32));
+        let new_btn = new_workspace_button_rect(&app, app.view.sidebar_rect);
+        assert_eq!(new_btn.height, 3);
+        assert_eq!(
+            app.view.player_rect.height,
+            crate::ui::player::PLAYER_COLLAPSED_ROWS
+        );
+        assert_eq!(app.view.player_rect.height, new_btn.height);
+        assert_eq!(
+            app.view.player_rect.y,
+            app.view.sidebar_rect.y + app.view.sidebar_rect.height
+                - crate::ui::player::PLAYER_COLLAPSED_ROWS
+        );
+
+        let mut collapsed = Terminal::new(TestBackend::new(120, 32)).expect("collapsed terminal");
+        collapsed
+            .draw(|frame| render(&app, frame))
+            .expect("draw collapsed 120x32");
+        let collapsed_strip = sidebar_strip(collapsed.backend().buffer(), app.view.sidebar_rect.width);
+        assert!(
+            collapsed_strip.contains("+ new") && collapsed_strip.contains("▸"),
+            "collapsed 120x32 missing + new / chevron:\n{collapsed_strip}"
+        );
+
+        app.player_expanded = true;
+        compute_view(&mut app, Rect::new(0, 0, 120, 32));
+        let expected = crate::ui::player::player_rows_for_sidebar(&app, app.view.sidebar_rect.height);
+        let new_expanded = new_workspace_button_rect(&app, app.view.sidebar_rect);
+        assert_eq!(app.view.player_rect.height, expected);
+        assert_eq!(
+            app.view.player_rect.y,
+            app.view.sidebar_rect.y + app.view.sidebar_rect.height - expected
+        );
+        assert!(
+            new_expanded.y + new_expanded.height <= app.view.player_rect.y,
+            "+ new overlaps expanded player at 120x32"
+        );
+        assert!(
+            new_expanded.y <= new_btn.y,
+            "expanded player must push + new up: collapsed +new y={} expanded y={}",
+            new_btn.y,
+            new_expanded.y
+        );
+
+        let mut expanded = Terminal::new(TestBackend::new(120, 32)).expect("expanded terminal");
+        expanded
+            .draw(|frame| render(&app, frame))
+            .expect("draw expanded 120x32");
+        let expanded_strip = sidebar_strip(expanded.backend().buffer(), app.view.sidebar_rect.width);
+        assert!(
+            expanded_strip.contains("▾")
+                && expanded_strip.contains("Load")
+                && expanded_strip.to_lowercase().contains("link"),
+            "expanded 120x32 missing paste row:\n{expanded_strip}"
+        );
+        assert!(
+            !expanded_strip.contains("▸"),
+            "expanded 120x32 still collapsed:\n{expanded_strip}"
+        );
+    }
+
+    /// herdplay-live-check's live window, not the 120×32 PTY probe.
+    #[test]
+    fn player_box_at_122x45_sidebar_32_has_borders_and_toggle_row() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![
+            Workspace::test_new("Consultation"),
+            Workspace::test_new("one"),
+            Workspace::test_new("Publishing"),
+        ];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+        app.sidebar_width = 32;
+        app.palette = crate::app::state::Palette::catppuccin_latte();
+
+        compute_view(&mut app, Rect::new(0, 0, 122, 45));
+        assert_eq!(app.view.sidebar_rect.width, 32);
+        assert_eq!(
+            app.view.player_rect.height,
+            crate::ui::player::PLAYER_COLLAPSED_ROWS
+        );
+        let toggle = crate::ui::player::player_toggle_rect(app.view.player_rect);
+        assert_eq!(toggle.height, 1);
+        assert!(toggle.width > 0 && toggle.width <= app.view.player_rect.width);
+
+        let mut terminal = Terminal::new(TestBackend::new(122, 45)).expect("122x45");
+        terminal
+            .draw(|frame| render(&app, frame))
+            .expect("draw 122x45");
+        let buffer = terminal.backend().buffer();
+        let player = app.view.player_rect;
+        let top: String = (player.x..player.x + player.width)
+            .map(|x| buffer.cell((x, player.y)).map(|c| c.symbol()).unwrap_or(" "))
+            .collect();
+        let mid: String = (player.x..player.x + player.width)
+            .map(|x| {
+                buffer
+                    .cell((x, player.y + 1))
+                    .map(|c| c.symbol())
+                    .unwrap_or(" ")
+            })
+            .collect();
+        let bot: String = (player.x..player.x + player.width)
+            .map(|x| {
+                buffer
+                    .cell((x, player.y + player.height - 1))
+                    .map(|c| c.symbol())
+                    .unwrap_or(" ")
+            })
+            .collect();
+        assert!(
+            top.contains("╭") && top.contains("╮"),
+            "top border missing at 122x45:\n{top}\n{mid}\n{bot}"
+        );
+        assert!(
+            bot.contains("╰") && bot.contains("╯"),
+            "bottom border missing at 122x45:\n{top}\n{mid}\n{bot}"
+        );
+        assert!(
+            mid.contains("♪") && mid.contains("▸"),
+            "bar missing at 122x45:\n{top}\n{mid}\n{bot}"
+        );
     }
 
     #[test]

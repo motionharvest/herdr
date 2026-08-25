@@ -95,6 +95,7 @@ impl AppState {
                     | Mode::Navigate
                     | Mode::Resize
                     | Mode::Composer
+                    | Mode::PlayerInput
                     | Mode::GlobalMenu
                     | Mode::KeybindHelp
             );
@@ -153,7 +154,10 @@ impl AppState {
         }
 
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            && matches!(self.mode, Mode::Terminal | Mode::Navigate | Mode::Composer)
+            && matches!(
+                self.mode,
+                Mode::Terminal | Mode::Navigate | Mode::Composer | Mode::PlayerInput
+            )
             && rect_contains(self.view.composer.worktree, mouse.column, mouse.row)
         {
             self.composer.worktree = !self.composer.worktree;
@@ -164,7 +168,10 @@ impl AppState {
         // focus from whatever had it, the same way clicking a pane does — and
         // it takes the keyboard to the control that was actually clicked.
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            && matches!(self.mode, Mode::Terminal | Mode::Navigate | Mode::Composer)
+            && matches!(
+                self.mode,
+                Mode::Terminal | Mode::Navigate | Mode::Composer | Mode::PlayerInput
+            )
             && rect_contains(self.view.composer.area, mouse.column, mouse.row)
         {
             self.click_composer(terminal_runtimes, mouse.column, mouse.row);
@@ -185,6 +192,13 @@ impl AppState {
             && mouse.column < sidebar.x + sidebar.width
             && mouse.row >= sidebar.y
             && mouse.row < sidebar.y + sidebar.height;
+
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && self.mode == Mode::PlayerInput
+            && crate::ui::player::player_action_at(self, mouse.column, mouse.row).is_none()
+        {
+            crate::ui::player::unfocus_player_input(self);
+        }
 
         if self.handle_right_click_passthrough(terminal_runtimes, mouse, in_table || in_sidebar) {
             return None;
@@ -477,6 +491,10 @@ impl AppState {
                     if self.on_spaces_section_header(mouse.column, mouse.row) {
                         self.spaces_collapsed = !self.spaces_collapsed;
                         self.mark_session_dirty();
+                        return None;
+                    }
+
+                    if self.handle_player_pointer(terminal_runtimes, mouse.column, mouse.row) {
                         return None;
                     }
 
@@ -1188,6 +1206,12 @@ impl AppState {
             }
 
             MouseEventKind::ScrollUp if in_sidebar => {
+                if crate::ui::player::player_scroll_volume(self, mouse.column, mouse.row, true) {
+                    return None;
+                }
+                if crate::ui::player::player_scroll_playlist(self, mouse.column, mouse.row, true) {
+                    return None;
+                }
                 if crate::ui::should_show_scrollbar(crate::ui::workspace_list_scroll_metrics(
                     self,
                     self.workspace_list_rect(),
@@ -1198,6 +1222,13 @@ impl AppState {
                 }
             }
             MouseEventKind::ScrollDown if in_sidebar => {
+                if crate::ui::player::player_scroll_volume(self, mouse.column, mouse.row, false) {
+                    return None;
+                }
+                if crate::ui::player::player_scroll_playlist(self, mouse.column, mouse.row, false)
+                {
+                    return None;
+                }
                 if crate::ui::should_show_scrollbar(crate::ui::workspace_list_scroll_metrics(
                     self,
                     self.workspace_list_rect(),
@@ -1650,6 +1681,7 @@ impl AppState {
     /// is already open leaves it as it is. A click in the task puts the cursor
     /// on the character clicked, the way any text field would.
     fn click_composer(&mut self, terminal_runtimes: &TerminalRuntimeRegistry, col: u16, row: u16) {
+        crate::ui::player::unfocus_player_input(self);
         let was = self.mode;
         self.mode = Mode::Composer;
         let layout = &self.view.composer;
@@ -2163,6 +2195,7 @@ mod tests {
     };
     use super::*;
     use crate::{
+        app::App,
         app::state::{ContextMenuKind, ContextMenuState, MenuListState, Mode, ViewLayout},
         detect::{Agent, AgentState},
         workspace::Workspace,
@@ -4759,5 +4792,590 @@ mod tests {
         ));
 
         assert_eq!(app.state.mode, Mode::GlobalMenu);
+    }
+
+    #[test]
+    fn clicking_the_player_bar_toggles_expanded_via_real_mouse_down() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_width = 32;
+        app.state.mouse_capture = true;
+        // A real live-check window size, not the 120×32 PTY probe default.
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+
+        let player = app.state.view.player_rect;
+        assert_eq!(
+            player.height,
+            crate::ui::player::PLAYER_COLLAPSED_ROWS,
+            "boxed player should be 3 rows at 122x45: {player:?}"
+        );
+        let toggle = crate::ui::player::player_toggle_rect(player);
+        assert!(toggle.width > 1, "toggle must be the full bar, not 1 cell: {toggle:?}");
+        assert!(app.state.mouse_capture);
+
+        // Click the TITLE, not the chevron cell — that's what a real mouse does.
+        let title_col = player.x + 3;
+        let bar_row = player.y + 1;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            title_col,
+            bar_row,
+        ));
+        assert!(
+            app.state.player_expanded,
+            "App::handle_mouse Down on the bar must expand the player"
+        );
+
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+        assert!(
+            app.state.view.player_rect.height > crate::ui::player::PLAYER_COLLAPSED_ROWS,
+            "full mode must grow the player, got {:?}",
+            app.state.view.player_rect
+        );
+
+        let bar_row = app.state.view.player_rect.y + 1;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            title_col,
+            bar_row,
+        ));
+        assert!(!app.state.player_expanded);
+    }
+
+    #[test]
+    fn clicking_play_posts_to_the_daemon_and_does_not_toggle() {
+        let _guard = crate::ui::player::lock_test_player();
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_width = 32;
+        app.state.mouse_capture = true;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+        crate::ui::player::take_test_posts();
+
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        assert!(hits.play.width > 0, "play hit target missing: {hits:?}");
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.play.x,
+            hits.play.y,
+        ));
+        assert!(!app.state.player_expanded, "play must not expand the box");
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, _)| path == "/play" || path == "/pause"),
+            "play click must POST /play or /pause, got {posts:?}"
+        );
+    }
+
+    #[test]
+    fn clicking_load_posts_the_typed_url() {
+        let _guard = crate::ui::player::lock_test_player();
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_width = 32;
+        app.state.player_expanded = true;
+        app.state.player_link.set_text("https://elevenlabs.io/music/abc");
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+        crate::ui::player::take_test_posts();
+
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        assert!(hits.load.width > 0, "Load hit missing: {hits:?}");
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.load.x,
+            hits.load.y,
+        ));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| {
+                path == "/load" && body.contains("elevenlabs.io/music/abc")
+            }),
+            "Load must POST /load with the typed URL, got {posts:?}"
+        );
+        assert!(
+            app.state.player_link.text().is_empty(),
+            "Load must clear the paste field, got {:?}",
+            app.state.player_link.text()
+        );
+        assert_eq!(app.state.player_link.cursor_row(), (0, 0));
+    }
+
+    #[test]
+    fn clicking_add_posts_playlist_add_and_clears_the_field() {
+        let _guard = crate::ui::player::lock_test_player();
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_width = 32;
+        app.state.player_expanded = true;
+        app.state.player_link.set_text("https://elevenlabs.io/music/queued");
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+        crate::ui::player::take_test_posts();
+
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        assert!(hits.add.width > 0, "Add hit missing: {hits:?}");
+        assert!(
+            hits.add.x + hits.add.width <= hits.load.x,
+            "Add and Load must not overlap: {hits:?}"
+        );
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.add.x,
+            hits.add.y,
+        ));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| {
+                path == "/playlist/add" && body.contains("elevenlabs.io/music/queued")
+            }),
+            "Add must POST /playlist/add, got {posts:?}"
+        );
+        assert!(
+            !posts.iter().any(|(path, _)| path == "/load"),
+            "Add must not POST /load, got {posts:?}"
+        );
+        assert!(
+            app.state.player_link.text().is_empty(),
+            "Add must clear the paste field, got {:?}",
+            app.state.player_link.text()
+        );
+        assert_eq!(app.state.player_link.cursor_row(), (0, 0));
+    }
+
+    #[test]
+    fn csi_u_then_sgr_add_clears_the_paste_field() {
+        let _guard = crate::ui::player::lock_test_player();
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_width = 32;
+        app.state.player_expanded = true;
+        app.state.mouse_capture = true;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.input.x + 1,
+            hits.input.y,
+        ));
+        assert_eq!(app.state.mode, Mode::PlayerInput);
+
+        // CSI-u press for 'a' (97) and 'b' (98) — not raw ASCII.
+        app.route_client_input(b"\x1b[97;1u\x1b[97;3u\x1b[98;1u\x1b[98;3u".to_vec());
+        assert_eq!(app.state.player_link.text(), "ab");
+
+        crate::ui::player::take_test_posts();
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        let col = hits.add.x + 1;
+        let row = hits.add.y + 1;
+        app.route_client_input(format!("\x1b[<0;{col};{row}M\x1b[<0;{col};{row}m").into_bytes());
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| path == "/playlist/add" && body.contains("ab")),
+            "SGR Add must POST /playlist/add, got {posts:?}"
+        );
+        assert!(
+            app.state.player_link.text().is_empty(),
+            "field must be empty after Add, got {:?}",
+            app.state.player_link.text()
+        );
+        assert_eq!(app.state.player_link.cursor_row(), (0, 0));
+    }
+
+    #[test]
+    fn clicking_the_paste_field_claims_player_input_mode() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_width = 32;
+        app.state.player_expanded = true;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        assert!(
+            hits.input.width > 0,
+            "full-mode paste field hit target missing: {hits:?}"
+        );
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.input.x + 1,
+            hits.input.y,
+        ));
+        assert_eq!(
+            app.state.mode,
+            Mode::PlayerInput,
+            "clicking the field must claim Mode::PlayerInput the way the task prompt claims Composer"
+        );
+        assert!(app.state.player_input_focused);
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Key(
+                crate::input::TerminalKey::new(
+                    crossterm::event::KeyCode::Char('z'),
+                    crossterm::event::KeyModifiers::empty(),
+                )
+                .with_kind(crossterm::event::KeyEventKind::Press),
+            )],
+            false,
+        );
+        assert!(
+            app.state.player_link.text().contains('z'),
+            "a Press key on the server path must insert while PlayerInput, got {:?}",
+            app.state.player_link.text()
+        );
+
+        // Kitty CSI-u (what a real terminal sends with enhancement flags), not
+        // a raw ASCII byte stuffed into stdin.
+        app.route_client_input(b"\x1b[121;1u".to_vec());
+        assert!(
+            app.state.player_link.text().contains('y'),
+            "CSI-u 'y' Press must insert after the field claimed focus, got {:?}",
+            app.state.player_link.text()
+        );
+    }
+
+    #[test]
+    fn unfocused_player_field_does_not_eat_keys() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_width = 32;
+        app.state.player_expanded = true;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+        assert_ne!(app.state.mode, Mode::PlayerInput);
+
+        app.route_client_events(
+            vec![crate::raw_input::RawInputEvent::Key(
+                crate::input::TerminalKey::new(
+                    crossterm::event::KeyCode::Char('z'),
+                    crossterm::event::KeyModifiers::empty(),
+                )
+                .with_kind(crossterm::event::KeyEventKind::Press),
+            )],
+            false,
+        );
+        assert!(
+            !app.state.player_link.text().contains('z'),
+            "without a focus claim, keys must not append to the paste field, got {:?}",
+            app.state.player_link.text()
+        );
+    }
+
+    fn player_volume_app() -> (App, std::sync::MutexGuard<'static, ()>) {
+        let guard = crate::ui::player::lock_test_player();
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_width = 32;
+        app.state.player_expanded = true;
+        app.state.mouse_capture = true;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+        crate::ui::player::set_test_snapshot(crate::ui::player::PlayerSnapshot::Online {
+            title: Some("probe".into()),
+            artist: None,
+            playing: false,
+            looping: false,
+            shuffle: false,
+            elapsed_sec: 0,
+            duration_sec: 0,
+            volume: 1.0,
+            seekable: true,
+        });
+        (app, guard)
+    }
+
+    #[test]
+    fn clicking_volume_minus_posts_to_the_daemon() {
+        let (mut app, _guard) = player_volume_app();
+        crate::ui::player::take_test_posts();
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        assert!(hits.vol_down.width > 0, "volume minus missing: {hits:?}");
+        assert!(hits.vol_up.width > 0, "volume plus missing: {hits:?}");
+        assert!(hits.vol_bar.width > 0, "volume bar missing: {hits:?}");
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.vol_down.x,
+            hits.vol_down.y,
+        ));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| {
+                path == "/volume" && body.contains("0.9")
+            }),
+            "minus must POST /volume 0.9, got {posts:?}"
+        );
+        assert_eq!(crate::ui::player::current_snapshot().volume(), 0.9);
+    }
+
+    #[test]
+    fn clicking_volume_plus_and_bar_post_levels() {
+        let (mut app, _guard) = player_volume_app();
+        crate::ui::player::set_test_snapshot(crate::ui::player::PlayerSnapshot::Online {
+            title: Some("probe".into()),
+            artist: None,
+            playing: false,
+            looping: false,
+            shuffle: false,
+            elapsed_sec: 0,
+            duration_sec: 0,
+            volume: 0.3,
+            seekable: true,
+        });
+        crate::ui::player::take_test_posts();
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.vol_up.x,
+            hits.vol_up.y,
+        ));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| path == "/volume" && body.contains("0.4")),
+            "plus must POST /volume 0.4, got {posts:?}"
+        );
+
+        crate::ui::player::take_test_posts();
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.vol_bar.x,
+            hits.vol_bar.y,
+        ));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| {
+                path == "/volume" && body.contains("\"level\":")
+            }),
+            "bar click must POST /volume, got {posts:?}"
+        );
+        let level: f64 = posts
+            .iter()
+            .find(|(path, _)| path == "/volume")
+            .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
+            .and_then(|v| v["level"].as_f64())
+            .unwrap();
+        assert!(level >= 0.0 && level <= 1.0, "level {level}");
+        assert!(level < 0.3, "leftmost bar cell should be quiet, got {level}");
+    }
+
+    #[test]
+    fn scrolling_on_volume_row_posts_and_does_not_scroll_spaces() {
+        let (mut app, _guard) = player_volume_app();
+        crate::ui::player::take_test_posts();
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        let selected = app.state.selected;
+        app.handle_mouse(mouse(
+            MouseEventKind::ScrollDown,
+            hits.volume.x + 2,
+            hits.volume.y,
+        ));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| path == "/volume" && body.contains("0.9")),
+            "wheel down on volume must POST /volume, got {posts:?}"
+        );
+        assert_eq!(app.state.selected, selected, "volume wheel must not move spaces");
+
+        crate::ui::player::take_test_posts();
+        app.handle_mouse(mouse(
+            MouseEventKind::ScrollUp,
+            hits.vol_bar.x,
+            hits.vol_bar.y,
+        ));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, _)| path == "/volume"),
+            "wheel up on the meter must POST /volume, got {posts:?}"
+        );
+    }
+
+    #[test]
+    fn sgr_click_on_volume_minus_posts_via_route_client_input() {
+        let (mut app, _guard) = player_volume_app();
+        crate::ui::player::take_test_posts();
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        assert!(hits.vol_down.width > 0, "{hits:?}");
+        let col = hits.vol_down.x + 1;
+        let row = hits.vol_down.y + 1; // SGR is 1-based
+        app.route_client_input(format!("\x1b[<0;{col};{row}M\x1b[<0;{col};{row}m").into_bytes());
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| path == "/volume" && body.contains("0.9")),
+            "SGR click on minus must POST /volume, got {posts:?}"
+        );
+    }
+
+    #[test]
+    fn sgr_scroll_on_volume_meter_posts_via_route_client_input() {
+        let (mut app, _guard) = player_volume_app();
+        crate::ui::player::take_test_posts();
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        let col = hits.vol_bar.x + 1;
+        let row = hits.vol_bar.y + 1;
+        app.route_client_input(format!("\x1b[<65;{col};{row}M").into_bytes());
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| path == "/volume" && body.contains("0.9")),
+            "SGR wheel-down on the meter must POST /volume, got {posts:?}"
+        );
+    }
+
+    fn player_full_app() -> (App, std::sync::MutexGuard<'static, ()>) {
+        let (mut app, guard) = player_volume_app();
+        crate::ui::player::set_test_snapshot(crate::ui::player::PlayerSnapshot::Online {
+            title: Some("probe".into()),
+            artist: None,
+            playing: true,
+            looping: false,
+            shuffle: false,
+            elapsed_sec: 10,
+            duration_sec: 100,
+            volume: 0.3,
+            seekable: true,
+        });
+        crate::ui::player::set_test_playlist(crate::ui::player::PlaylistSnapshot {
+            items: vec![
+                crate::ui::player::PlaylistItem {
+                    title: "Glass".into(),
+                    url: "/System/Library/Sounds/Glass.aiff".into(),
+                },
+                crate::ui::player::PlaylistItem {
+                    title: "Basso".into(),
+                    url: "/System/Library/Sounds/Basso.aiff".into(),
+                },
+            ],
+            index: Some(0),
+        });
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+        (app, guard)
+    }
+
+    #[test]
+    fn clicking_playlist_row_posts_load_and_x_posts_remove() {
+        let (mut app, _guard) = player_full_app();
+        crate::ui::player::take_test_posts();
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        assert!(hits.playlist.height >= 2, "playlist list missing: {hits:?}");
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.playlist.x,
+            hits.playlist.y,
+        ));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| {
+                path == "/load" && body.contains("/System/Library/Sounds/Glass.aiff")
+            }),
+            "row click must POST /load, got {posts:?}"
+        );
+
+        crate::ui::player::take_test_posts();
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.playlist.x + hits.playlist.width - 1,
+            hits.playlist.y + 1,
+        ));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| path == "/playlist/remove" && body.contains("1")),
+            "× must POST /playlist/remove, got {posts:?}"
+        );
+    }
+
+    #[test]
+    fn clicking_scrub_posts_seek_and_unseekable_does_not() {
+        let (mut app, _guard) = player_full_app();
+        crate::ui::player::take_test_posts();
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        assert!(hits.scrub.width >= 4, "scrub bar missing: {hits:?}");
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.scrub.x,
+            hits.scrub.y,
+        ));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| path == "/seek" && body.contains("seconds")),
+            "seekable scrub must POST /seek, got {posts:?}"
+        );
+
+        crate::ui::player::set_test_snapshot(crate::ui::player::PlayerSnapshot::Online {
+            title: Some("probe".into()),
+            artist: None,
+            playing: true,
+            looping: false,
+            shuffle: false,
+            elapsed_sec: 10,
+            duration_sec: 100,
+            volume: 0.3,
+            seekable: false,
+        });
+        crate::ui::player::take_test_posts();
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.scrub.x,
+            hits.scrub.y,
+        ));
+        assert!(
+            crate::ui::player::take_test_posts().is_empty(),
+            "unseekable scrub must not POST /seek"
+        );
+    }
+
+    #[test]
+    fn scrolling_on_playlist_does_not_scroll_spaces() {
+        let (mut app, _guard) = player_full_app();
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        let selected = app.state.selected;
+        app.handle_mouse(mouse(
+            MouseEventKind::ScrollDown,
+            hits.playlist.x,
+            hits.playlist.y,
+        ));
+        assert_eq!(
+            app.state.selected, selected,
+            "playlist wheel must not move spaces"
+        );
+    }
+
+    #[test]
+    fn sgr_click_on_scrub_and_playlist_posts_via_route_client_input() {
+        let (mut app, _guard) = player_full_app();
+        crate::ui::player::take_test_posts();
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        let col = hits.scrub.x + 1;
+        let row = hits.scrub.y + 1;
+        app.route_client_input(format!("\x1b[<0;{col};{row}M\x1b[<0;{col};{row}m").into_bytes());
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, _)| path == "/seek"),
+            "SGR click on scrub must POST /seek, got {posts:?}"
+        );
+
+        crate::ui::player::take_test_posts();
+        let col = hits.playlist.x + 1;
+        let row = hits.playlist.y + 1;
+        app.route_client_input(format!("\x1b[<0;{col};{row}M\x1b[<0;{col};{row}m").into_bytes());
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, _)| path == "/load"),
+            "SGR click on playlist row must POST /load, got {posts:?}"
+        );
     }
 }

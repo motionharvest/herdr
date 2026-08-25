@@ -23,6 +23,9 @@ fn is_ctrl_q(key: TerminalKey) -> bool {
 
 impl App {
     pub(crate) fn handle_terminal_key_headless(&mut self, key: TerminalKey) {
+        if super::composer::handle_player_link_key(&mut self.state, key) {
+            return;
+        }
         let Some(input) = self.prepare_terminal_key_forward(key) else {
             return;
         };

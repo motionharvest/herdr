@@ -43,6 +43,36 @@ pub(crate) fn leave_composer_mode(state: &mut AppState) {
     };
 }
 
+/// Same field editing as the task prompt, scoped to the player paste row.
+/// Returns true when the player consumed the key so it must not reach a pane.
+pub(crate) fn handle_player_link_key(state: &mut AppState, raw_key: TerminalKey) -> bool {
+    if !state.player_input_focused && state.mode != Mode::PlayerInput {
+        return false;
+    }
+    let key = raw_key.as_key_event();
+    if key.kind == crossterm::event::KeyEventKind::Release {
+        return true;
+    }
+    if state.is_prefix_key(raw_key) {
+        crate::ui::player::unfocus_player_input(state);
+        state.mode = Mode::Prefix;
+        return true;
+    }
+    let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+    match key.code {
+        KeyCode::Esc => {
+            crate::ui::player::unfocus_player_input(state);
+        }
+        KeyCode::Enter => {
+            crate::ui::player::submit_player_load(state);
+        }
+        _ => {
+            edit_field(&mut state.player_link, key.code, key.modifiers, plain);
+        }
+    }
+    true
+}
+
 pub(crate) fn handle_composer_key(
     state: &mut AppState,
     terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
@@ -230,8 +260,9 @@ fn task_key(
 }
 
 /// The editing keys every field in the band shares. Returns whether the key was
-/// one of them.
-fn edit_field(
+/// one of them. The player paste field uses this same path so typing there
+/// behaves like the task prompt.
+pub(crate) fn edit_field(
     field: &mut crate::composer::TextField,
     code: KeyCode,
     modifiers: KeyModifiers,
@@ -631,5 +662,31 @@ mod tests {
         press(&mut state, KeyCode::Enter);
         press(&mut state, KeyCode::Enter);
         assert_eq!(state.composer.focus, Focus::Agent);
+    }
+
+    #[test]
+    fn player_paste_field_types_and_submits_through_edit_field() {
+        let _guard = crate::ui::player::lock_test_player();
+        let mut state = composer_state();
+        state.player_input_focused = true;
+        crate::ui::player::take_test_posts();
+        for ch in "https://x.test/t".chars() {
+            assert!(handle_player_link_key(&mut state, key(KeyCode::Char(ch))));
+        }
+        assert_eq!(state.player_link.text(), "https://x.test/t");
+        assert!(handle_player_link_key(&mut state, key(KeyCode::Enter)));
+        let posts = crate::ui::player::take_test_posts();
+        assert!(
+            posts.iter().any(|(path, body)| path == "/load" && body.contains("https://x.test/t")),
+            "Enter must POST /load, got {posts:?}"
+        );
+        assert!(
+            state.player_link.text().is_empty(),
+            "Enter/Load must clear the field, got {:?}",
+            state.player_link.text()
+        );
+        assert_eq!(state.player_link.cursor_row(), (0, 0));
+        assert!(handle_player_link_key(&mut state, key(KeyCode::Esc)));
+        assert!(!state.player_input_focused);
     }
 }
