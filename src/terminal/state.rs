@@ -71,11 +71,14 @@ pub struct TerminalState {
     /// in the background from the session reported for this terminal.
     pub model_info: Option<crate::agent_model::AgentModelInfo>,
     /// A title read out of that same session log, for a harness that never
-    /// announces one. It stands in only when no reported title exists, so a
-    /// harness that names its own sessions always wins.
+    /// announces one. The first fill sticks; later probes do not replace it.
+    /// Refresh Summary takes the latest prompt on command. It stands in only
+    /// when no reported title exists, so a harness that names its own sessions
+    /// always wins.
     pub session_title: Option<String>,
-    /// A summary the user set from the agent menu. It wins over the harness
-    /// title and the probed session title until it is cleared.
+    /// A leftover typed summary from the old Update Summary dialog. It still
+    /// wins over the harness title and the probed session title. Refresh
+    /// Summary clears it so the current prompt can show.
     pub manual_summary: Option<String>,
     /// Unused leftover of title-derived assigned names. Restored sessions may
     /// still carry it; display names come from the first-name word list.
@@ -782,6 +785,23 @@ impl TerminalState {
         self.session_title = title.filter(|title| !title.trim().is_empty());
     }
 
+    /// Fill the summary from a probed prompt. The first title sticks. Pass
+    /// `replace` to take a later prompt, which is what Refresh Summary does.
+    pub fn adopt_probed_title(&mut self, title: Option<String>, replace: bool) {
+        let Some(title) = title.filter(|title| !title.trim().is_empty()) else {
+            return;
+        };
+        if replace {
+            self.session_title = Some(title);
+            self.clear_manual_summary();
+            return;
+        }
+        if self.session_title.is_none() {
+            self.session_title = Some(title);
+        }
+    }
+
+    #[cfg(test)]
     pub fn set_manual_summary(&mut self, summary: String) {
         let summary = summary.trim().to_string();
         self.manual_summary = (!summary.is_empty()).then_some(summary);
@@ -1010,6 +1030,31 @@ mod tests {
         assert_eq!(
             terminal.session_title.as_deref(),
             Some("Something else entirely now")
+        );
+    }
+
+    #[test]
+    fn a_probed_title_fills_once_and_refresh_takes_a_later_prompt() {
+        let mut terminal = test_terminal();
+        terminal.adopt_probed_title(Some("Improve Agent Summary to be useful".into()), false);
+        terminal.adopt_probed_title(Some("Land this on parent".into()), false);
+        assert_eq!(
+            terminal.session_title.as_deref(),
+            Some("Improve Agent Summary to be useful"),
+            "a later probe must not replace the first fill"
+        );
+
+        terminal.adopt_probed_title(Some("Land this on parent".into()), true);
+        assert_eq!(
+            terminal.session_title.as_deref(),
+            Some("Land this on parent")
+        );
+        terminal.set_manual_summary("typed leftover".into());
+        terminal.adopt_probed_title(Some("Refresh the current prompt".into()), true);
+        assert_eq!(terminal.manual_summary, None);
+        assert_eq!(
+            terminal.session_title.as_deref(),
+            Some("Refresh the current prompt")
         );
     }
 

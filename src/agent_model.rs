@@ -17,10 +17,11 @@
 //! a session, but only after the first prompt, and then freezes that name.
 //! The latest typed prompt lives in `chat_history.jsonl` as a `<user_query>`.
 //! The column does not take the whole message: it takes the part that asks
-//! for work, folded to a short headline, so a rambling follow-up still reads
-//! as a task. `generated_title` in `summary.json` still stands in until a
-//! prompt has been parsed, and the same file still carries `current_model_id`
-//! and `reasoning_effort`.
+//! for work, folded to a short headline. The first fill sticks on the row.
+//! Refresh Summary reads the latest prompt on command, the same way the
+//! automatic update used to. `generated_title` in `summary.json` still stands
+//! in until a prompt has been parsed, and the same file still carries
+//! `current_model_id` and `reasoning_effort`.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};

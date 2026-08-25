@@ -681,7 +681,7 @@ fn restore_pane(
             terminal.title_name = Some(title_name);
         }
         if let Some(summary) = saved_summary {
-            terminal.set_manual_summary(summary);
+            terminal.set_session_title(Some(summary));
         }
         if let Some(timing) = saved_agent_timing {
             timing.restore_into(&mut terminal);
@@ -789,7 +789,7 @@ fn restore_pane(
                 terminal.title_name = Some(title_name);
             }
             if let Some(summary) = saved_summary {
-                terminal.set_manual_summary(summary);
+                terminal.set_session_title(Some(summary));
             }
             if let Some(timing) = saved_agent_timing {
                 timing.restore_into(&mut terminal);
@@ -2018,7 +2018,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_preserves_manual_summary() {
+    async fn restore_preserves_summary() {
         let cwd = std::env::current_dir().unwrap();
         let first = TerminalId::alloc();
         let mut snapshot = snapshot_with_pane_terminal_ids(cwd, Some(first.clone()), None);
@@ -2032,7 +2032,7 @@ mod tests {
         assert_eq!(
             terminals
                 .get(&first)
-                .and_then(|t| t.manual_summary.as_deref()),
+                .and_then(|t| t.session_title.as_deref()),
             Some("Improve Agent Summary to be useful")
         );
         assert_eq!(

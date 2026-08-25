@@ -324,17 +324,37 @@ pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::Pan
     state.mode = Mode::RenamePane;
 }
 
-pub(super) fn open_update_summary(state: &mut AppState, pane_id: crate::layout::PaneId) {
+pub(super) fn refresh_summary(state: &mut AppState, pane_id: crate::layout::PaneId) {
     let Some(terminal_id) = terminal_id_for_pane(state, pane_id) else {
+        leave_modal(state);
         return;
     };
-    let terminal = state.terminals.get(&terminal_id);
-    state.rename_pane_target = Some(pane_id);
-    state.name_input = terminal
-        .and_then(|t| t.manual_summary.clone().or_else(|| t.effective_title()))
-        .unwrap_or_default();
-    state.name_input_replace_on_type = false;
-    state.mode = Mode::UpdateSummary;
+    let job = {
+        let Some(terminal) = state.terminals.get(&terminal_id) else {
+            leave_modal(state);
+            return;
+        };
+        let Some((agent, session_id)) = terminal.model_probe_session() else {
+            leave_modal(state);
+            return;
+        };
+        crate::agent_model::AgentModelRefreshJob {
+            terminal_id: terminal_id.clone(),
+            agent,
+            session_id,
+            cached: None,
+        }
+    };
+    if let Some(result) = crate::agent_model::refresh_agent_model_infos(vec![job])
+        .into_iter()
+        .next()
+    {
+        if let Some(terminal) = state.terminals.get_mut(&result.terminal_id) {
+            terminal.adopt_probed_title(result.entry.title, true);
+            state.mark_session_dirty();
+        }
+    }
+    leave_modal(state);
 }
 
 fn land_agent_prompt_target(state: &AppState, pane_id: crate::layout::PaneId) -> String {
@@ -421,20 +441,6 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                         if let Some(terminal_id) = terminal_id_for_pane(state, pane_id) {
                             if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
                                 terminal.set_manual_label(new_name);
-                                state.mark_session_dirty();
-                            }
-                        }
-                    }
-                }
-                Mode::UpdateSummary => {
-                    if let Some(pane_id) = state.rename_pane_target {
-                        if let Some(terminal_id) = terminal_id_for_pane(state, pane_id) {
-                            if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
-                                if new_name.trim().is_empty() {
-                                    terminal.clear_manual_summary();
-                                } else {
-                                    terminal.set_manual_summary(new_name);
-                                }
                                 state.mark_session_dirty();
                             }
                         }
@@ -710,8 +716,8 @@ pub(super) fn apply_context_menu_action(
         | (ContextMenuKind::Pane { pane_id, .. }, Some("Rename pane")) => {
             open_rename_pane(state, pane_id);
         }
-        (ContextMenuKind::Agent { pane_id, .. }, Some("Update Summary")) => {
-            open_update_summary(state, pane_id);
+        (ContextMenuKind::Agent { pane_id, .. }, Some("Refresh Summary")) => {
+            refresh_summary(state, pane_id);
         }
         (ContextMenuKind::Pane { pane_id, .. }, Some("Clear pane name")) => {
             if let Some(ws_idx) = state.active {
@@ -1178,16 +1184,57 @@ mod tests {
     }
 
     #[test]
-    fn update_summary_from_the_row_menu_opens_the_dialog_and_saves() {
+    fn refresh_summary_from_the_row_menu_takes_the_current_prompt() {
+        let _guard = crate::integration::integration_env_lock();
+        let session_id = "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c";
+        let root = std::env::temp_dir().join(format!(
+            "herdr-refresh-summary-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let session = root.join("sessions").join("cwd").join(session_id);
+        std::fs::create_dir_all(&session).unwrap();
+        let grok_user_line = |text: &str| {
+            format!(
+                r#"{{"type":"user","content":[{{"type":"text","text":{}}}]}}"#,
+                serde_json::to_string(text).unwrap()
+            )
+        };
+        std::fs::write(
+            session.join("chat_history.jsonl"),
+            format!(
+                "{}\n{}\n",
+                grok_user_line("<user_query>\nImprove Agent Summary to be useful\n</user_query>"),
+                grok_user_line("<user_query>\nLand this on parent\n</user_query>")
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            session.join("summary.json"),
+            r#"{"generated_title":"Improve Agent Summary to be useful","current_model_id":"grok-4.6"}"#,
+        )
+        .unwrap();
+        std::env::set_var("GROK_HOME", &root);
+
         let mut state = state_with_workspaces(&["test"]);
         state.ensure_test_terminals();
         let pane_id = state.workspaces[0].tabs[0].root_pane;
         let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
-        state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("agent terminal")
-            .set_session_title(Some("probed title".into()));
+        {
+            let terminal = state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("agent terminal");
+            terminal.set_session_title(Some("Improve Agent Summary to be useful".into()));
+            terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:grok".into(),
+                agent: "grok".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id(session_id).unwrap(),
+            });
+        }
         let menu = ContextMenuState {
             kind: ContextMenuKind::Agent {
                 ws_idx: 0,
@@ -1201,40 +1248,23 @@ mod tests {
         let idx = menu
             .items()
             .iter()
-            .position(|item| item == "Update Summary")
-            .expect("update summary item");
+            .position(|item| item == "Refresh Summary")
+            .expect("refresh summary item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
 
-        assert_eq!(state.mode, Mode::UpdateSummary);
-        assert_eq!(state.rename_pane_target, Some(pane_id));
-        assert_eq!(state.name_input, "probed title");
-
-        state.name_input = "Improve Agent Summary to be useful".into();
-        apply_rename_action(&mut state, ModalAction::Save);
-
+        assert_eq!(state.mode, Mode::Terminal);
         let terminal = state.terminals.get(&terminal_id).expect("agent terminal");
         assert_eq!(
-            terminal.manual_summary.as_deref(),
-            Some("Improve Agent Summary to be useful")
+            terminal.session_title.as_deref(),
+            Some("Land this on parent"),
+            "Refresh Summary takes the current prompt, not the first one"
         );
-        assert_eq!(
-            terminal.effective_title().as_deref(),
-            Some("Improve Agent Summary to be useful")
-        );
+        assert_eq!(terminal.manual_summary, None);
 
-        state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("agent terminal")
-            .set_session_title(Some("later probed title".into()));
-        let terminal = state.terminals.get(&terminal_id).expect("agent terminal");
-        assert_eq!(
-            terminal.effective_title().as_deref(),
-            Some("Improve Agent Summary to be useful"),
-            "a probed title must not replace a summary the user set"
-        );
+        std::env::remove_var("GROK_HOME");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

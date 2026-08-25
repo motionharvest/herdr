@@ -525,7 +525,12 @@ fn capture_pane(
         label: terminal.and_then(|terminal| terminal.manual_label.clone()),
         agent_name: terminal.and_then(|terminal| terminal.agent_name.clone()),
         title_name: terminal.and_then(|terminal| terminal.title_name.clone()),
-        summary: terminal.and_then(|terminal| terminal.manual_summary.clone()),
+        summary: terminal.and_then(|terminal| {
+            terminal
+                .manual_summary
+                .clone()
+                .or_else(|| terminal.session_title.clone())
+        }),
         agent_session,
         launch_argv: terminal.and_then(|terminal| terminal.launch_argv.clone()),
         seen: pane.seen,
@@ -1197,6 +1202,28 @@ mod tests {
             crate::agent_resume::AgentSessionRefKind::Path
         );
         assert_eq!(agent_session.value, "/tmp/pi-session.jsonl");
+    }
+
+    #[test]
+    fn capture_contract_saves_the_frozen_session_title() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_session_title(Some("Improve Agent Summary to be useful".into()));
+
+        let snapshot = capture_from_state(&state);
+        assert_eq!(
+            snapshot.workspaces[0].tabs[0].panes[&root.raw()]
+                .summary
+                .as_deref(),
+            Some("Improve Agent Summary to be useful")
+        );
     }
 
     #[test]

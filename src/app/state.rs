@@ -919,7 +919,6 @@ pub enum Mode {
     Composer,
     RenameWorkspace,
     RenamePane,
-    UpdateSummary,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
@@ -1464,7 +1463,7 @@ impl ContextMenuState {
             ContextMenuKind::Agent { space, .. } => {
                 let mut items = vec![
                     "Rename agent".into(),
-                    "Update Summary".into(),
+                    "Refresh Summary".into(),
                     "Delete agent".into(),
                 ];
                 match space {
@@ -2325,7 +2324,7 @@ mod tests {
             menu.items(),
             vec![
                 "Rename agent",
-                "Update Summary",
+                "Refresh Summary",
                 "Delete agent",
                 "Land on main",
                 "Delete agent + worktree",
@@ -2345,7 +2344,7 @@ mod tests {
             items,
             vec![
                 "Rename agent",
-                "Update Summary",
+                "Refresh Summary",
                 "Delete agent",
                 "New worktree",
                 "Open worktree...",
@@ -2366,7 +2365,7 @@ mod tests {
             menu.items(),
             vec![
                 "Rename agent",
-                "Update Summary",
+                "Refresh Summary",
                 "Delete agent",
                 "Delete agent + worktree",
             ]

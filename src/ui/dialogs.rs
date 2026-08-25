@@ -57,7 +57,6 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
     let title = match app.mode {
         Mode::RenameWorkspace => "rename workspace",
         Mode::RenamePane => "rename pane",
-        Mode::UpdateSummary => "update summary",
         _ => return,
     };
 

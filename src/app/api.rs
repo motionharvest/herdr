@@ -67,9 +67,12 @@ impl App {
                         terminal.model_info = result.entry.info.clone();
                         changed = true;
                     }
-                    if still_current && terminal.session_title != result.entry.title {
-                        terminal.set_session_title(result.entry.title.clone());
-                        changed = true;
+                    if still_current {
+                        let before = terminal.session_title.clone();
+                        terminal.adopt_probed_title(result.entry.title.clone(), false);
+                        if terminal.session_title != before {
+                            changed = true;
+                        }
                     }
                 }
                 self.agent_model_cache

@@ -1429,7 +1429,7 @@ impl App {
                     input::ComposerKeyOutcome::Edited => {}
                 }
             }
-            Mode::RenameWorkspace | Mode::RenamePane | Mode::UpdateSummary => {
+            Mode::RenameWorkspace | Mode::RenamePane => {
                 input::handle_rename_key(&mut self.state, key_event);
             }
             Mode::NewLinkedWorktree => {
@@ -1767,6 +1767,72 @@ mod tests {
         let feedback = app.state.copy_feedback.as_ref().expect("copy feedback");
         assert_eq!(feedback.message, "copied to clipboard");
         assert!(app.copy_feedback_deadline.is_some());
+    }
+
+    #[test]
+    fn a_later_probed_title_does_not_replace_the_summary() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("summary-freeze");
+        let pane = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(pane)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        let session_id = "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c";
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:grok".into(),
+                agent: "grok".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id(session_id).unwrap(),
+            });
+
+        let entry = |title: &str| crate::agent_model::AgentModelCacheEntry {
+            session_id: session_id.into(),
+            session_file: "/tmp".into(),
+            modified: std::time::SystemTime::now(),
+            info: None,
+            title: Some(title.into()),
+            title_scanned_len: 0,
+        };
+
+        app.handle_internal_event(AppEvent::AgentModelRefreshed {
+            results: vec![crate::agent_model::AgentModelRefreshResult {
+                terminal_id: terminal_id.clone(),
+                entry: entry("Improve Agent Summary to be useful"),
+            }],
+        });
+        assert_eq!(
+            app.state
+                .terminals
+                .get(&terminal_id)
+                .unwrap()
+                .session_title
+                .as_deref(),
+            Some("Improve Agent Summary to be useful")
+        );
+
+        app.handle_internal_event(AppEvent::AgentModelRefreshed {
+            results: vec![crate::agent_model::AgentModelRefreshResult {
+                terminal_id: terminal_id.clone(),
+                entry: entry("Land this on parent"),
+            }],
+        });
+        assert_eq!(
+            app.state
+                .terminals
+                .get(&terminal_id)
+                .unwrap()
+                .session_title
+                .as_deref(),
+            Some("Improve Agent Summary to be useful"),
+            "a later probe must not replace the first fill"
+        );
     }
 
     #[test]

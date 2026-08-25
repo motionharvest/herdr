@@ -453,10 +453,7 @@ impl AppState {
                     return None;
                 }
 
-                if matches!(
-                    self.mode,
-                    Mode::RenameWorkspace | Mode::RenamePane | Mode::UpdateSummary
-                ) {
+                if matches!(self.mode, Mode::RenameWorkspace | Mode::RenamePane) {
                     let action = self
                         .rename_modal_inner()
                         .map(crate::ui::rename_button_rects)
@@ -4787,7 +4784,7 @@ mod tests {
         );
         assert!(items.iter().any(|item| item == "Rename agent"), "{items:?}");
         assert!(
-            items.iter().any(|item| item == "Update Summary"),
+            items.iter().any(|item| item == "Refresh Summary"),
             "{items:?}"
         );
         match &menu.kind {

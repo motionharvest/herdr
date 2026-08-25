@@ -431,9 +431,7 @@ pub fn render_with_runtime_registry(
             render_context_menu(app, frame);
         }
         Mode::Settings => render_settings_overlay(app, frame, frame.area()),
-        Mode::RenameWorkspace | Mode::RenamePane | Mode::UpdateSummary => {
-            render_rename_overlay(app, frame, frame.area())
-        }
+        Mode::RenameWorkspace | Mode::RenamePane => render_rename_overlay(app, frame, frame.area()),
         Mode::NewLinkedWorktree => render_new_linked_worktree_overlay(app, frame, frame.area()),
         Mode::OpenExistingWorktree => {
             render_open_existing_worktree_overlay(app, frame, frame.area())
