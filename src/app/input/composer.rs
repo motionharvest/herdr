@@ -61,10 +61,37 @@ pub(crate) fn handle_player_link_key(state: &mut AppState, raw_key: TerminalKey)
     let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
     match key.code {
         KeyCode::Esc => {
+            if crate::ui::player::handle_player_queue_esc(state) {
+                return true;
+            }
             crate::ui::player::unfocus_player_input(state);
         }
         KeyCode::Enter => {
-            crate::ui::player::submit_player_load(state);
+            if matches!(
+                state.player_queue_mode,
+                crate::ui::player::PlayerQueueMode::SaveName
+            ) {
+                crate::ui::player::submit_player_save(state, false);
+            } else {
+                crate::ui::player::submit_player_add(state);
+            }
+        }
+        KeyCode::Char(ch)
+            if matches!(
+                state.player_queue_mode,
+                crate::ui::player::PlayerQueueMode::SaveName
+            ) =>
+        {
+            if crate::ui::player::save_name_char_allowed(state, ch) {
+                edit_field(&mut state.player_save_name, key.code, key.modifiers, plain);
+            }
+        }
+        _ if matches!(
+            state.player_queue_mode,
+            crate::ui::player::PlayerQueueMode::SaveName
+        ) =>
+        {
+            edit_field(&mut state.player_save_name, key.code, key.modifiers, plain);
         }
         _ => {
             edit_field(&mut state.player_link, key.code, key.modifiers, plain);
@@ -677,12 +704,12 @@ mod tests {
         assert!(handle_player_link_key(&mut state, key(KeyCode::Enter)));
         let posts = crate::ui::player::take_test_posts();
         assert!(
-            posts.iter().any(|(path, body)| path == "/load" && body.contains("https://x.test/t")),
-            "Enter must POST /load, got {posts:?}"
+            posts.iter().any(|(path, body)| path == "/playlist/add" && body.contains("https://x.test/t")),
+            "Enter must POST /playlist/add, got {posts:?}"
         );
         assert!(
             state.player_link.text().is_empty(),
-            "Enter/Load must clear the field, got {:?}",
+            "Enter/Add must clear the field, got {:?}",
             state.player_link.text()
         );
         assert_eq!(state.player_link.cursor_row(), (0, 0));

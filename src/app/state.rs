@@ -1687,10 +1687,13 @@ pub struct AppState {
     pub sidebar_collapsed: bool,
     pub spaces_collapsed: bool,
     /// Herdplay box in the sidebar: false is the 3-row bar, true is the taller
-    /// paste/Load chrome. Not persisted; it is session chrome, not layout.
+    /// paste/Add chrome. Not persisted; it is session chrome, not layout.
     pub player_expanded: bool,
     /// Paste field for an ElevenMusic URL. Same `TextField` as the task prompt.
     pub player_link: crate::composer::TextField,
+    /// Name field while the queue chrome is in save-name mode.
+    pub player_save_name: crate::composer::TextField,
+    pub player_queue_mode: crate::ui::player::PlayerQueueMode,
     pub player_input_focused: bool,
     pub player_playlist_scroll: usize,
     pub(crate) player_bg_click: Option<(u16, u16, Instant)>,
@@ -2117,6 +2120,8 @@ impl AppState {
             spaces_collapsed: false,
             player_expanded: false,
             player_link: crate::composer::TextField::default(),
+            player_save_name: crate::composer::TextField::default(),
+            player_queue_mode: crate::ui::player::PlayerQueueMode::Queue,
             player_input_focused: false,
             player_playlist_scroll: 0,
             player_bg_click: None,

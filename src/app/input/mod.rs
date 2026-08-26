@@ -74,6 +74,11 @@ impl App {
                 if handle_player_link_key(&mut self.state, key) {
                     return;
                 }
+                if key.as_key_event().code == crossterm::event::KeyCode::Esc
+                    && crate::ui::player::handle_player_queue_esc(&mut self.state)
+                {
+                    return;
+                }
                 self.handle_terminal_key(key).await
             }
             Mode::PlayerInput => {
@@ -657,6 +662,26 @@ impl AppState {
                 self.mode = Mode::Terminal;
             }
         }
+    }
+
+    /// Split a specific leaf, not whichever pane currently has keyboard focus.
+    pub(crate) fn split_given_pane_with_placement(
+        &mut self,
+        terminal_runtimes: &mut crate::terminal::TerminalRuntimeRegistry,
+        pane_id: crate::layout::PaneId,
+        direction: Direction,
+        placement: crate::layout::SplitPlacement,
+    ) {
+        if let Some(ws_idx) = self.active {
+            if let Some(tab) = self
+                .workspaces
+                .get_mut(ws_idx)
+                .and_then(|ws| ws.active_tab_mut())
+            {
+                tab.layout.focus_pane(pane_id);
+            }
+        }
+        self.split_pane_with_placement(terminal_runtimes, direction, placement);
     }
 }
 

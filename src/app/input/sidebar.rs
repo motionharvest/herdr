@@ -221,9 +221,39 @@ impl AppState {
                 self.player_bg_click = None;
                 crate::ui::player::submit_player_add(self);
             }
-            crate::ui::player::PlayerAction::Load => {
+            crate::ui::player::PlayerAction::Save => {
                 self.player_bg_click = None;
-                crate::ui::player::submit_player_load(self);
+                crate::ui::player::enter_save_name(self);
+            }
+            crate::ui::player::PlayerAction::LoadSaved => {
+                self.player_bg_click = None;
+                crate::ui::player::enter_load_picker(self);
+            }
+            crate::ui::player::PlayerAction::CancelSave => {
+                self.player_bg_click = None;
+                crate::ui::player::cancel_player_queue_mode(self);
+            }
+            crate::ui::player::PlayerAction::ConfirmSave => {
+                self.player_bg_click = None;
+                crate::ui::player::submit_player_save(self, false);
+            }
+            crate::ui::player::PlayerAction::OverwriteNo => {
+                self.player_bg_click = None;
+                crate::ui::player::cancel_player_queue_mode(self);
+            }
+            crate::ui::player::PlayerAction::OverwriteYes => {
+                self.player_bg_click = None;
+                crate::ui::player::submit_player_save(self, true);
+            }
+            crate::ui::player::PlayerAction::PickSaved(index) => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::submit_load_named(self, index);
+            }
+            crate::ui::player::PlayerAction::CycleDensity => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::cycle_player_density();
             }
             crate::ui::player::PlayerAction::VolumeDown => {
                 crate::ui::player::unfocus_player_input(self);
@@ -265,12 +295,25 @@ impl AppState {
                 self.player_bg_click = None;
                 crate::ui::player::post_playlist_remove(index);
             }
+            crate::ui::player::PlayerAction::PlaylistClear => {
+                crate::ui::player::unfocus_player_input(self);
+                self.player_bg_click = None;
+                crate::ui::player::post_playlist_clear();
+            }
             crate::ui::player::PlayerAction::FocusInput => {
                 self.player_bg_click = None;
+                if matches!(
+                    self.player_queue_mode,
+                    crate::ui::player::PlayerQueueMode::LoadPicker
+                        | crate::ui::player::PlayerQueueMode::SaveOverwrite { .. }
+                ) {
+                    crate::ui::player::cancel_player_queue_mode(self);
+                }
                 crate::ui::player::focus_player_input(self, col);
             }
             crate::ui::player::PlayerAction::Toggle => {
                 self.player_bg_click = None;
+                crate::ui::player::cancel_player_queue_mode(self);
                 crate::ui::player::unfocus_player_input(self);
                 self.player_expanded = !self.player_expanded;
             }
@@ -309,6 +352,20 @@ impl AppState {
         None
     }
 
+    fn sidebar_adjacent_pane_id(&self) -> Option<crate::layout::PaneId> {
+        // Last-frame displayed rects from compute_view — the same geometry
+        // navigate_pane uses. Prefer this over re-running the BSP tree with
+        // view.terminal_area: that field is written every compute_view via the
+        // ViewState struct literal, but mouse handling runs between frames and
+        // a 0×0/stale area would make every leaf look the same.
+        if let Some(id) = crate::layout::TileLayout::leftmost_lowest_id(&self.view.pane_infos) {
+            return Some(id);
+        }
+        let ws = self.workspaces.get(self.active?)?;
+        let tab = ws.active_tab()?;
+        Some(tab.layout.pane_against_left_edge(self.view.terminal_area))
+    }
+
     pub(crate) fn open_or_focus_herdplayer(
         &mut self,
         terminal_runtimes: &mut crate::terminal::TerminalRuntimeRegistry,
@@ -319,12 +376,27 @@ impl AppState {
             return;
         }
 
+        // Split the pane against the sidebar, not whatever had focus. Focus is
+        // a random place in the layout; the player lives on the left edge.
+        // Target that leaf in the tree directly — do not go through
+        // focus_pane_in_workspace (tab switch / early-return on "already
+        // focused") and then split_focused, which still keys off layout.focus.
+        let anchor = self.sidebar_adjacent_pane_id();
         let previous = self.current_pane_focus_target();
-        self.split_pane_with_placement(
-            terminal_runtimes,
-            ratatui::layout::Direction::Vertical,
-            crate::layout::SplitPlacement::After,
-        );
+        if let Some(pane_id) = anchor {
+            self.split_given_pane_with_placement(
+                terminal_runtimes,
+                pane_id,
+                ratatui::layout::Direction::Vertical,
+                crate::layout::SplitPlacement::After,
+            );
+        } else {
+            self.split_pane_with_placement(
+                terminal_runtimes,
+                ratatui::layout::Direction::Vertical,
+                crate::layout::SplitPlacement::After,
+            );
+        }
         if self.current_pane_focus_target() == previous {
             return;
         }
@@ -2284,5 +2356,98 @@ mod tests {
             .get(&terminal_id)
             .and_then(|t| t.manual_label.clone());
         assert_eq!(label.as_deref(), Some("herdplayer"));
+    }
+
+    #[tokio::test]
+    async fn herdplayer_opens_against_the_sidebar_not_the_focused_pane() {
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("one");
+        let root = workspace.tabs[0].root_pane;
+        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+        // Right pane has focus — the old path would split that, landing
+        // herdplayer in the right column instead of beside the sidebar.
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(right));
+        assert_eq!(app.state.sidebar_adjacent_pane_id(), Some(root));
+        // Live mouse handling runs between frames. Zero the cached area so
+        // the anchor cannot cheat by re-running BSP against terminal_area.
+        app.state.view.terminal_area = Rect::default();
+        assert_eq!(
+            app.state.sidebar_adjacent_pane_id(),
+            Some(root),
+            "anchor must come from pane_infos when terminal_area is empty"
+        );
+
+        app.state
+            .open_or_focus_herdplayer(&mut app.terminal_runtimes);
+
+        let area = Rect::new(32, 0, 90, 45);
+        let panes = app.state.workspaces[0].tabs[0].layout.panes(area);
+        let herd = app
+            .state
+            .find_herdplayer_pane()
+            .expect("herdplayer pane")
+            .1;
+        let herd_rect = panes.iter().find(|pane| pane.id == herd).unwrap().rect;
+        let root_rect = panes.iter().find(|pane| pane.id == root).unwrap().rect;
+        let right_rect = panes.iter().find(|pane| pane.id == right).unwrap().rect;
+
+        assert_eq!(
+            herd_rect.x, root_rect.x,
+            "herdplayer must share the left column with the pane against the sidebar"
+        );
+        assert!(
+            herd_rect.x < right_rect.x,
+            "herdplayer must not open in the right-hand column"
+        );
+        assert!(
+            herd_rect.y > root_rect.y,
+            "vertical After-split of the left pane lands bottom-left"
+        );
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(herd));
+    }
+
+    #[tokio::test]
+    async fn double_clicking_the_player_splits_the_sidebar_adjacent_pane() {
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("one");
+        let root = workspace.tabs[0].root_pane;
+        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        app.state.player_expanded = true;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(right));
+        let player = app.state.view.player_rect;
+        assert!(player.width > 2 && player.height > 2, "{player:?}");
+        let (col, row) = (0..player.height)
+            .flat_map(|dy| (0..player.width).map(move |dx| (player.x + dx, player.y + dy)))
+            .find(|&(col, row)| {
+                crate::ui::player::player_action_at(&app.state, col, row)
+                    == Some(crate::ui::player::PlayerAction::Background)
+            })
+            .expect("expanded player should have a Background cell");
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+
+        let herd = app
+            .state
+            .find_herdplayer_pane()
+            .expect("double-click should open herdplayer")
+            .1;
+        let panes = app.state.workspaces[0].tabs[0]
+            .layout
+            .panes(Rect::new(32, 0, 90, 45));
+        let herd_rect = panes.iter().find(|pane| pane.id == herd).unwrap().rect;
+        let root_rect = panes.iter().find(|pane| pane.id == root).unwrap().rect;
+        let right_rect = panes.iter().find(|pane| pane.id == right).unwrap().rect;
+        assert_eq!(herd_rect.x, root_rect.x);
+        assert!(herd_rect.x < right_rect.x);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(herd));
     }
 }

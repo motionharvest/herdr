@@ -460,7 +460,10 @@ impl App {
             return false;
         }
         self.last_player_poll = now;
-        crate::ui::player::snapshot_changed(&mut self.last_player_snapshot)
+        let snapshot = crate::ui::player::snapshot_changed(&mut self.last_player_snapshot);
+        let playlist = crate::ui::player::playlist_changed(&mut self.last_player_playlist);
+        let density = crate::ui::player::density_changed(&mut self.last_player_density);
+        snapshot || playlist || density
     }
 
     pub(crate) fn start_git_status_refresh_if_due(&mut self, now: Instant) {
@@ -1166,6 +1169,41 @@ mod tests {
             .pending_agent_resume_plan
             .is_some());
         assert!(app.pending_agent_resume_deadline.is_none());
+    }
+
+    #[test]
+    fn player_poll_redraws_when_playlist_title_changes_while_paused() {
+        let _guard = crate::ui::player::lock_test_player();
+        let (mut app, _pane_id) = test_app_with_pane();
+        crate::ui::player::set_test_snapshot(crate::ui::player::PlayerSnapshot::Offline);
+        app.last_player_snapshot = crate::ui::player::PlayerSnapshot::Offline;
+        crate::ui::player::set_test_playlist(crate::ui::player::PlaylistSnapshot {
+            items: vec![crate::ui::player::PlaylistItem {
+                title: "watch?v=abc".into(),
+                url: "https://www.youtube.com/watch?v=abc".into(),
+            }],
+            index: None,
+        });
+        app.last_player_playlist = crate::ui::player::current_playlist();
+        let now = Instant::now();
+        app.last_player_poll = now - PLAYER_POLL_INTERVAL;
+        assert!(
+            !app.poll_player_if_due(now),
+            "unchanged playlist and snapshot must not force a redraw"
+        );
+
+        crate::ui::player::set_test_playlist(crate::ui::player::PlaylistSnapshot {
+            items: vec![crate::ui::player::PlaylistItem {
+                title: "Crystal Quest".into(),
+                url: "https://www.youtube.com/watch?v=abc".into(),
+            }],
+            index: None,
+        });
+        app.last_player_poll = now - PLAYER_POLL_INTERVAL;
+        assert!(
+            app.poll_player_if_due(now),
+            "a title arriving while paused must dirty the player poll"
+        );
     }
 
     fn push_detached_agent(app: &mut super::super::App, agent_state: AgentState, seen: bool) {

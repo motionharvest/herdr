@@ -4875,7 +4875,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_load_posts_the_typed_url() {
+    fn clicking_a_playlist_row_posts_load() {
         let _guard = crate::ui::player::lock_test_player();
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![Workspace::test_new("one")];
@@ -4883,30 +4883,64 @@ mod tests {
         app.state.mode = Mode::Terminal;
         app.state.sidebar_width = 32;
         app.state.player_expanded = true;
-        app.state.player_link.set_text("https://elevenlabs.io/music/abc");
+        crate::ui::player::set_test_playlist(crate::ui::player::PlaylistSnapshot {
+            items: vec![crate::ui::player::PlaylistItem {
+                title: "Glass".into(),
+                url: "/System/Library/Sounds/Glass.aiff".into(),
+            }],
+            index: None,
+        });
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
         crate::ui::player::take_test_posts();
 
         let hits = crate::ui::player::player_hit_areas(&app.state);
-        assert!(hits.load.width > 0, "Load hit missing: {hits:?}");
+        assert!(hits.playlist.width > 0, "playlist hit missing: {hits:?}");
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            hits.load.x,
-            hits.load.y,
+            hits.playlist.x,
+            hits.playlist.y,
         ));
         let posts = crate::ui::player::take_test_posts();
         assert!(
             posts.iter().any(|(path, body)| {
-                path == "/load" && body.contains("elevenlabs.io/music/abc")
+                path == "/load" && body.contains("/System/Library/Sounds/Glass.aiff")
             }),
-            "Load must POST /load with the typed URL, got {posts:?}"
+            "queue row must POST /load, got {posts:?}"
         );
+    }
+
+    #[test]
+    fn clicking_clear_posts_playlist_clear() {
+        let _guard = crate::ui::player::lock_test_player();
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_width = 32;
+        app.state.player_expanded = true;
+        crate::ui::player::set_test_playlist(crate::ui::player::PlaylistSnapshot {
+            items: vec![crate::ui::player::PlaylistItem {
+                title: "Glass".into(),
+                url: "/System/Library/Sounds/Glass.aiff".into(),
+            }],
+            index: None,
+        });
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 122, 45));
+        crate::ui::player::take_test_posts();
+
+        let hits = crate::ui::player::player_hit_areas(&app.state);
+        assert!(hits.clear.width > 0, "clear hit missing: {hits:?}");
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.clear.x,
+            hits.clear.y,
+        ));
+        let posts = crate::ui::player::take_test_posts();
         assert!(
-            app.state.player_link.text().is_empty(),
-            "Load must clear the paste field, got {:?}",
-            app.state.player_link.text()
+            posts.iter().any(|(path, _)| path == "/playlist/clear"),
+            "clear must POST /playlist/clear, got {posts:?}"
         );
-        assert_eq!(app.state.player_link.cursor_row(), (0, 0));
+        assert!(crate::ui::player::current_playlist().items.is_empty());
     }
 
     #[test]
@@ -4924,10 +4958,6 @@ mod tests {
 
         let hits = crate::ui::player::player_hit_areas(&app.state);
         assert!(hits.add.width > 0, "Add hit missing: {hits:?}");
-        assert!(
-            hits.add.x + hits.add.width <= hits.load.x,
-            "Add and Load must not overlap: {hits:?}"
-        );
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             hits.add.x,
@@ -5088,6 +5118,7 @@ mod tests {
         crate::ui::player::set_test_snapshot(crate::ui::player::PlayerSnapshot::Online {
             title: Some("probe".into()),
             artist: None,
+            url: None,
             playing: false,
             looping: false,
             shuffle: false,
@@ -5129,6 +5160,7 @@ mod tests {
         crate::ui::player::set_test_snapshot(crate::ui::player::PlayerSnapshot::Online {
             title: Some("probe".into()),
             artist: None,
+            url: None,
             playing: false,
             looping: false,
             shuffle: false,
@@ -5240,6 +5272,7 @@ mod tests {
         crate::ui::player::set_test_snapshot(crate::ui::player::PlayerSnapshot::Online {
             title: Some("probe".into()),
             artist: None,
+            url: None,
             playing: true,
             looping: false,
             shuffle: false,
@@ -5318,6 +5351,7 @@ mod tests {
         crate::ui::player::set_test_snapshot(crate::ui::player::PlayerSnapshot::Online {
             title: Some("probe".into()),
             artist: None,
+            url: None,
             playing: true,
             looping: false,
             shuffle: false,

@@ -699,6 +699,8 @@ mod tests {
 
     #[test]
     fn expanding_the_player_grows_the_box_and_shows_the_paste_row() {
+        let _guard = crate::ui::player::lock_test_player();
+        crate::ui::player::set_test_playlist(crate::ui::player::PlaylistSnapshot::default());
         let mut app = crate::app::state::AppState::test_new();
         app.workspaces = vec![Workspace::test_new("one")];
         app.active = Some(0);
@@ -748,12 +750,12 @@ mod tests {
             "full-mode header missing:\n{player_band}"
         );
         assert!(
-            player_band.contains("Load") && player_band.to_lowercase().contains("link"),
-            "paste/Load row missing:\n{player_band}"
+            player_band.contains("Add") && player_band.to_lowercase().contains("link"),
+            "paste/Add row missing:\n{player_band}"
         );
         assert!(
-            player_band.contains("hidden tab") || player_band.contains("mirrors"),
-            "full-mode embed missing:\n{player_band}"
+            player_band.contains("save") && player_band.contains("load"),
+            "queue save/load chrome missing:\n{player_band}"
         );
         assert!(
             !player_band.contains("▸"),
@@ -834,7 +836,7 @@ mod tests {
         let expanded_strip = sidebar_strip(expanded.backend().buffer(), app.view.sidebar_rect.width);
         assert!(
             expanded_strip.contains("▾")
-                && expanded_strip.contains("Load")
+                && expanded_strip.contains("Add")
                 && expanded_strip.to_lowercase().contains("link"),
             "expanded 120x32 missing paste row:\n{expanded_strip}"
         );
@@ -905,6 +907,70 @@ mod tests {
         assert!(
             mid.contains("♪") && mid.contains("▸"),
             "bar missing at 122x45:\n{top}\n{mid}\n{bot}"
+        );
+    }
+
+    #[test]
+    fn expanded_player_below_floor_shows_widen_hint_not_paste_row() {
+        fn player_band(buffer: &ratatui::buffer::Buffer, player: Rect) -> String {
+            (player.y..player.y + player.height)
+                .map(|y| {
+                    (player.x..player.x + player.width)
+                        .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one")];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+        app.player_expanded = true;
+        app.sidebar_width = 32;
+
+        // 80×16 stays desktop (mobile kicks in at 64 cols) but the expanded
+        // player box is shorter than PLAYER_FULL_MIN_ROWS.
+        compute_view(&mut app, Rect::new(0, 0, 80, 16));
+        assert!(
+            app.view.player_rect.height < crate::ui::player::PLAYER_FULL_MIN_ROWS
+                || app.view.player_rect.width < crate::ui::player::PLAYER_FULL_MIN_WIDTH,
+            "fixture must sit under the full-view floor: {:?}",
+            app.view.player_rect
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).expect("80x16");
+        terminal
+            .draw(|frame| render(&app, frame))
+            .expect("draw cramped player");
+        let band = player_band(terminal.backend().buffer(), app.view.player_rect);
+        assert!(
+            band.contains("widen") && band.contains("player view"),
+            "cramped player must show the widen hint:\n{band}"
+        );
+        assert!(
+            !band.to_lowercase().contains("paste a link"),
+            "cramped player must not cram the paste row:\n{band}"
+        );
+        assert!(
+            band.contains("collapse") || band.contains("▾"),
+            "collapse must remain so the box is not a trap:\n{band}"
+        );
+
+        app.player_expanded = true;
+        compute_view(&mut app, Rect::new(0, 0, 122, 45));
+        let mut wide = Terminal::new(TestBackend::new(122, 45)).expect("122x45");
+        wide.draw(|frame| render(&app, frame)).expect("draw full");
+        let full = player_band(wide.backend().buffer(), app.view.player_rect);
+        assert!(
+            !full.contains("widen this pane"),
+            "122×45 must keep the full chrome, not the hint:\n{full}"
+        );
+        assert!(
+            full.contains("Add") && full.to_lowercase().contains("link"),
+            "122×45 missing paste/Add row:\n{full}"
         );
     }
 

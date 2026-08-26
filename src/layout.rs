@@ -302,6 +302,46 @@ impl TileLayout {
         result
     }
 
+    /// Among already-computed pane rects, the one on the left edge. If several
+    /// share that edge, the lowest one, so a vertical After-split lands
+    /// bottom-left beside the sidebar.
+    pub fn leftmost_lowest_id(panes: &[PaneInfo]) -> Option<PaneId> {
+        panes
+            .iter()
+            .min_by_key(|pane| (pane.rect.x, u16::MAX.saturating_sub(pane.rect.y)))
+            .map(|pane| pane.id)
+    }
+
+    /// Pane sitting on the left edge of `area` — immediately right of the
+    /// sidebar. If several share that edge, the lowest one, so a vertical
+    /// After-split lands bottom-left.
+    pub fn pane_against_left_edge(&self, area: Rect) -> PaneId {
+        let area = if area.width == 0 || area.height == 0 {
+            Rect::new(0, 0, 120, 40)
+        } else {
+            area
+        };
+        Self::leftmost_lowest_id(&self.panes(area)).unwrap_or(self.focus)
+    }
+
+    /// Split `target` regardless of which pane currently has focus.
+    pub fn split_pane_with_placement(
+        &mut self,
+        target: PaneId,
+        direction: Direction,
+        placement: SplitPlacement,
+    ) -> Option<PaneId> {
+        if !self.pane_ids().contains(&target) {
+            return None;
+        }
+        let new_id = PaneId::alloc();
+        let placeholder = PaneId::from_raw(0);
+        let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
+        self.root = split_at(old, target, direction, new_id, placement);
+        self.focus = new_id;
+        Some(new_id)
+    }
+
     /// Collect all split boundaries for mouse drag resize.
     pub fn splits(&self, area: Rect) -> Vec<SplitBorder> {
         let mut result = Vec::new();
@@ -315,12 +355,8 @@ impl TileLayout {
         direction: Direction,
         placement: SplitPlacement,
     ) -> PaneId {
-        let new_id = PaneId::alloc();
-        let placeholder = PaneId::from_raw(0);
-        let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
-        self.root = split_at(old, self.focus, direction, new_id, placement);
-        self.focus = new_id;
-        new_id
+        self.split_pane_with_placement(self.focus, direction, placement)
+            .expect("focused pane is always in the tree")
     }
 
     /// Cut `target` in two and put an existing pane id against one side of it.
@@ -855,6 +891,52 @@ mod tests {
         let root_rect = panes.iter().find(|pane| pane.id == root).unwrap().rect;
         let right_rect = panes.iter().find(|pane| pane.id == right).unwrap().rect;
         assert!(right_rect.x > root_rect.x);
+    }
+
+    #[test]
+    fn pane_against_left_edge_ignores_focus_and_picks_the_lowest_left_pane() {
+        let area = Rect::new(0, 0, 100, 40);
+        let (mut layout, root) = TileLayout::new();
+        assert_eq!(layout.pane_against_left_edge(area), root);
+
+        let right =
+            layout.split_focused_with_placement(Direction::Horizontal, SplitPlacement::After);
+        layout.focus_pane(right);
+        assert_eq!(
+            layout.pane_against_left_edge(area),
+            root,
+            "right-side focus must not move the sidebar-adjacent pane"
+        );
+
+        layout.focus_pane(root);
+        let bottom_left =
+            layout.split_focused_with_placement(Direction::Vertical, SplitPlacement::After);
+        layout.focus_pane(right);
+        assert_eq!(
+            layout.pane_against_left_edge(area),
+            bottom_left,
+            "among panes on the left edge, pick the lowest"
+        );
+    }
+
+    #[test]
+    fn split_pane_with_placement_targets_a_leaf_that_is_not_focused() {
+        let area = Rect::new(0, 0, 100, 40);
+        let (mut layout, root) = TileLayout::new();
+        let right =
+            layout.split_focused_with_placement(Direction::Horizontal, SplitPlacement::After);
+        layout.focus_pane(right);
+        let herd = layout
+            .split_pane_with_placement(root, Direction::Vertical, SplitPlacement::After)
+            .expect("root is still in the tree");
+        let panes = layout.panes(area);
+        let herd_rect = panes.iter().find(|pane| pane.id == herd).unwrap().rect;
+        let root_rect = panes.iter().find(|pane| pane.id == root).unwrap().rect;
+        let right_rect = panes.iter().find(|pane| pane.id == right).unwrap().rect;
+        assert_eq!(herd_rect.x, root_rect.x);
+        assert!(herd_rect.x < right_rect.x);
+        assert!(herd_rect.y > root_rect.y);
+        assert_eq!(layout.focused(), herd);
     }
 
     #[test]

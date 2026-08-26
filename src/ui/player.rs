@@ -1,8 +1,8 @@
 //! Compact herdplay player at the bottom of the spaces sidebar.
 //!
 //! Collapsed: a 3-row rounded box matching `+ new` (border, bar, border).
-//! Expanded: full-mode sidebar view (header, paste/Load, playlist, embed,
-//! now-playing, transport, scrub, volume + status). Transport, Load, volume,
+//! Expanded: full-mode sidebar view (header, paste/Add, playlist, embed,
+//! now-playing, transport, scrub, volume + status). Transport, Add, volume,
 //! playlist, and seek talk to the localhost daemon. The daemon is polled on a
 //! background thread so a down or slow localhost never stalls the UI.
 
@@ -15,7 +15,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use serde::Deserialize;
@@ -28,6 +28,10 @@ use crate::app::AppState;
 pub(crate) const PLAYER_COLLAPSED_ROWS: u16 = 3;
 /// Minimum full-mode height: header, paste, playlist, embed remnant, now-playing, transport, scrub, volume/status.
 pub(crate) const PLAYER_FULL_MIN_ROWS: u16 = 18;
+/// Minimum full-mode width. Default sidebar is 26 (player box ~25 after the
+/// divider); design target is 32 at 122×45. Below this, paste/queue/scrub
+/// collide; show a hint instead of cramming the full chrome.
+pub(crate) const PLAYER_FULL_MIN_WIDTH: u16 = 22;
 /// Rows kept above the full player for the spaces header, a remnant list, and `+ new`.
 const FULL_KEEP_ABOVE: u16 = 9;
 
@@ -44,14 +48,25 @@ const NEXT: &str = "⏭";
 const LOOP: &str = "⟲";
 const SHUFFLE: &str = "⇄";
 const LINK_PLACEHOLDER: &str = "paste a link…";
+const SAVE_NAME_PLACEHOLDER: &str = "playlist name…";
 const ADD_LABEL: &str = "Add";
-const LOAD_LABEL: &str = "Load";
+const CANCEL_LABEL: &str = "Cancel";
+const SAVE_LABEL: &str = "save";
+const SAVE_CONFIRM_LABEL: &str = "Save";
+const LOAD_LABEL: &str = "load";
 const VOL_LABEL: &str = "vol";
 const VOLUME_STEP: f64 = 0.1;
-const PLAYLIST_EMPTY: &str = "playlist empty";
+const PLAYLIST_EMPTY: &str = "paste a link, then Add";
+const SAVED_EMPTY: &str = "no saved playlists";
+const QUEUE_LABEL: &str = "queue";
+const CLEAR_LABEL: &str = "clear";
+const OVERWRITE_NO: &str = "no";
+const OVERWRITE_YES: &str = "yes";
 const REMOVE_GLYPH: &str = "×";
 const SCRUB_TIME_W: u16 = 6;
 const PLAYLIST_MAX_ROWS: u16 = 8;
+const TOO_SMALL_HINT: &str = "widen this pane for full player view";
+const HEADER_LABEL: &str = "♪ PLAYER";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PlayerSnapshot {
@@ -59,6 +74,7 @@ pub(crate) enum PlayerSnapshot {
     Online {
         title: Option<String>,
         artist: Option<String>,
+        url: Option<String>,
         playing: bool,
         looping: bool,
         shuffle: bool,
@@ -79,6 +95,46 @@ pub(crate) struct PlaylistSnapshot {
 pub(crate) struct PlaylistItem {
     pub title: String,
     pub url: String,
+}
+
+/// Queue chrome: save/load sit on the `queue … save load [clear]` row.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum PlayerQueueMode {
+    #[default]
+    Queue,
+    SaveName,
+    SaveOverwrite { name: String },
+    LoadPicker,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum PlayerDensity {
+    Compact,
+    #[default]
+    Comfortable,
+    LargeText,
+}
+
+impl PlayerDensity {
+    fn from_settings(value: &str) -> Self {
+        match value {
+            "compact" => Self::Compact,
+            "large-text" => Self::LargeText,
+            _ => Self::Comfortable,
+        }
+    }
+
+    fn playlist_rows(self) -> u16 {
+        match self {
+            Self::Compact => 10,
+            Self::Comfortable => PLAYLIST_MAX_ROWS,
+            Self::LargeText => 4,
+        }
+    }
+
+    fn hide_embed(self) -> bool {
+        !matches!(self, Self::Comfortable)
+    }
 }
 
 impl Default for PlayerSnapshot {
@@ -133,6 +189,8 @@ struct DaemonState {
     playing: Option<bool>,
     elapsed_sec: Option<f64>,
     duration_sec: Option<f64>,
+    url: Option<String>,
+    path: Option<String>,
     volume: Option<f64>,
     seekable: Option<bool>,
     queue: Option<DaemonQueue>,
@@ -158,22 +216,73 @@ struct DaemonQueue {
     shuffle: Option<bool>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct SettingsField {
+    key: String,
+    #[serde(rename = "type")]
+    field_type: String,
+    value: serde_json::Value,
+    #[serde(default)]
+    allowed: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SettingsBody {
+    fields: Option<Vec<SettingsField>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SavedPlaylistsBody {
+    names: Option<Vec<String>>,
+}
+
 static SNAPSHOT: Mutex<PlayerSnapshot> = Mutex::new(PlayerSnapshot::Offline);
 static PLAYLIST: Mutex<PlaylistSnapshot> = Mutex::new(PlaylistSnapshot {
     items: Vec::new(),
     index: None,
 });
+static SAVED_NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static SETTINGS_FIELDS: Mutex<Vec<SettingsField>> = Mutex::new(Vec::new());
+static DENSITY: Mutex<PlayerDensity> = Mutex::new(PlayerDensity::Comfortable);
+static DENSITY_KEY: Mutex<Option<String>> = Mutex::new(None);
+static DENSITY_VALUE: Mutex<String> = Mutex::new(String::new());
+static DENSITY_ALLOWED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static POLLER: OnceLock<()> = OnceLock::new();
 #[cfg(test)]
 static TEST_POSTS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+#[cfg(test)]
+static TEST_REPLIES: Mutex<Vec<(u16, String)>> = Mutex::new(Vec::new());
+#[cfg(test)]
+static TEST_SAVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+#[cfg(test)]
+static TEST_SETTINGS: Mutex<Vec<SettingsField>> = Mutex::new(Vec::new());
 #[cfg(test)]
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 pub(crate) fn lock_test_player() -> std::sync::MutexGuard<'static, ()> {
-    TEST_LOCK
+    let guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    TEST_REPLIES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+    TEST_SAVED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+    TEST_SETTINGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+    *density_lock() = PlayerDensity::Comfortable;
+    *density_key_lock() = None;
+    *density_value_lock() = String::new();
+    *density_allowed_lock() = Vec::new();
+    *saved_lock() = Vec::new();
+    *settings_lock() = Vec::new();
+    guard
 }
 
 fn snapshot_lock() -> std::sync::MutexGuard<'static, PlayerSnapshot> {
@@ -186,6 +295,78 @@ fn playlist_lock() -> std::sync::MutexGuard<'static, PlaylistSnapshot> {
     PLAYLIST
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn saved_lock() -> std::sync::MutexGuard<'static, Vec<String>> {
+    SAVED_NAMES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn settings_lock() -> std::sync::MutexGuard<'static, Vec<SettingsField>> {
+    SETTINGS_FIELDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn density_lock() -> std::sync::MutexGuard<'static, PlayerDensity> {
+    DENSITY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn density_key_lock() -> std::sync::MutexGuard<'static, Option<String>> {
+    DENSITY_KEY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn density_value_lock() -> std::sync::MutexGuard<'static, String> {
+    DENSITY_VALUE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn density_allowed_lock() -> std::sync::MutexGuard<'static, Vec<String>> {
+    DENSITY_ALLOWED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub(crate) fn current_density() -> PlayerDensity {
+    *density_lock()
+}
+
+fn current_density_value() -> String {
+    let value = density_value_lock().clone();
+    if value.is_empty() {
+        "comfortable".into()
+    } else {
+        value
+    }
+}
+
+fn density_header_label() -> String {
+    match current_density_value().as_str() {
+        "compact" => "compact".into(),
+        "comfortable" => "comfy".into(),
+        "large-text" => "large".into(),
+        other => other.to_string(),
+    }
+}
+
+pub(crate) fn current_saved_names() -> Vec<String> {
+    saved_lock().clone()
+}
+
+pub(crate) fn density_changed(last: &mut PlayerDensity) -> bool {
+    let next = current_density();
+    if next == *last {
+        false
+    } else {
+        *last = next;
+        true
+    }
 }
 
 pub(crate) fn current_snapshot() -> PlayerSnapshot {
@@ -210,6 +391,16 @@ pub(crate) fn snapshot_changed(last: &mut PlayerSnapshot) -> bool {
     }
 }
 
+pub(crate) fn playlist_changed(last: &mut PlaylistSnapshot) -> bool {
+    let next = current_playlist();
+    if next == *last {
+        false
+    } else {
+        *last = next;
+        true
+    }
+}
+
 pub(crate) fn ensure_poller() {
     POLLER.get_or_init(|| {
         let _ = std::thread::Builder::new()
@@ -224,6 +415,8 @@ pub(crate) fn ensure_poller() {
 fn refresh_from_daemon() {
     *snapshot_lock() = fetch_snapshot();
     *playlist_lock() = fetch_playlist();
+    apply_settings(fetch_settings_fields());
+    *saved_lock() = fetch_saved_names();
 }
 
 fn fetch_snapshot() -> PlayerSnapshot {
@@ -231,6 +424,8 @@ fn fetch_snapshot() -> PlayerSnapshot {
         Some(state) => PlayerSnapshot::Online {
             title: nonempty(state.title),
             artist: nonempty(state.artist),
+            url: nonempty(state.url)
+                .or_else(|| nonempty(state.path)),
             playing: state.playing.unwrap_or(false),
             looping: state
                 .queue
@@ -273,13 +468,12 @@ fn parse_playlist_body(body: &str) -> PlaylistSnapshot {
             let url = nonempty(item.url)
                 .or_else(|| nonempty(item.path))
                 .unwrap_or_default();
-            let title = nonempty(item.title).unwrap_or_else(|| {
-                if url.is_empty() {
-                    "(untitled)".into()
-                } else {
-                    url.clone()
-                }
-            });
+            let title = playlist_display_title(item.title, &url);
+            let title = if title.is_empty() {
+                "(untitled)".into()
+            } else {
+                title
+            };
             if url.is_empty() {
                 None
             } else {
@@ -293,6 +487,109 @@ fn parse_playlist_body(body: &str) -> PlaylistSnapshot {
         .map(|idx| idx as usize)
         .filter(|idx| *idx < items.len());
     PlaylistSnapshot { items, index }
+}
+
+fn fetch_settings_fields() -> Vec<SettingsField> {
+    #[cfg(test)]
+    {
+        return TEST_SETTINGS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+    }
+    #[cfg(not(test))]
+    {
+        let Some((status, body)) = daemon_exchange("GET", "/settings", "") else {
+            return Vec::new();
+        };
+        if status != 200 {
+            return Vec::new();
+        }
+        parse_settings_body(&body)
+    }
+}
+
+fn parse_settings_body(body: &str) -> Vec<SettingsField> {
+    serde_json::from_str::<SettingsBody>(body)
+        .ok()
+        .and_then(|parsed| parsed.fields)
+        .unwrap_or_default()
+}
+
+fn apply_settings(fields: Vec<SettingsField>) {
+    let found = fields
+        .iter()
+        .find(|field| field.key == "density" && field.field_type == "string")
+        .cloned();
+    *settings_lock() = fields;
+    match found {
+        Some(field) => {
+            let value = field
+                .value
+                .as_str()
+                .unwrap_or("comfortable")
+                .to_string();
+            *density_key_lock() = Some(field.key);
+            *density_value_lock() = value.clone();
+            *density_allowed_lock() = field.allowed.unwrap_or_default();
+            *density_lock() = PlayerDensity::from_settings(&value);
+        }
+        None => {
+            *density_key_lock() = None;
+            *density_allowed_lock() = Vec::new();
+        }
+    }
+}
+
+/// Bind only `key === "density"` (string). Cycle the field's `allowed` list;
+/// never invent values or POST unknown keys.
+fn density_field(fields: &[SettingsField]) -> Option<&SettingsField> {
+    fields
+        .iter()
+        .find(|field| field.key == "density" && field.field_type == "string")
+}
+
+fn fetch_saved_names() -> Vec<String> {
+    #[cfg(test)]
+    {
+        return TEST_SAVED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+    }
+    #[cfg(not(test))]
+    {
+        let Some((status, body)) = daemon_exchange("GET", "/playlist/saved", "") else {
+            return Vec::new();
+        };
+        if status != 200 {
+            return Vec::new();
+        }
+        parse_saved_names(&body)
+    }
+}
+
+fn parse_saved_names(body: &str) -> Vec<String> {
+    serde_json::from_str::<SavedPlaylistsBody>(body)
+        .ok()
+        .and_then(|parsed| parsed.names)
+        .unwrap_or_default()
+}
+
+pub(crate) fn valid_playlist_name(name: &str) -> bool {
+    let name = name.trim();
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+fn playlist_name_char_ok(ch: char, current: &str) -> bool {
+    if ch == '.' && current.ends_with('.') {
+        return false;
+    }
+    ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-'
 }
 
 fn nonempty(value: Option<String>) -> Option<String> {
@@ -377,6 +674,31 @@ fn post_daemon(path: &'static str, body: String) {
                 let _ = daemon_http("POST", path, &body);
                 refresh_from_daemon();
             });
+    }
+}
+
+/// Synchronous POST for save/load (needs 409/404/body). Transport stays async.
+fn post_daemon_response(path: &'static str, body: String) -> (u16, String) {
+    #[cfg(test)]
+    {
+        TEST_POSTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((path.to_string(), body));
+        let mut replies = TEST_REPLIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if replies.is_empty() {
+            (200, "{}".into())
+        } else {
+            replies.remove(0)
+        }
+    }
+    #[cfg(not(test))]
+    {
+        let result = daemon_exchange("POST", path, &body).unwrap_or((0, String::new()));
+        refresh_from_daemon();
+        result
     }
 }
 
@@ -476,6 +798,135 @@ pub(crate) fn post_playlist_remove(index: usize) {
     }
 }
 
+pub(crate) fn post_playlist_clear() {
+    post_daemon("/playlist/clear", "{}".to_string());
+    *playlist_lock() = PlaylistSnapshot::default();
+}
+
+pub(crate) fn enter_save_name(app: &mut AppState) {
+    app.player_queue_mode = PlayerQueueMode::SaveName;
+    app.player_save_name.clear();
+    app.player_expanded = true;
+    app.player_input_focused = true;
+    app.mode = crate::app::state::Mode::PlayerInput;
+}
+
+pub(crate) fn enter_load_picker(app: &mut AppState) {
+    *saved_lock() = fetch_saved_names();
+    app.player_queue_mode = PlayerQueueMode::LoadPicker;
+    app.player_playlist_scroll = 0;
+    unfocus_player_input(app);
+}
+
+pub(crate) fn cancel_player_queue_mode(app: &mut AppState) {
+    let was_save = matches!(
+        app.player_queue_mode,
+        PlayerQueueMode::SaveName | PlayerQueueMode::SaveOverwrite { .. }
+    );
+    app.player_queue_mode = PlayerQueueMode::Queue;
+    if was_save {
+        app.player_save_name.clear();
+        unfocus_player_input(app);
+    }
+}
+
+pub(crate) fn handle_player_queue_esc(app: &mut AppState) -> bool {
+    if matches!(app.player_queue_mode, PlayerQueueMode::Queue) {
+        return false;
+    }
+    cancel_player_queue_mode(app);
+    true
+}
+
+pub(crate) fn submit_player_save(app: &mut AppState, overwrite: bool) {
+    let name = if overwrite {
+        match &app.player_queue_mode {
+            PlayerQueueMode::SaveOverwrite { name } => name.clone(),
+            _ => return,
+        }
+    } else {
+        let name = app.player_save_name.text();
+        let name = name.trim().to_string();
+        if !valid_playlist_name(&name) {
+            return;
+        }
+        name
+    };
+    let body = if overwrite {
+        serde_json::json!({ "name": name, "overwrite": true }).to_string()
+    } else {
+        serde_json::json!({ "name": name }).to_string()
+    };
+    let (status, _) = post_daemon_response("/playlist/save", body);
+    if status == 409 {
+        app.player_queue_mode = PlayerQueueMode::SaveOverwrite { name };
+        unfocus_player_input(app);
+        return;
+    }
+    if status == 200 {
+        {
+            let mut saved = saved_lock();
+            if !saved.iter().any(|existing| existing == &name) {
+                saved.push(name);
+                saved.sort();
+            }
+        }
+        cancel_player_queue_mode(app);
+    }
+}
+
+pub(crate) fn submit_load_named(app: &mut AppState, index: usize) {
+    let Some(name) = current_saved_names().get(index).cloned() else {
+        return;
+    };
+    let body = serde_json::json!({ "name": name }).to_string();
+    let (status, resp) = post_daemon_response("/playlist/load", body);
+    if status != 200 {
+        return;
+    }
+    *playlist_lock() = parse_playlist_body(&resp);
+    app.player_queue_mode = PlayerQueueMode::Queue;
+    app.player_playlist_scroll = 0;
+}
+
+pub(crate) fn cycle_player_density() {
+    let allowed = density_allowed_lock().clone();
+    if allowed.is_empty() {
+        return;
+    }
+    let current = current_density_value();
+    let idx = allowed
+        .iter()
+        .position(|value| value == &current)
+        .unwrap_or(0);
+    let next = allowed[(idx + 1) % allowed.len()].clone();
+    let previous = current;
+    *density_value_lock() = next.clone();
+    *density_lock() = PlayerDensity::from_settings(&next);
+    let Some(key) = density_key_lock().clone() else {
+        return;
+    };
+    let body = serde_json::json!({
+        "key": key,
+        "value": next,
+    })
+    .to_string();
+    let (status, resp) = post_daemon_response("/settings", body);
+    if status == 200 {
+        let fields = parse_settings_body(&resp);
+        if density_field(&fields).is_some() {
+            apply_settings(fields);
+        }
+        return;
+    }
+    *density_value_lock() = previous.clone();
+    *density_lock() = PlayerDensity::from_settings(&previous);
+}
+
+pub(crate) fn save_name_char_allowed(app: &AppState, ch: char) -> bool {
+    playlist_name_char_ok(ch, &app.player_save_name.text())
+}
+
 /// Scroll-wheel on the volume row. Returns true when the event was consumed
 /// so the workspace list does not steal it.
 pub(crate) fn player_scroll_volume(app: &AppState, col: u16, row: u16, up: bool) -> bool {
@@ -501,7 +952,11 @@ pub(crate) fn player_scroll_playlist(app: &mut AppState, col: u16, row: u16, up:
         return false;
     }
     let visible = hits.playlist.height as usize;
-    let len = current_playlist().items.len();
+    let len = if matches!(app.player_queue_mode, PlayerQueueMode::LoadPicker) {
+        current_saved_names().len()
+    } else {
+        current_playlist().items.len()
+    };
     let max_scroll = len.saturating_sub(visible);
     if up {
         app.player_playlist_scroll = app.player_playlist_scroll.saturating_sub(1);
@@ -521,13 +976,30 @@ pub(crate) fn set_test_playlist(playlist: PlaylistSnapshot) {
     *playlist_lock() = playlist;
 }
 
-pub(crate) fn submit_player_load(app: &mut AppState) {
-    let Some(url) = take_player_url(app) else {
-        return;
-    };
-    let body = serde_json::json!({ "url": url }).to_string();
-    post_daemon("/load", body);
-    app.player_link.clear();
+#[cfg(test)]
+fn set_test_saved_names(names: Vec<String>) {
+    TEST_SAVED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone_from(&names);
+    *saved_lock() = names;
+}
+
+#[cfg(test)]
+fn push_test_reply(status: u16, body: impl Into<String>) {
+    TEST_REPLIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push((status, body.into()));
+}
+
+#[cfg(test)]
+fn set_test_settings(fields: Vec<SettingsField>) {
+    TEST_SETTINGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone_from(&fields);
+    apply_settings(fields);
 }
 
 pub(crate) fn submit_player_add(app: &mut AppState) {
@@ -556,6 +1028,50 @@ fn playlist_title_from_url(url: &str) -> String {
         .find(|part| !part.is_empty())
         .unwrap_or(url)
         .to_string()
+}
+
+fn looks_like_locator(text: &str) -> bool {
+    let text = text.trim();
+    text.starts_with('/')
+        || text.starts_with('\\')
+        || text.contains("://")
+        || text
+            .as_bytes()
+            .get(1)
+            .copied()
+            .is_some_and(|b| b == b':' )
+            && text
+                .as_bytes()
+                .get(2)
+                .copied()
+                .is_some_and(|b| b == b'\\' || b == b'/')
+}
+
+/// Shared by playlist rows and the now-playing footer: real title wins,
+/// otherwise basename of url/path, never the raw locator.
+fn playlist_display_title(title: Option<String>, url: &str) -> String {
+    let raw = nonempty(title).unwrap_or_else(|| url.trim().to_string());
+    if raw.is_empty() {
+        String::new()
+    } else if looks_like_locator(&raw) {
+        playlist_title_from_url(&raw)
+    } else {
+        raw
+    }
+}
+
+fn snapshot_locator(snapshot: &PlayerSnapshot) -> String {
+    match snapshot {
+        PlayerSnapshot::Online { url: Some(url), .. } => url.clone(),
+        _ => {
+            let playlist = current_playlist();
+            playlist
+                .index
+                .and_then(|idx| playlist.items.get(idx))
+                .map(|item| item.url.clone())
+                .unwrap_or_default()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -606,7 +1122,6 @@ pub(crate) enum PlayerAction {
     Shuffle,
     FocusInput,
     Add,
-    Load,
     VolumeDown,
     VolumeUp,
     VolumeSet,
@@ -615,6 +1130,15 @@ pub(crate) enum PlayerAction {
     ScrubIdle,
     PlaylistLoad(usize),
     PlaylistRemove(usize),
+    PlaylistClear,
+    Save,
+    LoadSaved,
+    CancelSave,
+    ConfirmSave,
+    OverwriteNo,
+    OverwriteYes,
+    PickSaved(usize),
+    CycleDensity,
     Background,
 }
 
@@ -630,13 +1154,20 @@ pub(crate) struct PlayerHitAreas {
     pub chevron: Rect,
     pub input: Rect,
     pub add: Rect,
-    pub load: Rect,
     pub padding: Rect,
     pub volume: Rect,
     pub vol_down: Rect,
     pub vol_up: Rect,
     pub vol_bar: Rect,
     pub playlist: Rect,
+    pub queue: Rect,
+    pub save: Rect,
+    pub load: Rect,
+    pub clear: Rect,
+    pub cancel: Rect,
+    pub density: Rect,
+    pub overwrite_no: Rect,
+    pub overwrite_yes: Rect,
     pub scrub: Rect,
 }
 
@@ -672,10 +1203,13 @@ pub(crate) fn player_action_at(app: &AppState, col: u16, row: u16) -> Option<Pla
         return Some(PlayerAction::Shuffle);
     }
     if contains(hits.add, col, row) {
-        return Some(PlayerAction::Add);
+        return Some(match app.player_queue_mode {
+            PlayerQueueMode::SaveName => PlayerAction::ConfirmSave,
+            _ => PlayerAction::Add,
+        });
     }
-    if contains(hits.load, col, row) {
-        return Some(PlayerAction::Load);
+    if contains(hits.cancel, col, row) {
+        return Some(PlayerAction::CancelSave);
     }
     if contains(hits.input, col, row) {
         return Some(PlayerAction::FocusInput);
@@ -692,14 +1226,42 @@ pub(crate) fn player_action_at(app: &AppState, col: u16, row: u16) -> Option<Pla
     if contains(hits.volume, col, row) {
         return Some(PlayerAction::VolumeIdle);
     }
+    if contains(hits.overwrite_yes, col, row) {
+        return Some(PlayerAction::OverwriteYes);
+    }
+    if contains(hits.overwrite_no, col, row) {
+        return Some(PlayerAction::OverwriteNo);
+    }
+    if contains(hits.save, col, row) {
+        return Some(PlayerAction::Save);
+    }
+    if contains(hits.load, col, row) {
+        return Some(PlayerAction::LoadSaved);
+    }
+    if contains(hits.clear, col, row) {
+        return Some(PlayerAction::PlaylistClear);
+    }
+    if contains(hits.queue, col, row)
+        && !matches!(app.player_queue_mode, PlayerQueueMode::Queue)
+    {
+        return Some(PlayerAction::CancelSave);
+    }
     if contains(hits.playlist, col, row) {
-        return playlist_action_at(hits.playlist, col, row, app.player_playlist_scroll);
+        return match app.player_queue_mode {
+            PlayerQueueMode::LoadPicker => {
+                saved_pick_at(hits.playlist, col, row, app.player_playlist_scroll)
+            }
+            _ => playlist_action_at(hits.playlist, col, row, app.player_playlist_scroll),
+        };
     }
     if contains(hits.scrub, col, row) {
         if current_snapshot().seekable() {
             return Some(PlayerAction::Seek);
         }
         return Some(PlayerAction::ScrubIdle);
+    }
+    if contains(hits.density, col, row) {
+        return Some(PlayerAction::CycleDensity);
     }
     if contains(hits.title, col, row) || contains(hits.chevron, col, row) {
         return Some(PlayerAction::Toggle);
@@ -723,8 +1285,26 @@ fn playlist_action_at(list: Rect, col: u16, row: u16, scroll: usize) -> Option<P
     Some(PlayerAction::PlaylistLoad(row_i))
 }
 
+fn saved_pick_at(list: Rect, col: u16, row: u16, scroll: usize) -> Option<PlayerAction> {
+    let _ = col;
+    let names = current_saved_names();
+    if names.is_empty() {
+        return Some(PlayerAction::Background);
+    }
+    let row_i = (row.saturating_sub(list.y) as usize).saturating_add(scroll);
+    if row_i >= names.len() {
+        return Some(PlayerAction::Background);
+    }
+    Some(PlayerAction::PickSaved(row_i))
+}
+
 pub(crate) fn player_hit_areas(app: &AppState) -> PlayerHitAreas {
-    layout_hits(app.view.player_rect, app.player_expanded, &current_snapshot())
+    layout_hits_with_mode(
+        app.view.player_rect,
+        app.player_expanded,
+        &current_snapshot(),
+        &app.player_queue_mode,
+    )
 }
 
 /// Expand/collapse hit target: the title slot plus the chevron, not the
@@ -772,10 +1352,18 @@ pub(crate) fn render_player(app: &AppState, frame: &mut Frame, area: Rect) {
 
     let snapshot = current_snapshot();
     if app.player_expanded {
-        render_full_face(frame, area, inner, app, p, &snapshot);
+        if player_full_too_small(area) {
+            render_too_small_face(frame, inner, p);
+        } else {
+            render_full_face(frame, area, inner, app, p, &snapshot);
+        }
     } else {
         render_bar_face(frame, inner, p, &snapshot);
     }
+}
+
+fn player_full_too_small(area: Rect) -> bool {
+    area.width < PLAYER_FULL_MIN_WIDTH || area.height < PLAYER_FULL_MIN_ROWS
 }
 
 fn render_bar_face(frame: &mut Frame, inner: Rect, p: &Palette, snapshot: &PlayerSnapshot) {
@@ -790,6 +1378,69 @@ fn render_bar_face(frame: &mut Frame, inner: Rect, p: &Palette, snapshot: &Playe
     );
 }
 
+fn render_too_small_face(frame: &mut Frame, inner: Rect, p: &Palette) {
+    render_full_header(frame, inner, p);
+    let hint_y = inner.y.saturating_add(1);
+    if hint_y < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(Span::styled(TOO_SMALL_HINT, Style::default().fg(p.overlay0)))
+                .wrap(Wrap { trim: true }),
+            Rect::new(
+                inner.x,
+                hint_y,
+                inner.width,
+                inner.height.saturating_sub(1),
+            ),
+        );
+    }
+}
+
+fn header_chrome(inner_width: u16) -> (bool, &'static str) {
+    let density = density_header_label();
+    let density_w = UnicodeWidthStr::width(density.as_str()) as u16;
+    let header_w = UnicodeWidthStr::width(HEADER_LABEL) as u16;
+    let full = "collapse ▾";
+    let short = "▾";
+    let full_w = UnicodeWidthStr::width(full) as u16;
+    let short_w = UnicodeWidthStr::width(short) as u16;
+    let dens_cost = 1 + density_w;
+    if header_w.saturating_add(dens_cost).saturating_add(1).saturating_add(full_w) <= inner_width {
+        (true, full)
+    } else if header_w.saturating_add(dens_cost).saturating_add(1).saturating_add(short_w) <= inner_width {
+        (true, short)
+    } else {
+        (false, full)
+    }
+}
+
+fn render_full_header(frame: &mut Frame, inner: Rect, p: &Palette) {
+    let (show_density, collapse) = header_chrome(inner.width);
+    let collapse_w = UnicodeWidthStr::width(collapse) as u16;
+    let density = density_header_label();
+    let density_w = UnicodeWidthStr::width(density.as_str()) as u16;
+    let header_w = UnicodeWidthStr::width(HEADER_LABEL) as u16;
+    let used = header_w
+        .saturating_add(if show_density { 1 + density_w } else { 0 })
+        .saturating_add(1)
+        .saturating_add(collapse_w);
+    let pad = inner.width.saturating_sub(used) as usize;
+    let mut spans = vec![Span::styled(
+        HEADER_LABEL,
+        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+    )];
+    if show_density {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(density, Style::default().fg(p.overlay1)));
+    }
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(collapse, Style::default().fg(p.overlay0)));
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+}
+
 fn render_full_face(
     frame: &mut Frame,
     area: Rect,
@@ -798,30 +1449,15 @@ fn render_full_face(
     p: &Palette,
     snapshot: &PlayerSnapshot,
 ) {
-    let hits = layout_hits(area, true, snapshot);
-    let collapse = "collapse ▾";
-    let collapse_w = UnicodeWidthStr::width(collapse) as u16;
-    let header_label = "♪ PLAYER";
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                header_label,
-                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" ".repeat(
-                inner
-                    .width
-                    .saturating_sub(UnicodeWidthStr::width(header_label) as u16)
-                    .saturating_sub(collapse_w)
-                    .saturating_sub(1) as usize,
-            )),
-            Span::styled(collapse, Style::default().fg(p.overlay0)),
-        ])),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
+    let hits = layout_hits_with_mode(area, true, snapshot, &app.player_queue_mode);
+    render_full_header(frame, inner, p);
 
     if hits.input.width > 0 {
         render_link_row(frame, hits, app, p);
+    }
+
+    if hits.save.width > 0 || hits.load.width > 0 || hits.clear.width > 0 || hits.overwrite_yes.width > 0 {
+        render_queue_chrome(frame, hits, app, p);
     }
 
     if hits.playlist.height > 0 && hits.playlist.width > 0 {
@@ -840,10 +1476,18 @@ fn render_full_face(
     }
 
     let (title, artist) = match snapshot {
-        PlayerSnapshot::Online { title, artist, .. } => (
-            title.clone().unwrap_or_else(|| "no track".into()),
-            artist.clone().unwrap_or_default(),
-        ),
+        PlayerSnapshot::Online { title, artist, .. } => {
+            let locator = snapshot_locator(snapshot);
+            let title = playlist_display_title(title.clone(), &locator);
+            (
+                if title.is_empty() {
+                    "no track".into()
+                } else {
+                    title
+                },
+                artist.clone().unwrap_or_default(),
+            )
+        }
         PlayerSnapshot::Offline => ("player offline".into(), String::new()),
     };
     let np_y = hits.play.y.saturating_sub(2);
@@ -1028,7 +1672,117 @@ fn pad_time(sec: u64, width: u16) -> String {
     format!("{text}{}", " ".repeat(pad))
 }
 
+fn render_queue_chrome(frame: &mut Frame, hits: PlayerHitAreas, app: &AppState, p: &Palette) {
+    let y = chrome_row_y(&hits);
+    let row_x = inner_row_x(&hits);
+    let row_w = inner_row_w(&hits, row_x);
+    if matches!(app.player_queue_mode, PlayerQueueMode::SaveOverwrite { .. }) {
+        render_overwrite_row(frame, hits, app, p, row_x, row_w, y);
+        return;
+    }
+    if hits.queue.width > 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled(QUEUE_LABEL, Style::default().fg(p.overlay0))),
+            hits.queue,
+        );
+    }
+    if hits.save.width > 0 {
+        let style = if matches!(app.player_queue_mode, PlayerQueueMode::SaveName) {
+            Style::default().fg(p.accent)
+        } else {
+            Style::default().fg(p.overlay0)
+        };
+        frame.render_widget(Paragraph::new(Span::styled(SAVE_LABEL, style)), hits.save);
+    }
+    if hits.load.width > 0 {
+        let style = if matches!(app.player_queue_mode, PlayerQueueMode::LoadPicker) {
+            Style::default().fg(p.accent)
+        } else {
+            Style::default().fg(p.overlay0)
+        };
+        frame.render_widget(Paragraph::new(Span::styled(LOAD_LABEL, style)), hits.load);
+    }
+    if hits.clear.width > 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled(CLEAR_LABEL, Style::default().fg(p.overlay0))),
+            hits.clear,
+        );
+    }
+}
+
+fn chrome_row_y(hits: &PlayerHitAreas) -> u16 {
+    if hits.save.height > 0 {
+        hits.save.y
+    } else if hits.load.height > 0 {
+        hits.load.y
+    } else if hits.clear.height > 0 {
+        hits.clear.y
+    } else {
+        hits.overwrite_yes.y
+    }
+}
+
+fn inner_row_x(hits: &PlayerHitAreas) -> u16 {
+    if hits.playlist.width > 0 {
+        hits.playlist.x
+    } else if hits.queue.width > 0 {
+        hits.queue.x
+    } else {
+        hits.save.x.saturating_sub(UnicodeWidthStr::width(QUEUE_LABEL) as u16 + 1)
+    }
+}
+
+fn inner_row_w(hits: &PlayerHitAreas, row_x: u16) -> u16 {
+    if hits.playlist.width > 0 {
+        hits.playlist.width
+    } else {
+        let right = hits
+            .clear
+            .x
+            .saturating_add(hits.clear.width)
+            .max(hits.load.x.saturating_add(hits.load.width))
+            .max(hits.save.x.saturating_add(hits.save.width))
+            .max(hits.overwrite_yes.x.saturating_add(hits.overwrite_yes.width));
+        right.saturating_sub(row_x)
+    }
+}
+
+fn render_overwrite_row(
+    frame: &mut Frame,
+    hits: PlayerHitAreas,
+    app: &AppState,
+    p: &Palette,
+    row_x: u16,
+    row_w: u16,
+    y: u16,
+) {
+    let name = match &app.player_queue_mode {
+        PlayerQueueMode::SaveOverwrite { name } => name.as_str(),
+        _ => return,
+    };
+    let prompt = format!("replace '{name}'?");
+    let trailing = hits.overwrite_no.width.saturating_add(hits.overwrite_yes.width).saturating_add(1);
+    let budget = row_w.saturating_sub(trailing.saturating_add(1)) as usize;
+    let prompt = truncate_width(&prompt, budget);
+    let pad = budget.saturating_sub(UnicodeWidthStr::width(prompt.as_str()));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(prompt, Style::default().fg(p.peach)),
+            Span::raw(" ".repeat(pad)),
+            Span::raw(" "),
+            Span::styled(OVERWRITE_NO, Style::default().fg(p.overlay0)),
+            Span::raw(" "),
+            Span::styled(OVERWRITE_YES, Style::default().fg(p.accent)),
+        ])),
+        Rect::new(row_x, y, row_w, 1),
+    );
+}
+
 fn render_playlist(frame: &mut Frame, area: Rect, app: &AppState, p: &Palette) {
+    if matches!(app.player_queue_mode, PlayerQueueMode::LoadPicker) {
+        render_saved_picker(frame, area, app, p);
+        return;
+    }
     let playlist = current_playlist();
     let scroll = app
         .player_playlist_scroll
@@ -1064,6 +1818,31 @@ fn render_playlist(frame: &mut Frame, area: Rect, app: &AppState, p: &Palette) {
                 Span::styled(REMOVE_GLYPH, Style::default().fg(p.overlay0)),
             ])),
             Rect::new(area.x, y, area.width, 1),
+        );
+    }
+}
+
+fn render_saved_picker(frame: &mut Frame, area: Rect, app: &AppState, p: &Palette) {
+    let names = current_saved_names();
+    let scroll = app
+        .player_playlist_scroll
+        .min(names.len().saturating_sub(area.height as usize));
+    if names.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(SAVED_EMPTY, Style::default().fg(p.overlay0))),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+        return;
+    }
+    for vis in 0..area.height {
+        let idx = scroll + vis as usize;
+        if idx >= names.len() {
+            break;
+        }
+        let label = truncate_width(&names[idx], area.width as usize);
+        frame.render_widget(
+            Paragraph::new(Span::styled(label, Style::default().fg(p.text))),
+            Rect::new(area.x, area.y + vis, area.width, 1),
         );
     }
 }
@@ -1121,16 +1900,28 @@ fn render_link_row(frame: &mut Frame, hits: PlayerHitAreas, app: &AppState, p: &
     if hits.input.width == 0 {
         return;
     }
-    let typed = app.player_link.text();
+    let saving = matches!(app.player_queue_mode, PlayerQueueMode::SaveName);
+    let typed = if saving {
+        app.player_save_name.text()
+    } else {
+        app.player_link.text()
+    };
     let empty = typed.is_empty();
     let show = if empty {
-        LINK_PLACEHOLDER.to_string()
+        if saving {
+            SAVE_NAME_PLACEHOLDER.to_string()
+        } else {
+            LINK_PLACEHOLDER.to_string()
+        }
     } else {
         typed
     };
     let placeholder = truncate_width(&show, hits.input.width as usize);
     let pad = (hits.input.width as usize).saturating_sub(UnicodeWidthStr::width(placeholder.as_str()));
-    let field_fg = if empty {
+    let invalid = saving && !empty && !valid_playlist_name(&app.player_save_name.text());
+    let field_fg = if invalid {
+        p.peach
+    } else if empty {
         p.overlay0
     } else {
         p.text
@@ -1151,19 +1942,23 @@ fn render_link_row(frame: &mut Frame, hits: PlayerHitAreas, app: &AppState, p: &
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), hits.input);
-    if hits.add.width > 0 {
-        frame.render_widget(
-            Paragraph::new(Span::styled(ADD_LABEL, Style::default().fg(p.text))),
-            hits.add,
-        );
-    }
-    if hits.load.width > 0 {
+    if hits.cancel.width > 0 {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                LOAD_LABEL,
+                CANCEL_LABEL,
+                Style::default().fg(p.overlay0),
+            )),
+            hits.cancel,
+        );
+    }
+    if hits.add.width > 0 {
+        let label = if saving { SAVE_CONFIRM_LABEL } else { ADD_LABEL };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                label,
                 Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
             )),
-            hits.load,
+            hits.add,
         );
     }
 }
@@ -1190,7 +1985,22 @@ fn draw_rounded_box(frame: &mut Frame, rect: Rect, border: Style) {
     }
 }
 
+#[cfg(test)]
 fn layout_hits(player_rect: Rect, expanded: bool, snapshot: &PlayerSnapshot) -> PlayerHitAreas {
+    layout_hits_with_mode(
+        player_rect,
+        expanded,
+        snapshot,
+        &PlayerQueueMode::Queue,
+    )
+}
+
+fn layout_hits_with_mode(
+    player_rect: Rect,
+    expanded: bool,
+    snapshot: &PlayerSnapshot,
+    mode: &PlayerQueueMode,
+) -> PlayerHitAreas {
     let mut hits = PlayerHitAreas {
         player: player_rect,
         ..PlayerHitAreas::default()
@@ -1212,7 +2022,10 @@ fn layout_hits(player_rect: Rect, expanded: bool, snapshot: &PlayerSnapshot) -> 
     }
 
     if expanded {
-        return layout_full_hits(hits, inner);
+        if player_full_too_small(player_rect) {
+            return layout_cramped_hits(hits, inner);
+        }
+        return layout_full_hits(hits, inner, mode);
     }
 
     let bar_y = inner.y;
@@ -1244,7 +2057,7 @@ fn layout_hits(player_rect: Rect, expanded: bool, snapshot: &PlayerSnapshot) -> 
     hits
 }
 
-fn layout_full_hits(mut hits: PlayerHitAreas, inner: Rect) -> PlayerHitAreas {
+fn layout_cramped_hits(mut hits: PlayerHitAreas, inner: Rect) -> PlayerHitAreas {
     let collapse = "collapse ▾";
     let collapse_w = (UnicodeWidthStr::width(collapse) as u16).min(inner.width);
     hits.chevron = Rect::new(
@@ -1259,19 +2072,58 @@ fn layout_full_hits(mut hits: PlayerHitAreas, inner: Rect) -> PlayerHitAreas {
         inner.width.saturating_sub(collapse_w).max(1),
         1,
     );
+    hits
+}
+
+fn layout_full_hits(
+    mut hits: PlayerHitAreas,
+    inner: Rect,
+    mode: &PlayerQueueMode,
+) -> PlayerHitAreas {
+    let (show_density, collapse) = header_chrome(inner.width);
+    let collapse_w = (UnicodeWidthStr::width(collapse) as u16).min(inner.width);
+    hits.chevron = Rect::new(
+        inner.x + inner.width.saturating_sub(collapse_w),
+        inner.y,
+        collapse_w,
+        1,
+    );
+    let header_w = (UnicodeWidthStr::width(HEADER_LABEL) as u16).min(inner.width);
+    hits.title = Rect::new(inner.x, inner.y, header_w, 1);
+    if show_density {
+        let density = density_header_label();
+        let density_w = UnicodeWidthStr::width(density.as_str()) as u16;
+        let density_x = inner.x.saturating_add(header_w).saturating_add(1);
+        if density_x.saturating_add(density_w) <= hits.chevron.x {
+            hits.density = Rect::new(density_x, inner.y, density_w, 1);
+        }
+    }
 
     if inner.height >= 2 {
         let input_y = inner.y + 1;
-        let add_w = UnicodeWidthStr::width(ADD_LABEL) as u16;
-        let load_w = UnicodeWidthStr::width(LOAD_LABEL) as u16;
-        let buttons_w = add_w.saturating_add(1).saturating_add(load_w);
-        let field_w = inner.width.saturating_sub(buttons_w.saturating_add(1));
+        let saving = matches!(mode, PlayerQueueMode::SaveName);
+        let confirm_w = UnicodeWidthStr::width(if saving {
+            SAVE_CONFIRM_LABEL
+        } else {
+            ADD_LABEL
+        }) as u16;
+        let cancel_w = if saving {
+            UnicodeWidthStr::width(CANCEL_LABEL) as u16
+        } else {
+            0
+        };
+        let buttons = confirm_w
+            .saturating_add(cancel_w)
+            .saturating_add(u16::from(saving));
+        let field_w = inner.width.saturating_sub(buttons.saturating_add(1));
         hits.input = Rect::new(inner.x, input_y, field_w.max(1), 1);
-        if add_w > 0 && inner.width > buttons_w {
-            hits.add = Rect::new(inner.x + field_w + 1, input_y, add_w, 1);
-            hits.load = Rect::new(inner.x + field_w + 1 + add_w + 1, input_y, load_w, 1);
-        } else if load_w > 0 && inner.width > load_w {
-            hits.load = Rect::new(inner.x + field_w + 1, input_y, load_w, 1);
+        let mut btn_x = inner.x.saturating_add(field_w).saturating_add(1);
+        if cancel_w > 0 && btn_x + cancel_w <= inner.x + inner.width {
+            hits.cancel = Rect::new(btn_x, input_y, cancel_w, 1);
+            btn_x = btn_x.saturating_add(cancel_w).saturating_add(1);
+        }
+        if confirm_w > 0 && btn_x + confirm_w <= inner.x + inner.width {
+            hits.add = Rect::new(btn_x, input_y, confirm_w, 1);
         }
     }
 
@@ -1282,9 +2134,27 @@ fn layout_full_hits(mut hits: PlayerHitAreas, inner: Rect) -> PlayerHitAreas {
         let playlist_y = inner.y + 2;
         let np_top = transport_y.saturating_sub(2);
         let leftover = np_top.saturating_sub(playlist_y);
-        let playlist_h = leftover.min(PLAYLIST_MAX_ROWS).max(1).min(leftover.max(1));
         if leftover > 0 && playlist_y < np_top {
-            hits.playlist = Rect::new(inner.x, playlist_y, inner.width, playlist_h.min(leftover));
+            let has_items = !current_playlist().items.is_empty();
+            let chrome = leftover >= 2;
+            if chrome {
+                apply_chrome_hits(&mut hits, inner, playlist_y, mode, has_items);
+                hits.playlist = Rect::new(
+                    inner.x,
+                    playlist_y + 1,
+                    inner.width,
+                    leftover
+                        .saturating_sub(1)
+                        .min(current_density().playlist_rows()),
+                );
+            } else {
+                hits.playlist = Rect::new(
+                    inner.x,
+                    playlist_y,
+                    inner.width,
+                    leftover.min(current_density().playlist_rows()),
+                );
+            }
         }
         let embed_top = hits
             .playlist
@@ -1292,7 +2162,7 @@ fn layout_full_hits(mut hits: PlayerHitAreas, inner: Rect) -> PlayerHitAreas {
             .saturating_add(hits.playlist.height)
             .max(playlist_y);
         let embed_h = np_top.saturating_sub(embed_top);
-        if embed_h > 0 {
+        if embed_h > 0 && !current_density().hide_embed() {
             hits.padding = Rect::new(inner.x, embed_top, inner.width, embed_h);
         }
     }
@@ -1333,6 +2203,47 @@ fn layout_full_hits(mut hits: PlayerHitAreas, inner: Rect) -> PlayerHitAreas {
         }
     }
     hits
+}
+
+fn apply_chrome_hits(
+    hits: &mut PlayerHitAreas,
+    inner: Rect,
+    y: u16,
+    mode: &PlayerQueueMode,
+    has_items: bool,
+) {
+    if matches!(mode, PlayerQueueMode::SaveOverwrite { .. }) {
+        let yes_w = UnicodeWidthStr::width(OVERWRITE_YES) as u16;
+        let no_w = UnicodeWidthStr::width(OVERWRITE_NO) as u16;
+        let mut x = inner.x + inner.width;
+        x = x.saturating_sub(yes_w);
+        hits.overwrite_yes = Rect::new(x, y, yes_w.min(inner.width), 1);
+        x = x.saturating_sub(1).saturating_sub(no_w);
+        hits.overwrite_no = Rect::new(x, y, no_w, 1);
+        hits.queue = Rect::new(inner.x, y, x.saturating_sub(inner.x).saturating_sub(1), 1);
+        return;
+    }
+    let mut x = inner.x + inner.width;
+    if has_items {
+        let clear_w = UnicodeWidthStr::width(CLEAR_LABEL) as u16;
+        x = x.saturating_sub(clear_w);
+        hits.clear = Rect::new(x, y, clear_w.min(inner.width), 1);
+        x = x.saturating_sub(1);
+    }
+    let load_w = UnicodeWidthStr::width(LOAD_LABEL) as u16;
+    x = x.saturating_sub(load_w);
+    hits.load = Rect::new(x, y, load_w, 1);
+    x = x.saturating_sub(1);
+    let save_w = UnicodeWidthStr::width(SAVE_LABEL) as u16;
+    x = x.saturating_sub(save_w);
+    hits.save = Rect::new(x, y, save_w, 1);
+    let queue_w = UnicodeWidthStr::width(QUEUE_LABEL) as u16;
+    hits.queue = Rect::new(
+        inner.x,
+        y,
+        queue_w.min(x.saturating_sub(inner.x).saturating_sub(1)),
+        1,
+    );
 }
 
 fn apply_scrub_hits(hits: &mut PlayerHitAreas, inner: Rect, y: u16) {
@@ -1407,16 +2318,16 @@ fn transport_positions(snapshot: &PlayerSnapshot, width: u16) -> Vec<(u16, u16, 
 fn title_of(snapshot: &PlayerSnapshot) -> String {
     match snapshot {
         PlayerSnapshot::Offline => "player offline".to_string(),
-        PlayerSnapshot::Online {
-            title,
-            artist,
-            ..
-        } => match (title.as_deref(), artist.as_deref()) {
-            (Some(title), Some(artist)) => format!("{title} — {artist}"),
-            (Some(title), None) => title.to_string(),
-            (None, Some(artist)) => artist.to_string(),
-            (None, None) => "no track".into(),
-        },
+        PlayerSnapshot::Online { title, artist, .. } => {
+            let locator = snapshot_locator(snapshot);
+            let name = playlist_display_title(title.clone(), &locator);
+            match (name.is_empty(), artist.as_deref()) {
+                (true, Some(artist)) => artist.to_string(),
+                (true, None) => "no track".into(),
+                (false, Some(artist)) => format!("{name} — {artist}"),
+                (false, None) => name,
+            }
+        }
     }
 }
 
@@ -1579,6 +2490,7 @@ mod tests {
         PlayerSnapshot::Online {
             title: None,
             artist: None,
+            url: None,
             playing: false,
             looping: false,
             shuffle: false,
@@ -1624,6 +2536,7 @@ mod tests {
             &PlayerSnapshot::Online {
                 title: Some("Crystal Quest Prelude".into()),
                 artist: Some("zaethir".into()),
+                url: None,
                 playing: true,
                 looping: false,
                 shuffle: false,
@@ -1671,6 +2584,7 @@ mod tests {
         let snapshot = PlayerSnapshot::Online {
             title: Some("Example Domain".into()),
             artist: None,
+            url: None,
             playing: false,
             looping: true,
             shuffle: true,
@@ -1742,6 +2656,7 @@ mod tests {
         set_test_snapshot(PlayerSnapshot::Online {
             title: None,
             artist: None,
+            url: None,
             playing: false,
             looping: false,
             shuffle: false,
@@ -1768,6 +2683,7 @@ mod tests {
         set_test_snapshot(PlayerSnapshot::Online {
             title: None,
             artist: None,
+            url: None,
             playing: false,
             looping: false,
             shuffle: false,
@@ -1797,44 +2713,26 @@ mod tests {
     }
 
     #[test]
-    fn add_and_load_are_separate_hits() {
+    fn paste_row_is_add_only() {
         let app = expanded_app(Rect::new(0, 10, 32, 20));
         let hits = player_hit_areas(&app);
         assert!(hits.add.width >= 3, "Add hit missing: {hits:?}");
-        assert!(hits.load.width >= 4, "Load hit missing: {hits:?}");
         assert_eq!(hits.add.y, hits.input.y);
-        assert_eq!(hits.load.y, hits.input.y);
-        assert!(
-            hits.add.x + hits.add.width <= hits.load.x,
-            "Add must sit left of Load without overlap: {hits:?}"
-        );
+        assert_eq!(hits.add.x, hits.input.x + hits.input.width + 1);
         assert_eq!(
             player_action_at(&app, hits.add.x, hits.add.y),
             Some(PlayerAction::Add)
         );
-        assert_eq!(
-            player_action_at(&app, hits.load.x, hits.load.y),
-            Some(PlayerAction::Load)
+        assert_ne!(
+            player_action_at(&app, hits.input.x, hits.input.y),
+            Some(PlayerAction::Add)
         );
     }
 
     #[test]
-    fn load_and_add_post_then_clear_the_paste_field() {
+    fn add_posts_then_clears_the_paste_field() {
         let _guard = lock_test_player();
         let mut app = crate::app::state::AppState::test_new();
-        app.player_link.set_text("https://elevenlabs.io/music/abc");
-        take_test_posts();
-        submit_player_load(&mut app);
-        let posts = take_test_posts();
-        assert_eq!(posts[0].0, "/load");
-        assert!(posts[0].1.contains("elevenlabs.io/music/abc"));
-        assert!(
-            app.player_link.text().is_empty(),
-            "Load must clear the field, got {:?}",
-            app.player_link.text()
-        );
-        assert_eq!(app.player_link.cursor_row(), (0, 0));
-
         app.player_link.set_text(" /System/Library/Sounds/Glass.aiff ");
         take_test_posts();
         submit_player_add(&mut app);
@@ -1854,9 +2752,147 @@ mod tests {
         let _guard = lock_test_player();
         let mut app = crate::app::state::AppState::test_new();
         take_test_posts();
-        submit_player_load(&mut app);
         submit_player_add(&mut app);
         assert!(take_test_posts().is_empty());
+    }
+
+    #[test]
+    fn playlist_fallback_title_is_basename_not_raw_url() {
+        let playlist = parse_playlist_body(
+            r#"{"items":[{"url":"https://www.youtube.com/watch?v=abc"},{"path":"/Music/album/track.flac"},{"url":"https://x.test/a","title":"Crystal Quest"}]}"#,
+        );
+        assert_eq!(playlist.items[0].title, "watch?v=abc");
+        assert_eq!(playlist.items[0].url, "https://www.youtube.com/watch?v=abc");
+        assert_eq!(playlist.items[1].title, "track.flac");
+        assert_eq!(playlist.items[1].url, "/Music/album/track.flac");
+        assert_eq!(playlist.items[2].title, "Crystal Quest");
+    }
+
+    #[test]
+    fn locator_title_uses_the_same_basename_fallback() {
+        let playlist = parse_playlist_body(
+            r#"{"items":[{"url":"https://www.youtube.com/watch?v=abc","title":"https://www.youtube.com/watch?v=abc"}]}"#,
+        );
+        assert_eq!(playlist.items[0].title, "watch?v=abc");
+        let snapshot = PlayerSnapshot::Online {
+            title: Some("https://example.com/music/Glass.aiff".into()),
+            artist: None,
+            url: Some("https://example.com/music/Glass.aiff".into()),
+            playing: false,
+            looping: false,
+            shuffle: false,
+            elapsed_sec: 0,
+            duration_sec: 0,
+            volume: 1.0,
+            seekable: true,
+        };
+        assert_eq!(title_of(&snapshot), "Glass.aiff");
+        let untitled = PlayerSnapshot::Online {
+            title: None,
+            artist: None,
+            url: Some("/Music/album/track.flac".into()),
+            playing: false,
+            looping: false,
+            shuffle: false,
+            elapsed_sec: 0,
+            duration_sec: 0,
+            volume: 1.0,
+            seekable: true,
+        };
+        assert_eq!(title_of(&untitled), "track.flac");
+    }
+
+    #[test]
+    fn empty_playlist_teaches_add() {
+        let _guard = lock_test_player();
+        set_test_playlist(PlaylistSnapshot::default());
+        assert_eq!(PLAYLIST_EMPTY, "paste a link, then Add");
+        let app = expanded_app(Rect::new(0, 10, 32, 20));
+        let hits = player_hit_areas(&app);
+        assert_eq!(hits.clear, Rect::default());
+        assert!(hits.save.width > 0, "save stays on an empty queue: {hits:?}");
+        assert!(hits.load.width > 0, "load stays on an empty queue: {hits:?}");
+        assert_eq!(hits.playlist.y, hits.input.y + 2);
+        assert_eq!(
+            player_action_at(&app, hits.save.x, hits.save.y),
+            Some(PlayerAction::Save)
+        );
+        assert_eq!(
+            player_action_at(&app, hits.load.x, hits.load.y),
+            Some(PlayerAction::LoadSaved)
+        );
+    }
+
+    #[test]
+    fn nonempty_playlist_exposes_clear_on_the_queue_chrome_row() {
+        let _guard = lock_test_player();
+        set_test_playlist(sample_playlist());
+        let app = expanded_app(Rect::new(0, 10, 32, 20));
+        let hits = player_hit_areas(&app);
+        assert!(hits.clear.width >= 5, "clear hit missing: {hits:?}");
+        assert_eq!(hits.clear.y, hits.input.y + 1);
+        assert_eq!(hits.playlist.y, hits.clear.y + 1);
+        assert_eq!(
+            player_action_at(&app, hits.clear.x, hits.clear.y),
+            Some(PlayerAction::PlaylistClear)
+        );
+        assert_ne!(
+            player_action_at(&app, hits.playlist.x, hits.playlist.y),
+            Some(PlayerAction::PlaylistClear)
+        );
+    }
+
+    #[test]
+    fn clear_posts_and_empties_the_local_queue() {
+        let _guard = lock_test_player();
+        set_test_playlist(sample_playlist());
+        take_test_posts();
+        post_playlist_clear();
+        let posts = take_test_posts();
+        assert_eq!(posts[0].0, "/playlist/clear");
+        assert!(current_playlist().items.is_empty());
+    }
+
+    #[test]
+    fn playlist_changed_fires_on_title_without_snapshot_move() {
+        let _guard = lock_test_player();
+        set_test_playlist(PlaylistSnapshot {
+            items: vec![PlaylistItem {
+                title: "watch?v=abc".into(),
+                url: "https://www.youtube.com/watch?v=abc".into(),
+            }],
+            index: None,
+        });
+        let mut last = current_playlist();
+        assert!(!playlist_changed(&mut last));
+        set_test_playlist(PlaylistSnapshot {
+            items: vec![PlaylistItem {
+                title: "Crystal Quest".into(),
+                url: "https://www.youtube.com/watch?v=abc".into(),
+            }],
+            index: None,
+        });
+        assert!(playlist_changed(&mut last));
+        assert_eq!(last.items[0].title, "Crystal Quest");
+        assert!(!playlist_changed(&mut last));
+    }
+
+    #[test]
+    fn expanded_below_floor_has_no_paste_row() {
+        let app = expanded_app(Rect::new(0, 10, 18, 12));
+        let hits = player_hit_areas(&app);
+        assert!(
+            player_full_too_small(app.view.player_rect),
+            "18x12 must be under the full-view floor"
+        );
+        assert_eq!(hits.input, Rect::default());
+        assert_eq!(hits.add, Rect::default());
+        assert_eq!(hits.playlist, Rect::default());
+        assert!(hits.chevron.width > 0, "collapse must stay clickable");
+        assert_eq!(
+            player_action_at(&app, hits.chevron.x, hits.chevron.y),
+            Some(PlayerAction::Toggle)
+        );
     }
 
     fn expanded_app(rect: Rect) -> crate::app::state::AppState {
@@ -1888,12 +2924,14 @@ mod tests {
 
     #[test]
     fn full_mode_exposes_playlist_and_scrub_hits() {
+        let _guard = lock_test_player();
+        set_test_playlist(PlaylistSnapshot::default());
         let app = expanded_app(Rect::new(0, 10, 32, 20));
         let hits = player_hit_areas(&app);
         assert!(hits.playlist.width > 0, "{hits:?}");
         assert!(hits.playlist.height >= 1, "{hits:?}");
         assert!(hits.scrub.width >= 4, "{hits:?}");
-        assert_eq!(hits.playlist.y, hits.input.y + 1);
+        assert_eq!(hits.playlist.y, hits.input.y + 2);
         assert!(hits.playlist.y + hits.playlist.height <= hits.play.y.saturating_sub(2));
         assert_eq!(hits.scrub.y, hits.play.y + 1);
     }
@@ -1950,6 +2988,7 @@ mod tests {
         set_test_snapshot(PlayerSnapshot::Online {
             title: None,
             artist: None,
+            url: None,
             playing: true,
             looping: false,
             shuffle: false,
@@ -1967,6 +3006,7 @@ mod tests {
         set_test_snapshot(PlayerSnapshot::Online {
             title: None,
             artist: None,
+            url: None,
             playing: true,
             looping: false,
             shuffle: false,
@@ -1985,6 +3025,7 @@ mod tests {
         set_test_snapshot(PlayerSnapshot::Online {
             title: None,
             artist: None,
+            url: None,
             playing: true,
             looping: false,
             shuffle: false,
@@ -2003,6 +3044,7 @@ mod tests {
         set_test_snapshot(PlayerSnapshot::Online {
             title: None,
             artist: None,
+            url: None,
             playing: true,
             looping: false,
             shuffle: false,
@@ -2027,5 +3069,252 @@ mod tests {
         assert_eq!(parsed.items.len(), 1);
         assert_eq!(parsed.items[0].title, "Glass");
         assert_eq!(parsed.index, Some(0));
+    }
+
+    #[test]
+    fn playlist_name_rejects_path_chars_and_dotdot() {
+        assert!(valid_playlist_name("gym"));
+        assert!(valid_playlist_name("wave3-test"));
+        assert!(valid_playlist_name("a.b_c-1"));
+        assert!(!valid_playlist_name(""));
+        assert!(!valid_playlist_name("gym/foo"));
+        assert!(!valid_playlist_name("gym\\foo"));
+        assert!(!valid_playlist_name(".."));
+        assert!(!valid_playlist_name("foo..bar"));
+        assert!(!valid_playlist_name("has space"));
+    }
+
+    #[test]
+    fn save_posts_name_without_overwrite_and_skips_invalid() {
+        let _guard = lock_test_player();
+        let mut app = crate::app::state::AppState::test_new();
+        enter_save_name(&mut app);
+        app.player_save_name.set_text("gym/nope");
+        take_test_posts();
+        submit_player_save(&mut app, false);
+        assert!(take_test_posts().is_empty());
+        assert!(matches!(app.player_queue_mode, PlayerQueueMode::SaveName));
+
+        app.player_save_name.set_text("gym");
+        submit_player_save(&mut app, false);
+        let posts = take_test_posts();
+        assert_eq!(posts[0].0, "/playlist/save");
+        let body: serde_json::Value = serde_json::from_str(&posts[0].1).unwrap();
+        assert_eq!(body["name"], "gym");
+        assert!(body.get("overwrite").is_none());
+        assert!(matches!(app.player_queue_mode, PlayerQueueMode::Queue));
+    }
+
+    #[test]
+    fn save_409_asks_overwrite_then_posts_flag() {
+        let _guard = lock_test_player();
+        let mut app = crate::app::state::AppState::test_new();
+        enter_save_name(&mut app);
+        app.player_save_name.set_text("gym");
+        push_test_reply(409, r#"{"error":"playlist exists","name":"gym"}"#);
+        take_test_posts();
+        submit_player_save(&mut app, false);
+        assert!(matches!(
+            app.player_queue_mode,
+            PlayerQueueMode::SaveOverwrite { ref name } if name == "gym"
+        ));
+        let app = expanded_app_mode(Rect::new(0, 10, 32, 20), app);
+        let hits = player_hit_areas(&app);
+        assert_eq!(
+            player_action_at(&app, hits.overwrite_yes.x, hits.overwrite_yes.y),
+            Some(PlayerAction::OverwriteYes)
+        );
+        take_test_posts();
+        let mut app = app;
+        submit_player_save(&mut app, true);
+        let posts = take_test_posts();
+        assert_eq!(posts[0].0, "/playlist/save");
+        let body: serde_json::Value = serde_json::from_str(&posts[0].1).unwrap();
+        assert_eq!(body["name"], "gym");
+        assert_eq!(body["overwrite"], true);
+        assert!(matches!(app.player_queue_mode, PlayerQueueMode::Queue));
+    }
+
+    #[test]
+    fn load_replaces_queue_wholesale_and_never_merges() {
+        let _guard = lock_test_player();
+        set_test_playlist(sample_playlist());
+        set_test_saved_names(vec!["gym".into()]);
+        let mut app = expanded_app(Rect::new(0, 10, 32, 20));
+        enter_load_picker(&mut app);
+        assert!(matches!(app.player_queue_mode, PlayerQueueMode::LoadPicker));
+        let hits = player_hit_areas(&app);
+        assert_eq!(
+            player_action_at(&app, hits.playlist.x, hits.playlist.y),
+            Some(PlayerAction::PickSaved(0))
+        );
+        push_test_reply(
+            200,
+            r#"{"ok":true,"name":"gym","items":[{"url":"/tmp/only.aiff","title":"Only"}],"index":-1,"length":1}"#,
+        );
+        take_test_posts();
+        submit_load_named(&mut app, 0);
+        let posts = take_test_posts();
+        assert_eq!(posts[0].0, "/playlist/load");
+        let body: serde_json::Value = serde_json::from_str(&posts[0].1).unwrap();
+        assert_eq!(body["name"], "gym");
+        let playlist = current_playlist();
+        assert_eq!(playlist.items.len(), 1, "load must replace, not merge");
+        assert_eq!(playlist.items[0].title, "Only");
+        assert_eq!(playlist.index, None);
+        assert!(matches!(app.player_queue_mode, PlayerQueueMode::Queue));
+    }
+
+    #[test]
+    fn density_round_trips_settings_and_walks_allowed() {
+        let _guard = lock_test_player();
+        take_test_posts();
+        assert_eq!(current_density(), PlayerDensity::Comfortable);
+        cycle_player_density();
+        assert_eq!(current_density(), PlayerDensity::Comfortable);
+        assert!(
+            take_test_posts().is_empty(),
+            "do not POST until GET /settings binds density"
+        );
+
+        set_test_settings(vec![
+            SettingsField {
+                key: "loop".into(),
+                field_type: "bool".into(),
+                value: serde_json::json!(false),
+                allowed: None,
+            },
+            SettingsField {
+                key: "volume".into(),
+                field_type: "number".into(),
+                value: serde_json::json!(0.4),
+                allowed: None,
+            },
+            SettingsField {
+                key: "density".into(),
+                field_type: "string".into(),
+                value: serde_json::json!("comfortable"),
+                allowed: Some(vec![
+                    "compact".into(),
+                    "comfortable".into(),
+                    "large-text".into(),
+                ]),
+            },
+        ]);
+        assert_eq!(current_density(), PlayerDensity::Comfortable);
+        assert_eq!(current_density_value(), "comfortable");
+        take_test_posts();
+        cycle_player_density();
+        assert_eq!(current_density_value(), "large-text");
+        assert_eq!(current_density(), PlayerDensity::LargeText);
+        let posts = take_test_posts();
+        assert_eq!(posts[0].0, "/settings");
+        let body: serde_json::Value = serde_json::from_str(&posts[0].1).unwrap();
+        assert_eq!(body["key"], "density");
+        assert_eq!(body["value"], "large-text");
+        assert!(body["value"].is_string(), "settings value must be JSON string");
+
+        set_test_settings(vec![SettingsField {
+            key: "density".into(),
+            field_type: "string".into(),
+            value: serde_json::json!("compact"),
+            allowed: Some(vec![
+                "compact".into(),
+                "comfortable".into(),
+                "large-text".into(),
+            ]),
+        }]);
+        assert_eq!(
+            current_density_value(),
+            "compact",
+            "GET /settings must overwrite UI memory after a restart"
+        );
+        assert_eq!(current_density(), PlayerDensity::Compact);
+    }
+
+    #[test]
+    fn density_cycle_uses_allowed_not_a_hardcoded_triple() {
+        let _guard = lock_test_player();
+        set_test_settings(vec![SettingsField {
+            key: "density".into(),
+            field_type: "string".into(),
+            value: serde_json::json!("large-text"),
+            allowed: Some(vec![
+                "compact".into(),
+                "comfortable".into(),
+                "large-text".into(),
+                "cozy".into(),
+            ]),
+        }]);
+        take_test_posts();
+        cycle_player_density();
+        assert_eq!(current_density_value(), "cozy");
+        let posts = take_test_posts();
+        let body: serde_json::Value = serde_json::from_str(&posts[0].1).unwrap();
+        assert_eq!(body["key"], "density");
+        assert_eq!(body["value"], "cozy");
+        assert_eq!(density_header_label(), "cozy");
+    }
+
+    #[test]
+    fn settings_volume_is_zero_to_one_slider_stays_on_volume_route() {
+        let _guard = lock_test_player();
+        let fields = parse_settings_body(
+            r#"{"fields":[{"key":"loop","type":"bool","value":false},{"key":"shuffle","type":"bool","value":true},{"key":"volume","type":"number","value":0.4}]}"#,
+        );
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[2].key, "volume");
+        assert_eq!(fields[2].value, serde_json::json!(0.4));
+        assert!(density_field(&fields).is_none());
+        let with_density = parse_settings_body(
+            r#"{"fields":[{"key":"loop","type":"bool","value":false},{"key":"shuffle","type":"bool","value":false},{"key":"volume","type":"number","value":1},{"key":"density","type":"string","value":"comfortable","allowed":["compact","comfortable","large-text"]}]}"#,
+        );
+        let density = density_field(&with_density).expect("density field");
+        assert_eq!(density.key, "density");
+        assert_eq!(density.field_type, "string");
+        assert_eq!(density.value, serde_json::json!("comfortable"));
+        assert_eq!(
+            density.allowed,
+            Some(vec![
+                "compact".into(),
+                "comfortable".into(),
+                "large-text".into()
+            ])
+        );
+        set_test_snapshot(PlayerSnapshot::Online {
+            title: None,
+            artist: None,
+            url: None,
+            playing: false,
+            looping: false,
+            shuffle: false,
+            elapsed_sec: 0,
+            duration_sec: 0,
+            volume: 1.0,
+            seekable: true,
+        });
+        take_test_posts();
+        nudge_volume(-0.1);
+        let posts = take_test_posts();
+        assert_eq!(posts[0].0, "/volume");
+        let body: serde_json::Value = serde_json::from_str(&posts[0].1).unwrap();
+        assert!(body["level"].as_f64().unwrap() <= 1.0);
+        assert_ne!(posts[0].0, "/settings");
+    }
+
+    #[test]
+    fn saved_names_parse_sorted_list() {
+        let names = parse_saved_names(r#"{"names":["gym","wave3-test"]}"#);
+        assert_eq!(names, vec!["gym", "wave3-test"]);
+        assert!(parse_saved_names(r#"{"names":[]}"#).is_empty());
+    }
+
+    fn expanded_app_mode(
+        rect: Rect,
+        mut app: crate::app::state::AppState,
+    ) -> crate::app::state::AppState {
+        app.player_expanded = true;
+        app.view.player_rect = rect;
+        app
     }
 }
