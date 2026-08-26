@@ -140,4 +140,26 @@ impl App {
             self.apply_config_from_disk(false);
         }
     }
+
+    pub(super) fn save_refresh_summary_prompt(&mut self) {
+        let prompt = self.state.refresh_summary_prompt();
+        if self.update_config_file("refresh summary prompt", |content| {
+            crate::config::upsert_section_value(
+                content,
+                "ui",
+                "refresh_summary_prompt",
+                &crate::config::toml_quoted_string(&prompt),
+            )
+        }) {
+            self.apply_config_from_disk(false);
+        }
+    }
+
+    pub(super) fn flush_refresh_summary_prompt_save(&mut self) {
+        if !self.state.request_save_refresh_summary_prompt {
+            return;
+        }
+        self.state.request_save_refresh_summary_prompt = false;
+        self.save_refresh_summary_prompt();
+    }
 }

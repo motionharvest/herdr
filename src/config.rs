@@ -9,8 +9,8 @@ mod theme;
 pub use self::{
     io::{
         config_diagnostic_summary, config_dir, config_path, load_live_config,
-        remove_keybinding_config_sections, remove_section_key, state_dir, upsert_section_bool,
-        upsert_section_value,
+        remove_keybinding_config_sections, remove_section_key, state_dir, toml_quoted_string,
+        upsert_section_bool, upsert_section_value,
     },
     keybinds::{
         format_key_combo, normalize_key_combo, terminal_key_matches_combo, ActionKeybinds,
@@ -20,7 +20,7 @@ pub use self::{
     model::{
         validated_sidebar_bounds, Config, ConfigReloadReport, ConfigReloadStatus, KeysConfig,
         NewTerminalCwdConfig, PaneHeaderConfig, ShellModeConfig, ToastConfig, ToastDelivery,
-        UpdateChannelConfig,
+        UpdateChannelConfig, DEFAULT_REFRESH_SUMMARY_PROMPT,
     },
     sound::SoundConfig,
     theme::{parse_color, CustomThemeColors, ThemeConfig},

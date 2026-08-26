@@ -165,7 +165,7 @@ Install the Grok hook:
 herdr integration install grok
 ```
 
-The hook reports session identity through the same local socket API used by other integrations. Grok state comes from Herdr's screen detection. After the hook reports a session id, Herdr reads `chat_history.jsonl` for the typed prompt that fills Summary, and `summary.json` for the current model. The first prompt sticks. `Refresh Summary` on the row menu takes the latest one, or a 5–8 word sentence from a headless `grok -p` session when `[ui] refresh_summary_with_grok` is on. `generated_title` fills Summary until a prompt has been parsed.
+The hook reports session identity through the same local socket API used by other integrations. Grok state comes from Herdr's screen detection. After the hook reports a session id, Herdr reads `chat_history.jsonl` for the typed prompt that fills Summary, and `summary.json` for the current model. The first prompt sticks. `Refresh Summary` on the row menu takes the latest one, or a sentence from a headless `grok -p` session when `[ui] refresh_summary_with_grok` is on. The column says `refreshing summary` until that session returns. Settings → experiments has a `prompt` field for the text sent to Grok (`[ui] refresh_summary_prompt`). `generated_title` fills Summary until a prompt has been parsed.
 
 Herdr uses `~/.grok` by default, or `GROK_HOME` when set. The Grok home directory must already exist. Install writes `hooks/herdr-agent-state.sh` and `hooks/herdr-agent-state.json`. Uninstall removes those two files and leaves any other hooks in that directory.
 

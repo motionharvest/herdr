@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Settings → experiments draws a `prompt` field under `refresh summary with grok`. Edit it to change what the headless session is asked. The same text lives at `[ui] refresh_summary_prompt`. Empty uses the built-in 5–8 word ask.
 - The composer Directory comes back with the folder it was showing after a restart, the same way the agent already does. A path that is no longer a folder is dropped.
 - Right-clicking an agent in the table or the spaces sidebar now offers `Refresh Summary`. It reads the current prompt into the Summary column the way the automatic update used to, but only when you ask. Settings → experiments has `refresh summary with grok`: when that is on, the command starts a headless `grok -p` session that names the latest user request in 5–8 words. Off, or when Grok fails, it still reads the latest prompt from the session log. The same key lives at `[ui] refresh_summary_with_grok`.
 - Dragging an agent from the table or the sidebar onto `+ new` flies it out into its own space, the same way dragging a pane name already did. A set-down agent dropped there becomes the root of that space. Those drags used to only reorder rows, so the button under the list did nothing with them.
@@ -24,6 +25,7 @@
 - Git Status no longer writes `Landed` when a linked worktree has uncommitted files. The label used to follow the dirty marker whenever that checkout's latest commit was already on the parent, so a dirty tree still looked finished.
 
 ### Changed
+- `Refresh Summary` with grok on writes `refreshing summary` in the column until the headless session returns, then replaces it with the new headline. The one-shot now runs at `--effort none` so it does not sit in reasoning for a task that is a short sentence.
 - Clicking the check beside a finished agent turns it back into the done dot. The click used to be one-way, so a check stayed until that agent worked again. Clicking still does not jump to the agent.
 - A later run that finishes wears the done dot again, even if you were looking at that pane. Finishing on the active tab used to leave the check standing, so a second task you watched complete never asked to be looked at.
 - A peeked pane's chrome now says `EXIT` instead of `BACK  HIDE`. Clicking it still leaves the overlay. A zoomed pane still says `BACK` and `HIDE`.

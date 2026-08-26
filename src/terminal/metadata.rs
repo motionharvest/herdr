@@ -342,10 +342,14 @@ impl TerminalState {
         enforce_ttl: bool,
     ) -> EffectivePresentation {
         let mut presentation = EffectivePresentation::empty();
-        presentation.title = self.manual_summary.clone().or_else(|| {
-            self.newest_metadata_title(now, enforce_ttl)
-                .or_else(|| self.session_title.clone())
-        });
+        presentation.title = if self.summary_refreshing {
+            Some("refreshing summary".into())
+        } else {
+            self.manual_summary.clone().or_else(|| {
+                self.newest_metadata_title(now, enforce_ttl)
+                    .or_else(|| self.session_title.clone())
+            })
+        };
         presentation.display_agent = self.newest_metadata_display_agent(now, enforce_ttl);
         presentation.state_labels = self.effective_metadata_state_labels(now, enforce_ttl);
         presentation.custom_status =
@@ -517,6 +521,19 @@ mod tests {
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())
+    }
+
+    #[test]
+    fn a_refreshing_summary_replaces_the_title_until_the_job_returns() {
+        let mut terminal = test_terminal();
+        terminal.set_session_title(Some("deploy".into()));
+        terminal.summary_refreshing = true;
+        assert_eq!(
+            terminal.effective_title().as_deref(),
+            Some("refreshing summary")
+        );
+        terminal.summary_refreshing = false;
+        assert_eq!(terminal.effective_title().as_deref(), Some("deploy"));
     }
 
     #[test]

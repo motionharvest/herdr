@@ -85,6 +85,9 @@ pub struct TerminalState {
     /// wins over the harness title and the probed session title. Refresh
     /// Summary clears it so the current prompt can show.
     pub manual_summary: Option<String>,
+    /// Refresh Summary is waiting on a headless `grok -p`. The Summary column
+    /// shows "refreshing summary" until that job returns. Not persisted.
+    pub summary_refreshing: bool,
     /// Unused leftover of title-derived assigned names. Restored sessions may
     /// still carry it; display names come from the first-name word list.
     pub title_name: Option<String>,
@@ -127,6 +130,7 @@ impl TerminalState {
             model_info: None,
             session_title: None,
             manual_summary: None,
+            summary_refreshing: false,
             title_name: None,
             hook_report_sequences: HashMap::new(),
             metadata_report_sequences: HashMap::new(),
@@ -833,6 +837,7 @@ impl TerminalState {
         self.model_info = None;
         self.session_title = None;
         self.manual_summary = None;
+        self.summary_refreshing = false;
         self.title_name = None;
         self.agent_metadata.clear();
         self.state = AgentState::Unknown;

@@ -513,6 +513,8 @@ impl App {
             pane_header: config.ui.pane_header,
             pane_history_persistence: config.experimental.pane_history,
             refresh_summary_with_grok: config.ui.refresh_summary_with_grok,
+            refresh_summary_prompt: config.ui.refresh_summary_prompt.clone(),
+            request_save_refresh_summary_prompt: false,
             reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
             cjk_ime_agent_filter_configured: !config.experimental.cjk_ime_agents.is_empty(),
             cjk_ime_agents: parse_cjk_ime_agents(&config.experimental.cjk_ime_agents),
@@ -544,6 +546,7 @@ impl App {
                 list: state::SelectionListState::new(0),
                 original_palette: None,
                 original_theme: None,
+                editing_refresh_prompt: false,
             },
             integration_recommendations: crate::integration::integration_recommendations(),
             integration_install_messages: Vec::new(),
@@ -1238,6 +1241,9 @@ impl App {
             self.state.notify_active_tab = config.ui.notify_active_tab;
             self.state.toast_config = config.ui.toast.clone();
             self.state.refresh_summary_with_grok = config.ui.refresh_summary_with_grok;
+            if !self.state.settings.editing_refresh_prompt {
+                self.state.refresh_summary_prompt = config.ui.refresh_summary_prompt.clone();
+            }
         }
 
         if !invalid_section("experimental") {
@@ -1880,6 +1886,11 @@ mod tests {
             .unwrap()
             .set_session_title(Some("Improve Agent Summary to be useful".into()));
         app.summary_refresh_in_flight.insert(terminal_id.clone());
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .summary_refreshing = true;
 
         app.handle_internal_event(AppEvent::SummaryRefreshed {
             terminal_id: terminal_id.clone(),
@@ -1887,15 +1898,12 @@ mod tests {
             title: Some("Land the herdr worktree".into()),
         });
 
+        let terminal = app.state.terminals.get(&terminal_id).unwrap();
         assert_eq!(
-            app.state
-                .terminals
-                .get(&terminal_id)
-                .unwrap()
-                .session_title
-                .as_deref(),
+            terminal.session_title.as_deref(),
             Some("Land the herdr worktree")
         );
+        assert!(!terminal.summary_refreshing);
         assert!(!app.summary_refresh_in_flight.contains(&terminal_id));
     }
 
@@ -2292,6 +2300,31 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("[ui]"));
         assert!(content.contains("refresh_summary_with_grok = true"));
+        assert!(app.state.config_diagnostic.is_none());
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn settings_save_refresh_summary_prompt_persists_then_applies_live_config() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("settings-save-refresh-summary-prompt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "onboarding = false\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        app.state.refresh_summary_prompt = "Name this in three words.".into();
+        app.save_refresh_summary_prompt();
+
+        assert_eq!(
+            app.state.refresh_summary_prompt,
+            "Name this in three words."
+        );
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[ui]"));
+        assert!(content.contains("refresh_summary_prompt = \"Name this in three words.\""));
         assert!(app.state.config_diagnostic.is_none());
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);

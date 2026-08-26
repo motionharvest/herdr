@@ -358,6 +358,7 @@ impl App {
                 }
             }
         }
+        self.flush_refresh_summary_prompt_save();
         if previous_settings_section != crate::app::state::SettingsSection::Integrations
             && self.state.settings.section == crate::app::state::SettingsSection::Integrations
         {

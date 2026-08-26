@@ -16,9 +16,9 @@ use crate::terminal::TerminalId;
 
 const GROK_SUMMARY_TIMEOUT: Duration = Duration::from_secs(45);
 const GROK_SUMMARY_MAX_TURNS: &str = "1";
+const GROK_SUMMARY_EFFORT: &str = "none";
 const GROK_SUMMARY_SCHEMA: &str =
     r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}"#;
-const SUMMARY_PROMPT: &str = "In 5-8 words, name the most recent thing the user asked this AI to do. Reply with only that sentence.";
 const MAX_SUMMARY_WORDS: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +27,7 @@ pub struct GrokSummaryJob {
     pub session_id: String,
     pub agent: Agent,
     pub cwd: PathBuf,
+    pub prompt: String,
     pub latest_requests: Vec<String>,
 }
 
@@ -40,11 +41,21 @@ impl GrokSummaryJob {
     }
 }
 
-pub fn grok_summary_prompt(job: &GrokSummaryJob) -> String {
-    if job.latest_requests.is_empty() {
-        return SUMMARY_PROMPT.to_string();
+fn headline_prompt(job: &GrokSummaryJob) -> &str {
+    let trimmed = job.prompt.trim();
+    if trimmed.is_empty() {
+        crate::config::DEFAULT_REFRESH_SUMMARY_PROMPT
+    } else {
+        trimmed
     }
-    let mut prompt = String::from(SUMMARY_PROMPT);
+}
+
+pub fn grok_summary_prompt(job: &GrokSummaryJob) -> String {
+    let headline = headline_prompt(job);
+    if job.latest_requests.is_empty() {
+        return headline.to_string();
+    }
+    let mut prompt = String::from(headline);
     prompt.push_str("\n\nMost recent user requests, newest first:\n");
     for (index, request) in job.latest_requests.iter().enumerate() {
         prompt.push_str(&(index + 1).to_string());
@@ -179,6 +190,8 @@ fn invoke_grok(
         .arg("--no-plan")
         .arg("--max-turns")
         .arg(GROK_SUMMARY_MAX_TURNS)
+        .arg("--effort")
+        .arg(GROK_SUMMARY_EFFORT)
         .arg("--verbatim")
         .arg("--json-schema")
         .arg(GROK_SUMMARY_SCHEMA);
@@ -269,6 +282,7 @@ mod tests {
             session_id: "01a016ad-b38c-7c12-9e2b-32bd13e0cb7c".into(),
             agent: Agent::Grok,
             cwd: PathBuf::from("/tmp"),
+            prompt: crate::config::DEFAULT_REFRESH_SUMMARY_PROMPT.into(),
             latest_requests: requests
                 .iter()
                 .map(|request| (*request).to_string())
@@ -286,7 +300,20 @@ mod tests {
 
     #[test]
     fn prompt_without_extracted_requests_is_still_the_headline_ask() {
-        assert_eq!(grok_summary_prompt(&job(&[])), SUMMARY_PROMPT);
+        assert_eq!(
+            grok_summary_prompt(&job(&[])),
+            crate::config::DEFAULT_REFRESH_SUMMARY_PROMPT
+        );
+    }
+
+    #[test]
+    fn prompt_uses_the_job_prompt_when_set() {
+        let mut job = job(&["Land this on parent"]);
+        job.prompt = "Name this in three words.".into();
+        let prompt = grok_summary_prompt(&job);
+        assert!(prompt.starts_with("Name this in three words."));
+        assert!(prompt.contains("1. Land this on parent"));
+        assert!(!prompt.contains("5-8 words"));
     }
 
     #[test]
@@ -387,6 +414,8 @@ mod tests {
         let args = std::fs::read_to_string(root.join("args")).unwrap();
         assert!(args.contains("-p"));
         assert!(args.contains("--fork-session"));
+        assert!(args.contains("--effort"));
+        assert!(args.contains("none"));
         assert!(args.contains("01a016ad-b38c-7c12-9e2b-32bd13e0cb7c"));
         assert!(args.contains("5-8 words"));
         assert!(args.contains("Land this on parent"));

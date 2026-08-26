@@ -1181,6 +1181,8 @@ pub struct SettingsState {
     pub original_palette: Option<Palette>,
     /// The theme name before opening settings.
     pub original_theme: Option<String>,
+    /// The Refresh Summary prompt field is focused for typing.
+    pub editing_refresh_prompt: bool,
 }
 
 pub(crate) enum DragTarget {
@@ -1760,6 +1762,10 @@ pub struct AppState {
     /// Refresh Summary asks a headless `grok -p` session for a 5–8 word
     /// headline. Off, it reads the latest prompt from the session log.
     pub refresh_summary_with_grok: bool,
+    /// Prompt sent to that headless session. Empty uses the built-in default.
+    pub refresh_summary_prompt: String,
+    /// Persist the prompt field after it loses focus in Settings.
+    pub request_save_refresh_summary_prompt: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`. See `[experimental] reveal_hidden_cursor_for_cjk_ime`.
     pub reveal_hidden_cursor_for_cjk_ime: bool,
@@ -1871,6 +1877,15 @@ impl AppState {
 
     pub fn refresh_summary_with_grok(&self) -> bool {
         self.refresh_summary_with_grok
+    }
+
+    pub fn refresh_summary_prompt(&self) -> String {
+        let trimmed = self.refresh_summary_prompt.trim();
+        if trimmed.is_empty() {
+            crate::config::DEFAULT_REFRESH_SUMMARY_PROMPT.to_string()
+        } else {
+            trimmed.to_string()
+        }
     }
 
     pub fn switch_ascii_input_source_in_prefix_enabled(&self) -> bool {
@@ -2186,6 +2201,8 @@ impl AppState {
             pane_header: PaneHeaderConfig::default(),
             pane_history_persistence: false,
             refresh_summary_with_grok: false,
+            refresh_summary_prompt: crate::config::DEFAULT_REFRESH_SUMMARY_PROMPT.into(),
+            request_save_refresh_summary_prompt: false,
             reveal_hidden_cursor_for_cjk_ime: false,
             cjk_ime_agent_filter_configured: false,
             cjk_ime_agents: Vec::new(),
@@ -2214,6 +2231,7 @@ impl AppState {
                 list: SelectionListState::new(0),
                 original_palette: None,
                 original_theme: None,
+                editing_refresh_prompt: false,
             },
             integration_recommendations: Vec::new(),
             integration_install_messages: Vec::new(),

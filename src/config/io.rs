@@ -294,6 +294,23 @@ pub fn upsert_section_value(content: &str, section: &str, key: &str, value: &str
     upsert_section_raw(content, section, key, value)
 }
 
+/// Quote `value` as a single-line TOML string.
+pub fn toml_quoted_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 pub fn upsert_section_bool(content: &str, section: &str, key: &str, value: bool) -> String {
     upsert_section_raw(content, section, key, &value.to_string())
 }
@@ -459,6 +476,15 @@ mod tests {
         let updated = upsert_section_bool("", "ui.toast", "enabled", true);
         assert!(updated.contains("[ui.toast]"));
         assert!(updated.contains("enabled = true"));
+    }
+
+    #[test]
+    fn toml_quoted_string_escapes_newlines_and_quotes() {
+        assert_eq!(toml_quoted_string("plain"), "\"plain\"");
+        assert_eq!(
+            toml_quoted_string("say \"hi\"\nnext"),
+            "\"say \\\"hi\\\"\\nnext\""
+        );
     }
 
     #[test]

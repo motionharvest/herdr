@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{List, ListItem, ListState, Paragraph, Tabs},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap},
     Frame,
 };
 
@@ -15,11 +15,14 @@ use crate::{
     config::{PaneHeaderField, ToastDelivery},
 };
 
+pub(crate) const SETTINGS_POPUP_WIDTH: u16 = 76;
+pub(crate) const SETTINGS_POPUP_HEIGHT: u16 = 26;
+
 pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     use crate::app::state::SettingsSection;
 
     let p = &app.palette;
-    let Some(popup) = centered_popup_rect(area, 76, 22) else {
+    let Some(popup) = centered_popup_rect(area, SETTINGS_POPUP_WIDTH, SETTINGS_POPUP_HEIGHT) else {
         return;
     };
 
@@ -453,6 +456,23 @@ fn render_settings_sound(app: &AppState, frame: &mut Frame, area: Rect) {
     }
 }
 
+/// Rows between the experiments description and the first checkbox.
+pub(crate) const EXPERIMENTS_CHECKBOX_ROWS_OFFSET: u16 = 3;
+
+pub(crate) fn experiments_prompt_rect(content: Rect) -> Option<Rect> {
+    let checkbox_count = ExperimentSetting::ALL.len() as u16;
+    let y = content
+        .y
+        .saturating_add(EXPERIMENTS_CHECKBOX_ROWS_OFFSET)
+        .saturating_add(checkbox_count)
+        .saturating_add(1);
+    let bottom = content.y.saturating_add(content.height);
+    if y + 2 >= bottom || content.width < 4 {
+        return None;
+    }
+    Some(Rect::new(content.x, y, content.width, bottom - y))
+}
+
 fn render_settings_experiments(app: &AppState, frame: &mut Frame, area: Rect) {
     let p = &app.palette;
     let [desc_area, _, list_area] = Layout::vertical([
@@ -471,7 +491,7 @@ fn render_settings_experiments(app: &AppState, frame: &mut Frame, area: Rect) {
 
     for (idx, setting) in ExperimentSetting::ALL.iter().copied().enumerate() {
         let marker = if setting.enabled(app) { "[✓]" } else { "[ ]" };
-        let style = if app.settings.list.selected == idx {
+        let style = if app.settings.list.selected == idx && !app.settings.editing_refresh_prompt {
             Style::default()
                 .bg(p.surface0)
                 .fg(p.text)
@@ -485,6 +505,31 @@ fn render_settings_experiments(app: &AppState, frame: &mut Frame, area: Rect) {
             row,
         );
     }
+
+    let Some(prompt_area) = experiments_prompt_rect(area) else {
+        return;
+    };
+    if prompt_area.height < 3 {
+        return;
+    }
+    let editing = app.settings.editing_refresh_prompt;
+    let border = if editing { p.accent } else { p.overlay0 };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border))
+        .title(" prompt ");
+    let inner = block.inner(prompt_area);
+    frame.render_widget(block, prompt_area);
+    let mut text = app.refresh_summary_prompt();
+    if editing {
+        text.push('█');
+    }
+    frame.render_widget(
+        Paragraph::new(text)
+            .style(Style::default().fg(if editing { p.text } else { p.subtext0 }))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 #[cfg(test)]
@@ -672,6 +717,8 @@ mod tests {
         let rendered = rendered_settings(&app);
 
         assert!(rendered.contains("refresh summary with grok [✓]"));
+        assert!(rendered.contains("prompt"));
+        assert!(rendered.contains("In 5-8 words"));
     }
 
     #[test]

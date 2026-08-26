@@ -580,8 +580,12 @@ impl App {
             session_id: session_id.clone(),
             agent,
             cwd: terminal.cwd.clone(),
+            prompt: self.state.refresh_summary_prompt(),
             latest_requests: crate::agent_model::latest_user_requests(agent, &session_id, 3),
         };
+        if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+            terminal.summary_refreshing = true;
+        }
         let heuristic_job = crate::agent_model::AgentModelRefreshJob {
             terminal_id: terminal_id.clone(),
             agent,

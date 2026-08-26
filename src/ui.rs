@@ -92,8 +92,9 @@ pub(crate) use self::{
         remove_worktree_button_rects, remove_worktree_popup_rect, rename_button_rects,
     },
     settings::{
-        settings_button_rects, settings_show_primary_action, SOUND_ALERT_ROWS_OFFSET,
-        SOUND_CHOICE_ROWS_OFFSET,
+        experiments_prompt_rect, settings_button_rects, settings_show_primary_action,
+        EXPERIMENTS_CHECKBOX_ROWS_OFFSET, SETTINGS_POPUP_HEIGHT, SETTINGS_POPUP_WIDTH,
+        SOUND_ALERT_ROWS_OFFSET, SOUND_CHOICE_ROWS_OFFSET,
     },
 };
 use crate::app::state::ViewLayout;

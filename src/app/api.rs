@@ -62,6 +62,7 @@ impl App {
         {
             self.summary_refresh_in_flight.remove(&terminal_id);
             if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                terminal.summary_refreshing = false;
                 let still_current = terminal
                     .model_probe_session()
                     .is_some_and(|(_, current)| current == session_id);

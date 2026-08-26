@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::{
@@ -94,6 +94,20 @@ fn experiment_toggle_action(state: &AppState, idx: usize) -> Option<SettingsActi
     }
 }
 
+fn stop_editing_refresh_prompt(state: &mut AppState) {
+    if state.settings.editing_refresh_prompt {
+        state.settings.editing_refresh_prompt = false;
+        state.request_save_refresh_summary_prompt = true;
+    }
+}
+
+fn begin_editing_refresh_prompt(state: &mut AppState) {
+    state.settings.editing_refresh_prompt = true;
+    if state.refresh_summary_prompt.trim().is_empty() {
+        state.refresh_summary_prompt = crate::config::DEFAULT_REFRESH_SUMMARY_PROMPT.into();
+    }
+}
+
 impl App {
     pub(crate) fn handle_settings_key(&mut self, key: KeyEvent) {
         let previous_section = self.state.settings.section;
@@ -120,6 +134,7 @@ impl App {
                 }
             }
         }
+        self.flush_refresh_summary_prompt_save();
         if previous_section != SettingsSection::Integrations
             && self.state.settings.section == SettingsSection::Integrations
         {
@@ -169,6 +184,7 @@ fn preview_selected_theme(state: &mut AppState) {
 }
 
 fn cancel_settings(state: &mut AppState) {
+    stop_editing_refresh_prompt(state);
     if let Some(palette) = state.settings.original_palette.take() {
         state.palette = palette;
     }
@@ -324,10 +340,45 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
                 }
             }
         },
+        SettingsSection::Experiments if state.settings.editing_refresh_prompt => match key.code {
+            KeyCode::Esc => {
+                stop_editing_refresh_prompt(state);
+            }
+            KeyCode::Enter => state.refresh_summary_prompt.push('\n'),
+            KeyCode::Backspace => {
+                state.refresh_summary_prompt.pop();
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                state.refresh_summary_prompt.push(c);
+            }
+            KeyCode::Up => {
+                stop_editing_refresh_prompt(state);
+                state.settings.list.selected = ExperimentSetting::ALL.len().saturating_sub(1);
+            }
+            KeyCode::BackTab | KeyCode::Left => {
+                stop_editing_refresh_prompt(state);
+                state.settings.section = SettingsSection::Integrations;
+                state.settings.list.selected = 0;
+            }
+            KeyCode::Tab | KeyCode::Right => {
+                stop_editing_refresh_prompt(state);
+                state.settings.section = SettingsSection::Theme;
+                state.settings.list.selected = current_theme_index(&state.theme_name);
+            }
+            _ => {}
+        },
         SettingsSection::Experiments => match key.code {
             KeyCode::Up | KeyCode::Char('k') => state.settings.list.move_prev(),
             KeyCode::Down | KeyCode::Char('j') => {
-                state.settings.list.move_next(ExperimentSetting::ALL.len())
+                if state.settings.list.selected + 1 >= ExperimentSetting::ALL.len() {
+                    begin_editing_refresh_prompt(state);
+                } else {
+                    state.settings.list.move_next(ExperimentSetting::ALL.len());
+                }
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 return experiment_toggle_action(state, state.settings.list.selected);
@@ -387,12 +438,18 @@ pub(crate) fn open_settings_at(state: &mut AppState, section: SettingsSection) {
         SettingsSection::Experiments => 0,
         SettingsSection::Integrations => 0,
     };
+    state.settings.editing_refresh_prompt = false;
     state.mode = Mode::Settings;
 }
 
 impl AppState {
     fn settings_popup_rect(&self) -> Rect {
-        crate::ui::centered_popup_rect(self.screen_rect(), 76, 22).unwrap_or_default()
+        crate::ui::centered_popup_rect(
+            self.screen_rect(),
+            crate::ui::SETTINGS_POPUP_WIDTH,
+            crate::ui::SETTINGS_POPUP_HEIGHT,
+        )
+        .unwrap_or_default()
     }
 
     fn settings_inner_rect(&self) -> Rect {
@@ -479,7 +536,7 @@ impl AppState {
                 }
             }
             SettingsSection::Experiments => {
-                let list_y = area.y + 3;
+                let list_y = area.y + crate::ui::EXPERIMENTS_CHECKBOX_ROWS_OFFSET;
                 if row >= list_y && row < list_y + ExperimentSetting::ALL.len() as u16 {
                     Some((row - list_y) as usize)
                 } else {
@@ -493,6 +550,23 @@ impl AppState {
     pub(super) fn handle_settings_mouse(&mut self, mouse: MouseEvent) -> Option<SettingsAction> {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                if self.settings.section == SettingsSection::Experiments {
+                    if let Some(prompt) =
+                        crate::ui::experiments_prompt_rect(self.settings_content_rect())
+                    {
+                        if mouse.column >= prompt.x
+                            && mouse.column < prompt.x + prompt.width
+                            && mouse.row >= prompt.y
+                            && mouse.row < prompt.y + prompt.height
+                        {
+                            begin_editing_refresh_prompt(self);
+                            return None;
+                        }
+                    }
+                }
+                if self.settings.editing_refresh_prompt {
+                    stop_editing_refresh_prompt(self);
+                }
                 if let Some(section) = self.settings_tab_at(mouse.column, mouse.row) {
                     self.settings.section = section;
                     self.settings.list.select(match section {
@@ -876,6 +950,60 @@ mod tests {
     }
 
     #[test]
+    fn settings_experiments_down_from_refresh_summary_edits_the_prompt() {
+        let mut state = state_with_workspaces(&["test"]);
+        open_settings_at(&mut state, SettingsSection::Experiments);
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+        assert_eq!(state.settings.list.selected, 2);
+
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+        assert!(state.settings.editing_refresh_prompt);
+
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()),
+        );
+        assert!(state.refresh_summary_prompt.ends_with('x'));
+
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+        );
+        assert!(!state.settings.editing_refresh_prompt);
+        assert!(state.request_save_refresh_summary_prompt);
+        assert_eq!(state.mode, Mode::Settings);
+    }
+
+    #[test]
+    fn settings_experiments_clicking_the_prompt_starts_editing() {
+        let mut app = app_for_mouse_test();
+        app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 120, 40);
+        open_settings_at(&mut app.state, SettingsSection::Experiments);
+        let area = app.state.settings_content_rect();
+        let prompt = crate::ui::experiments_prompt_rect(area).expect("prompt field fits");
+
+        let action = app.state.handle_settings_mouse(mouse(
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            prompt.x + 1,
+            prompt.y + 1,
+        ));
+
+        assert_eq!(action, None);
+        assert!(app.state.settings.editing_refresh_prompt);
+        assert_eq!(app.state.mode, Mode::Settings);
+    }
+
+    #[test]
     fn settings_tab_cycle_places_experiments_last() {
         let mut state = state_with_workspaces(&["test"]);
         open_settings_at(&mut state, SettingsSection::PaneLabels);
@@ -966,7 +1094,12 @@ mod tests {
         crate::ui::compute_view(&mut app.state, frame);
         open_settings_at(&mut app.state, SettingsSection::Experiments);
 
-        let drawn = crate::ui::centered_popup_rect(frame, 76, 22).expect("settings overlay fits");
+        let drawn = crate::ui::centered_popup_rect(
+            frame,
+            crate::ui::SETTINGS_POPUP_WIDTH,
+            crate::ui::SETTINGS_POPUP_HEIGHT,
+        )
+        .expect("settings overlay fits");
         assert_eq!(
             app.state.settings_popup_rect(),
             drawn,

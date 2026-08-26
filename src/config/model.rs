@@ -388,7 +388,13 @@ pub struct UiConfig {
     /// headline of the latest user request. Off, it reads the latest prompt
     /// from the session log the way the automatic fill does.
     pub refresh_summary_with_grok: bool,
+    /// Prompt sent to that headless session. Empty uses
+    /// [`DEFAULT_REFRESH_SUMMARY_PROMPT`].
+    pub refresh_summary_prompt: String,
 }
+
+/// Default headline ask for Refresh Summary's headless `grok -p` session.
+pub const DEFAULT_REFRESH_SUMMARY_PROMPT: &str = "In 5-8 words, name the most recent thing the user asked this AI to do. Reply with only that sentence.";
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -568,6 +574,7 @@ impl Default for UiConfig {
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
             refresh_summary_with_grok: false,
+            refresh_summary_prompt: DEFAULT_REFRESH_SUMMARY_PROMPT.into(),
         }
     }
 }
@@ -1173,6 +1180,24 @@ refresh_summary_with_grok = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.ui.refresh_summary_with_grok);
+    }
+
+    #[test]
+    fn refresh_summary_prompt_defaults_to_the_built_in_ask() {
+        assert_eq!(
+            Config::default().ui.refresh_summary_prompt,
+            DEFAULT_REFRESH_SUMMARY_PROMPT
+        );
+
+        let toml = r#"
+[ui]
+refresh_summary_prompt = "Name this in three words."
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.ui.refresh_summary_prompt,
+            "Name this in three words."
+        );
     }
 
     #[test]
