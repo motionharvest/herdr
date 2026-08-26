@@ -590,14 +590,20 @@ impl App {
         };
         let event_tx = self.event_tx.clone();
         std::thread::spawn(move || {
-            let title = crate::agent_summary::run_grok_summary(&grok_job)
-                .ok()
-                .or_else(|| {
+            let title = match crate::agent_summary::run_grok_summary(&grok_job) {
+                Ok(title) => Some(title),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        session_id = %grok_job.session_id,
+                        "headless grok summary failed; falling back to the session-log prompt"
+                    );
                     crate::agent_model::refresh_agent_model_infos(vec![heuristic_job])
                         .into_iter()
                         .next()
                         .and_then(|result| result.entry.title)
-                });
+                }
+            };
             let _ = event_tx.blocking_send(AppEvent::SummaryRefreshed {
                 terminal_id: grok_job.terminal_id,
                 session_id: grok_job.session_id,

@@ -60,26 +60,53 @@ pub fn parse_summary_output(stdout: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
+    // `--json-schema` implies `--output-format json`, so stdout is a grok
+    // envelope (`text`, `stopReason`, `sessionId`, …), not the schema object.
+    // If that envelope parses, never fall through to the first line: pretty
+    // JSON starts with `{`, which used to become the Summary column.
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if let Some(summary) = summary_from_json(&value) {
-            return Some(summary);
-        }
+        return summary_from_json(&value, 0);
     }
     let line = trimmed
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())?;
+        .find(|line| summary_text_is_usable(line))?;
     clamp_summary(line)
 }
 
-fn summary_from_json(value: &serde_json::Value) -> Option<String> {
-    if let Some(summary) = value.get("summary").and_then(|summary| summary.as_str()) {
-        return clamp_summary(summary);
+fn summary_from_json(value: &serde_json::Value, depth: usize) -> Option<String> {
+    if depth > 4 {
+        return None;
     }
-    if let Some(summary) = value.as_str() {
-        return clamp_summary(summary);
+    match value {
+        serde_json::Value::String(text) => {
+            let inner = strip_code_fence(text.trim());
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(inner) {
+                if let Some(summary) = summary_from_json(&parsed, depth + 1) {
+                    return Some(summary);
+                }
+            }
+            clamp_summary(inner)
+        }
+        serde_json::Value::Object(map) => {
+            for key in ["summary", "text", "structured_output", "result"] {
+                if let Some(nested) = map.get(key) {
+                    if let Some(summary) = summary_from_json(nested, depth + 1) {
+                        return Some(summary);
+                    }
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .find_map(|item| summary_from_json(item, depth + 1)),
+        _ => None,
     }
-    None
+}
+
+fn summary_text_is_usable(text: &str) -> bool {
+    text.chars().any(|c| c.is_alphanumeric())
 }
 
 fn strip_code_fence(text: &str) -> &str {
@@ -102,7 +129,7 @@ fn clamp_summary(text: &str) -> Option<String> {
         .trim()
         .trim_end_matches(['.', '!', '?'])
         .trim();
-    if stripped.is_empty() {
+    if !summary_text_is_usable(stripped) {
         return None;
     }
     let words: Vec<&str> = stripped.split_whitespace().collect();
@@ -271,6 +298,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_summary_output_reads_grok_json_envelope() {
+        let stdout = r#"{
+  "text": "{\"summary\":\"Land the herdr worktree\"}",
+  "stopReason": "end_turn",
+  "sessionId": "abc123",
+  "requestId": "xyz789"
+}"#;
+        assert_eq!(
+            parse_summary_output(stdout).as_deref(),
+            Some("Land the herdr worktree")
+        );
+    }
+
+    #[test]
+    fn parse_summary_output_reads_plain_text_in_json_envelope() {
+        let stdout =
+            "{\n  \"text\": \"Land the herdr worktree\",\n  \"stopReason\": \"end_turn\"\n}";
+        assert_eq!(
+            parse_summary_output(stdout).as_deref(),
+            Some("Land the herdr worktree")
+        );
+    }
+
+    #[test]
+    fn parse_summary_output_does_not_use_a_bare_brace() {
+        let stdout = "{\n  \"stopReason\": \"end_turn\",\n  \"sessionId\": \"abc123\"\n}";
+        assert_eq!(parse_summary_output(stdout), None);
+        assert_eq!(parse_summary_output("{"), None);
+    }
+
+    #[test]
     fn parse_summary_output_clamps_to_eight_words_and_strips_quotes() {
         assert_eq!(
             parse_summary_output("\"Please land this clean branch onto parent main now thanks\"")
@@ -302,7 +360,17 @@ mod tests {
         let grok = root.join("grok");
         std::fs::write(
             &grok,
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\necho '{\"summary\":\"Land the herdr worktree\"}'\n",
+            concat!(
+                "#!/bin/sh\n",
+                "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\n",
+                "cat <<'EOF'\n",
+                "{\n",
+                "  \"text\": \"{\\\"summary\\\":\\\"Land the herdr worktree\\\"}\",\n",
+                "  \"stopReason\": \"end_turn\",\n",
+                "  \"sessionId\": \"abc123\"\n",
+                "}\n",
+                "EOF\n",
+            ),
         )
         .unwrap();
         #[cfg(unix)]

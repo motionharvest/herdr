@@ -18,6 +18,11 @@ pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 const CLAUDE_WORKING_HOLD: Duration = Duration::from_millis(1200);
 const STALE_HOOK_IDLE_GRACE: Duration = Duration::from_secs(2);
 
+fn summary_text_is_usable(text: &str) -> bool {
+    let trimmed = text.trim();
+    !trimmed.is_empty() && trimmed.chars().any(|c| c.is_alphanumeric())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookAuthority {
     pub source: String,
@@ -782,13 +787,13 @@ impl TerminalState {
     }
 
     pub fn set_session_title(&mut self, title: Option<String>) {
-        self.session_title = title.filter(|title| !title.trim().is_empty());
+        self.session_title = title.filter(|title| summary_text_is_usable(title));
     }
 
     /// Fill the summary from a probed prompt. The first title sticks. Pass
     /// `replace` to take a later prompt, which is what Refresh Summary does.
     pub fn adopt_probed_title(&mut self, title: Option<String>, replace: bool) {
-        let Some(title) = title.filter(|title| !title.trim().is_empty()) else {
+        let Some(title) = title.filter(|title| summary_text_is_usable(title)) else {
             return;
         };
         if replace {
@@ -796,7 +801,11 @@ impl TerminalState {
             self.clear_manual_summary();
             return;
         }
-        if self.session_title.is_none() {
+        if self
+            .session_title
+            .as_ref()
+            .is_none_or(|current| !summary_text_is_usable(current))
+        {
             self.session_title = Some(title);
         }
     }
@@ -1055,6 +1064,25 @@ mod tests {
         assert_eq!(
             terminal.session_title.as_deref(),
             Some("Refresh the current prompt")
+        );
+    }
+
+    #[test]
+    fn a_json_brace_title_is_not_kept_as_the_summary() {
+        let mut terminal = test_terminal();
+        terminal.set_session_title(Some("{".into()));
+        assert_eq!(terminal.session_title, None);
+
+        terminal.set_session_title(Some("{".into()));
+        terminal.adopt_probed_title(Some("{".into()), true);
+        assert_eq!(terminal.session_title, None);
+
+        terminal.set_session_title(Some("{".into()));
+        terminal.adopt_probed_title(Some("Land the herdr worktree".into()), false);
+        assert_eq!(
+            terminal.session_title.as_deref(),
+            Some("Land the herdr worktree"),
+            "a later probe may replace a JSON-noise summary"
         );
     }
 
