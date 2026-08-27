@@ -1908,6 +1908,67 @@ mod tests {
     }
 
     #[test]
+    fn osc_title_event_updates_the_summary() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("osc-title");
+        let pane = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(pane)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_session_title(Some("Improve Agent Summary to be useful".into()));
+
+        app.handle_internal_event(AppEvent::OscTitleChanged {
+            pane_id: pane,
+            title: Some("Reading files | Hide yellow banner".into()),
+        });
+        assert_eq!(
+            app.state
+                .terminals
+                .get(&terminal_id)
+                .unwrap()
+                .effective_title()
+                .as_deref(),
+            Some("Reading files | Hide yellow banner")
+        );
+
+        app.handle_internal_event(AppEvent::OscTitleChanged {
+            pane_id: pane,
+            title: Some("Compacting | Hide yellow banner".into()),
+        });
+        assert_eq!(
+            app.state
+                .terminals
+                .get(&terminal_id)
+                .unwrap()
+                .effective_title()
+                .as_deref(),
+            Some("Compacting | Hide yellow banner")
+        );
+
+        app.handle_internal_event(AppEvent::OscTitleChanged {
+            pane_id: pane,
+            title: None,
+        });
+        assert_eq!(
+            app.state
+                .terminals
+                .get(&terminal_id)
+                .unwrap()
+                .effective_title()
+                .as_deref(),
+            Some("Improve Agent Summary to be useful")
+        );
+    }
+
+    #[test]
     fn clipboard_feedback_does_not_replace_notification_toast() {
         let mut app = test_app();
         app.state.toast = Some(crate::app::state::ToastNotification {

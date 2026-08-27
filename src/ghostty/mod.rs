@@ -1021,6 +1021,34 @@ impl Terminal {
         self.get_u32(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_HEIGHT_PX)
     }
 
+    /// Window title as set by OSC 0/2. Empty when the pane has never set one.
+    pub fn title(&self) -> Result<Option<String>, Error> {
+        self.get_string(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_TITLE)
+    }
+
+    fn get_string(&self, data: ffi::GhosttyTerminalData) -> Result<Option<String>, Error> {
+        let mut out = ffi::GhosttyString {
+            ptr: ptr::null(),
+            len: 0,
+        };
+        unsafe {
+            ffi::ghostty_terminal_get(self.raw, data, (&mut out as *mut ffi::GhosttyString).cast())
+                .into_result()?;
+        }
+        if out.ptr.is_null() || out.len == 0 {
+            return Ok(None);
+        }
+        let bytes = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+        let text = String::from_utf8_lossy(bytes);
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(trimmed.to_string()))
+        }
+    }
+
     fn get_u16(&self, data: ffi::GhosttyTerminalData) -> Result<u16, Error> {
         let mut out = 0u16;
         // SAFETY: out points to a u16 matching the requested terminal data type.
@@ -2637,6 +2665,21 @@ mod tests {
             .unwrap();
         }
         out
+    }
+
+    #[test]
+    fn title_reads_osc_0_and_osc_2() {
+        let mut terminal = Terminal::new(20, 5, 0).unwrap();
+        assert_eq!(terminal.title().unwrap(), None);
+
+        terminal.write(b"\x1b]0;Reading files | Hide yellow banner | grok\x07");
+        assert_eq!(
+            terminal.title().unwrap().as_deref(),
+            Some("Reading files | Hide yellow banner | grok")
+        );
+
+        terminal.write(b"\x1b]2;Idle title\x1b\\");
+        assert_eq!(terminal.title().unwrap().as_deref(), Some("Idle title"));
     }
 
     #[test]

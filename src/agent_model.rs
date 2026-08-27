@@ -17,13 +17,15 @@
 //! a session, but only after the first prompt, and then freezes that name.
 //! The latest typed prompt lives in `chat_history.jsonl` as a `<user_query>`.
 //! The column does not take the whole message: it takes the part that asks
-//! for work, folded to a short headline. The first fill sticks on the row.
-//! Refresh Summary reads the latest prompt on command, the same way the
-//! automatic update used to. With `[ui] refresh_summary_with_grok`, that
-//! command instead asks a headless `grok -p` session for a 5–8 word sentence
-//! naming the latest user request. `generated_title` in `summary.json` still
-//! stands in until a prompt has been parsed, and the same file still carries
-//! `current_model_id` and `reasoning_effort`.
+//! for work, folded to a short headline. The first fill sticks on the row
+//! until a live OSC 0/2 window title arrives; Grok writes that title as it
+//! works, and Summary follows it. Refresh Summary reads the latest prompt on
+//! command, the same way the automatic update used to. With
+//! `[ui] refresh_summary_with_grok`, that command instead asks a headless
+//! `grok -p` session for a 5–8 word sentence naming the latest user request.
+//! `generated_title` in `summary.json` still stands in until a prompt has
+//! been parsed, and the same file still carries `current_model_id` and
+//! `reasoning_effort`.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};

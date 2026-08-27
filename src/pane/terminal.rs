@@ -23,10 +23,10 @@ use super::{
     kitty_keyboard::KittyKeyboardTracker,
     osc::{
         contains_scrollback_clear_sequence, current_transient_default_color_owner,
-        maybe_filter_primary_screen_scrollback_clear, restore_host_terminal_theme_if_needed,
-        write_host_terminal_theme, DefaultColorEvent, DefaultColorEventTracker,
-        DefaultColorOscTracker, DefaultColorQuery, DefaultColorTrackedEvent, Osc52Forwarder,
-        Osc7Tracker,
+        maybe_filter_primary_screen_scrollback_clear, normalize_osc_title,
+        restore_host_terminal_theme_if_needed, write_host_terminal_theme, DefaultColorEvent,
+        DefaultColorEventTracker, DefaultColorOscTracker, DefaultColorQuery,
+        DefaultColorTrackedEvent, Osc52Forwarder, Osc7Tracker,
     },
     xtgettcap::{XtgettcapQueryTracker, XtgettcapResponse},
 };
@@ -109,6 +109,8 @@ pub(crate) struct ProcessBytesResult {
     pub render_delay: Option<Duration>,
     pub clipboard_writes: Vec<Vec<u8>>,
     pub terminal_responses: Vec<Bytes>,
+    /// `Some` when OSC 0/2 changed the normalized window title this write.
+    pub osc_title: Option<Option<String>>,
 }
 
 pub(crate) struct GhosttyPaneTerminal {
@@ -132,6 +134,9 @@ pub(crate) struct GhosttyPaneCore {
     pub child_default_background_changed: bool,
     pub osc52_forwarder: Osc52Forwarder,
     pub osc7_tracker: Osc7Tracker,
+    /// Last normalized OSC 0/2 title reported to the app. Compared after each
+    /// write so spinner frames that sanitize to the same text do not fire.
+    pub last_osc_title: Option<String>,
     /// Process group that owned the pane when it last reported a directory with
     /// OSC 7. The report only describes that process group, so it is discarded
     /// once a different one takes the foreground.
@@ -374,6 +379,7 @@ impl GhosttyPaneTerminal {
                 child_default_background_changed: false,
                 osc52_forwarder: Osc52Forwarder::default(),
                 osc7_tracker: Osc7Tracker::default(),
+                last_osc_title: None,
                 reported_cwd_owner_pgid: None,
                 xtgettcap_query_tracker: XtgettcapQueryTracker::default(),
                 synchronized_output_since: None,
@@ -517,6 +523,18 @@ impl GhosttyPaneTerminal {
         );
         crate::render_prof::duration_since("pty.ghostty_write", write_started);
 
+        let next_osc_title = core
+            .terminal
+            .title()
+            .ok()
+            .flatten()
+            .as_deref()
+            .and_then(normalize_osc_title);
+        let osc_title = (core.last_osc_title != next_osc_title).then(|| {
+            core.last_osc_title.clone_from(&next_osc_title);
+            next_osc_title
+        });
+
         let has_kitty_graphics_sequence = crate::kitty_graphics::is_enabled()
             && contains_kitty_graphics_sequence(filtered_bytes.as_ref());
         if has_kitty_graphics_sequence {
@@ -569,6 +587,7 @@ impl GhosttyPaneTerminal {
             render_delay,
             clipboard_writes,
             terminal_responses,
+            osc_title,
         }
     }
 
@@ -3237,7 +3256,46 @@ mod tests {
             result.terminal_responses,
             vec![expected_xtgettcap_response("5463", None)]
         );
+        assert_eq!(result.osc_title, Some(Some("title".into())));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn process_pty_bytes_reports_normalized_osc_title_changes() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+
+        let first = pane.process_pty_bytes(
+            pane_id,
+            0,
+            "\x1b]0;\u{280B} Reading files | Hide yellow banner | grok\x07".as_bytes(),
+            &tx,
+        );
+        assert_eq!(
+            first.osc_title,
+            Some(Some("Reading files | Hide yellow banner".into()))
+        );
+
+        let spinner_only = pane.process_pty_bytes(
+            pane_id,
+            0,
+            "\x1b]0;\u{2819} Reading files | Hide yellow banner | grok\x07".as_bytes(),
+            &tx,
+        );
+        assert_eq!(spinner_only.osc_title, None);
+
+        let activity = pane.process_pty_bytes(
+            pane_id,
+            0,
+            "\x1b]0;\u{280B} Compacting | Hide yellow banner | grok\x07".as_bytes(),
+            &tx,
+        );
+        assert_eq!(
+            activity.osc_title,
+            Some(Some("Compacting | Hide yellow banner".into()))
+        );
     }
 
     #[test]

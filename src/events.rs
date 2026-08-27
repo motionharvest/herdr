@@ -103,6 +103,12 @@ pub enum AppEvent {
     /// A pane child emitted a valid OSC 52 clipboard write. The main loop
     /// re-emits it through herdr's own clipboard writer.
     ClipboardWrite { content: Vec<u8> },
+    /// A pane child set the window title with OSC 0 or OSC 2. `title` is
+    /// already stripped of spinner frames and a trailing `grok` label.
+    OscTitleChanged {
+        pane_id: PaneId,
+        title: Option<String>,
+    },
     /// Background git status refresh completed for workspaces.
     GitStatusRefreshed {
         results: Vec<WorkspaceGitStatus>,

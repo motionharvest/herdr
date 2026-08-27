@@ -845,9 +845,9 @@ pub(crate) fn compute_agent_locations(
     locations
 }
 
-/// What the agent reports it is doing — the session title its harness set, then
-/// any custom status it announced — the same text `herdr agent status` prints
-/// after the state.
+/// What the agent reports it is doing — the live OSC window title, then the
+/// session title its harness set, then any custom status it announced — the
+/// same text `herdr agent status` prints after the state.
 ///
 /// Read from the terminal itself rather than through the pane holding it, so a
 /// set-down agent, which no workspace lists, still says what it is doing.

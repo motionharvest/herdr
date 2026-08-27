@@ -25,6 +25,7 @@
 - Git Status no longer writes `Landed` when a linked worktree has uncommitted files. The label used to follow the dirty marker whenever that checkout's latest commit was already on the parent, so a dirty tree still looked finished.
 
 ### Changed
+- A pane that sets the window title with OSC 0 or OSC 2 now fills Summary from that title. Grok does this while it works: current activity and the session name, updating as the turn proceeds. Herdr already parsed those sequences in the pane and ignored them, so a Grok row stayed on the first typed prompt even as the host terminal's tab kept changing. Spinners and a trailing `grok` label are stripped so the column does not flicker. A harness that reports its own title, such as Claude Code's statusline, still wins. The first typed prompt still stands in until a title arrives.
 - `Refresh Summary` with grok on writes `refreshing summary` in the column until the headless session returns, then replaces it with the new headline. The one-shot now runs at `--effort none` so it does not sit in reasoning for a task that is a short sentence.
 - Clicking the check beside a finished agent turns it back into the done dot. The click used to be one-way, so a check stayed until that agent worked again. Clicking still does not jump to the agent.
 - A later run that finishes wears the done dot again, even if you were looking at that pane. Finishing on the active tab used to leave the check standing, so a second task you watched complete never asked to be looked at.

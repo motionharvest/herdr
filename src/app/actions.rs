@@ -3032,6 +3032,7 @@ impl AppState {
             // Intercepted in App::handle_internal_event before reaching this
             // dispatch; never touches AppState.
             AppEvent::ClipboardWrite { .. } => Vec::new(),
+            AppEvent::OscTitleChanged { .. } => Vec::new(),
             AppEvent::GitStatusRefreshed {
                 results,
                 cache_updates,

@@ -379,6 +379,43 @@ fn parse_osc52_clipboard_write(body: &[u8]) -> Option<Vec<u8>> {
 /// stream garbage, not a path.
 const OSC7_MAX_PAYLOAD_BYTES: usize = 4096;
 
+/// Braille Patterns, used by Grok and similar TUIs as a tab-title spinner.
+const BRAILLE_SPINNER_START: u32 = 0x2800;
+const BRAILLE_SPINNER_END: u32 = 0x28FF;
+
+/// Turn a raw OSC 0/2 title into the text Summary should show.
+///
+/// Grok's default title is `action-required`, `spinner`, `activity`,
+/// `session-name`, `grok`. The spinner would flicker the agent table, and the
+/// trailing harness name is already in the Agent column, so both come off.
+/// An empty result means "no title worth showing".
+pub(crate) fn normalize_osc_title(raw: &str) -> Option<String> {
+    let mut stripped = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        let code = ch as u32;
+        if (BRAILLE_SPINNER_START..=BRAILLE_SPINNER_END).contains(&code) {
+            continue;
+        }
+        stripped.push(ch);
+    }
+    let mut text = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sep in [" · ", " | ", " — ", " - "] {
+        if let Some((head, tail)) = text.rsplit_once(sep) {
+            if tail.eq_ignore_ascii_case("grok") {
+                text = head.trim().to_string();
+                break;
+            }
+        }
+    }
+    let text = text.trim();
+    if text.is_empty() || text.eq_ignore_ascii_case("grok") {
+        return None;
+    }
+    text.chars()
+        .any(|c| c.is_alphanumeric())
+        .then(|| text.to_string())
+}
+
 /// Tracks the working directory a shell reports with OSC 7
 /// (`ESC ] 7 ; file://<host>/<path> BEL`).
 ///
@@ -698,6 +735,24 @@ mod tests {
 
     use super::*;
     use crate::layout::PaneId;
+
+    #[test]
+    fn osc_title_strips_spinner_and_trailing_grok() {
+        assert_eq!(
+            normalize_osc_title("\u{280B} Reading files | Hide yellow banner | grok").as_deref(),
+            Some("Reading files | Hide yellow banner")
+        );
+        assert_eq!(
+            normalize_osc_title("Hide yellow banner · grok").as_deref(),
+            Some("Hide yellow banner")
+        );
+        assert_eq!(normalize_osc_title("grok"), None);
+        assert_eq!(normalize_osc_title(""), None);
+        assert_eq!(
+            normalize_osc_title("Action Required · Compacting · Deploy herdr · grok").as_deref(),
+            Some("Action Required · Compacting · Deploy herdr")
+        );
+    }
 
     #[test]
     fn osc7_tracker_reads_file_urls() {

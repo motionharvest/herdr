@@ -29,6 +29,18 @@ impl App {
             return;
         }
 
+        if let AppEvent::OscTitleChanged { pane_id, title } = ev {
+            if let Some(terminal_id) = self.state.terminal_id_for_any_pane(pane_id) {
+                if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                    if terminal.set_osc_title(title) {
+                        self.render_dirty.store(true, Ordering::Release);
+                        self.render_notify.notify_one();
+                    }
+                }
+            }
+            return;
+        }
+
         if let AppEvent::GitStatusRefreshed {
             results,
             cache_updates,

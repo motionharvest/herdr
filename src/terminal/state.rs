@@ -78,13 +78,19 @@ pub struct TerminalState {
     /// A title read out of that same session log, for a harness that never
     /// announces one. The first fill sticks; later probes do not replace it.
     /// Refresh Summary takes the latest prompt on command. It stands in only
-    /// when no reported title exists, so a harness that names its own sessions
-    /// always wins.
+    /// when no reported title and no live OSC title exist, so a harness that
+    /// names its own sessions always wins, and a pane that sets OSC 0/2
+    /// (Grok's tab title) fills Summary while it is emitting one.
     pub session_title: Option<String>,
     /// A leftover typed summary from the old Update Summary dialog. It still
     /// wins over the harness title and the probed session title. Refresh
     /// Summary clears it so the current prompt can show.
     pub manual_summary: Option<String>,
+    /// Live window title from OSC 0/2 in this pane (Grok's tab title, and
+    /// the same sequence from other TUIs). Not persisted; the next title
+    /// write replaces it. Wins over the probed session title, loses to a
+    /// harness-reported title and to a leftover manual summary.
+    pub osc_title: Option<String>,
     /// Refresh Summary is waiting on a headless `grok -p`. The Summary column
     /// shows "refreshing summary" until that job returns. Not persisted.
     pub summary_refreshing: bool,
@@ -130,6 +136,7 @@ impl TerminalState {
             model_info: None,
             session_title: None,
             manual_summary: None,
+            osc_title: None,
             summary_refreshing: false,
             title_name: None,
             hook_report_sequences: HashMap::new(),
@@ -794,6 +801,17 @@ impl TerminalState {
         self.session_title = title.filter(|title| summary_text_is_usable(title));
     }
 
+    /// Replace the live OSC title. Returns whether Summary's effective text
+    /// may have changed.
+    pub fn set_osc_title(&mut self, title: Option<String>) -> bool {
+        let title = title.filter(|title| summary_text_is_usable(title));
+        if self.osc_title == title {
+            return false;
+        }
+        self.osc_title = title;
+        true
+    }
+
     /// Fill the summary from a probed prompt. The first title sticks. Pass
     /// `replace` to take a later prompt, which is what Refresh Summary does.
     pub fn adopt_probed_title(&mut self, title: Option<String>, replace: bool) {
@@ -837,6 +855,7 @@ impl TerminalState {
         self.model_info = None;
         self.session_title = None;
         self.manual_summary = None;
+        self.osc_title = None;
         self.summary_refreshing = false;
         self.title_name = None;
         self.agent_metadata.clear();

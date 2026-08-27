@@ -40,6 +40,35 @@ const RELEASE_REACQUIRE_SUPPRESSION: std::time::Duration = std::time::Duration::
 const PANE_TERM: &str = "xterm-256color";
 const PANE_COLORTERM: &str = "truecolor";
 
+#[cfg(unix)]
+fn emit_pty_read_side_effects(
+    pane_id: PaneId,
+    events: &mpsc::Sender<AppEvent>,
+    result: self::terminal::ProcessBytesResult,
+) -> PtyReadResult {
+    for content in result.clipboard_writes {
+        if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
+            warn!(
+                pane = pane_id.raw(),
+                err = %err,
+                "failed to queue OSC 52 clipboard write"
+            );
+        }
+    }
+    if let Some(title) = result.osc_title {
+        if let Err(err) = events.try_send(AppEvent::OscTitleChanged { pane_id, title }) {
+            warn!(
+                pane = pane_id.raw(),
+                err = %err,
+                "failed to queue OSC title change"
+            );
+        }
+    }
+    PtyReadResult {
+        terminal_responses: result.terminal_responses,
+    }
+}
+
 fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
     // Each pane is rendered by herdr's own terminal layer, not the outer terminal
     // that launched the app. Advertising the inherited TERM leaks the host terminal
@@ -1421,18 +1450,7 @@ impl PaneRuntime {
                         }
                     });
                 }
-                for content in result.clipboard_writes {
-                    if let Err(err) = read_events.try_send(AppEvent::ClipboardWrite { content }) {
-                        warn!(
-                            pane = pane_id.raw(),
-                            err = %err,
-                            "failed to queue OSC 52 clipboard write"
-                        );
-                    }
-                }
-                PtyReadResult {
-                    terminal_responses: result.terminal_responses,
-                }
+                emit_pty_read_side_effects(pane_id, &read_events, result)
             });
             let exit_events = events.clone();
             let on_reader_exit = Box::new(move || {
@@ -1557,18 +1575,7 @@ impl PaneRuntime {
                         }
                     });
                 }
-                for content in result.clipboard_writes {
-                    if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
-                        warn!(
-                            pane = pane_id.raw(),
-                            err = %err,
-                            "failed to send OSC 52 clipboard write"
-                        );
-                    }
-                }
-                PtyReadResult {
-                    terminal_responses: result.terminal_responses,
-                }
+                emit_pty_read_side_effects(pane_id, &events, result)
             });
             PaneRuntimeIo::Actor(PtyIoActor::spawn(PtyIoActorConfig {
                 pane_id: pane_id.raw(),
