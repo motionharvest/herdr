@@ -1026,7 +1026,14 @@ fn render_space_group_outline(app: &AppState, frame: &mut Frame, area: Rect, gro
 }
 
 /// The pane the user is typing into, as a sidebar agent-row key.
+///
+/// Peek shows a set-down agent over the layout. Layout focus stays on the
+/// docked pane underneath, but that agent is not what the keyboard is on, so
+/// the sidebar leaves every agent row unselected until peek ends.
 fn focused_agent_row(app: &AppState) -> Option<(usize, usize, crate::layout::PaneId)> {
+    if app.agent_peek.is_some() {
+        return None;
+    }
     let ws_idx = app.active?;
     let ws = app.workspaces.get(ws_idx)?;
     Some((ws_idx, ws.active_tab, ws.focused_pane_id()?))
@@ -2353,6 +2360,49 @@ mod tests {
         );
         assert_eq!(buf[(name_x, row.y)].style().fg, Some(accent));
         assert_eq!(buf[(name_x, row.y + 1)].style().fg, Some(accent));
+    }
+
+    #[test]
+    fn peeking_deselects_the_docked_agent_in_the_spaces_sidebar() {
+        let area = Rect::new(0, 0, 28, 24);
+        let (app, terminal) = render_sidebar_list_with(area, |app| {
+            app.palette = crate::app::state::Palette::synthwave();
+            // Any peek clears sidebar agent selection; the id need not be docked.
+            app.agent_peek = Some(crate::layout::PaneId::from_raw(99));
+        });
+        let row = compute_workspace_list_areas(&app, area)
+            .1
+            .last()
+            .expect("the space's agent should have a row")
+            .rect;
+        let buf = terminal.backend().buffer();
+        let focus = app.palette.focused_pane_border();
+        let accent = app.palette.accent;
+        let name_x = row.x + AGENT_ROW_LABEL_X;
+        let header_y = row.y - 1;
+
+        assert_ne!(
+            buf[(name_x, row.y)].style().fg,
+            Some(focus),
+            "peek must not keep the layout-focused agent selected"
+        );
+        assert_ne!(buf[(name_x, row.y)].style().fg, Some(accent));
+        assert_eq!(
+            buf[(name_x, row.y)].style().fg,
+            Some(app.palette.overlay1),
+            "docked agent name returns to the unselected tone"
+        );
+        assert_eq!(
+            buf[(name_x, row.y + 1)].style().fg,
+            Some(app.palette.overlay0)
+        );
+        assert_ne!(
+            buf[(row.x + AGENT_LOCATION_HEADER_X, header_y)].style().fg,
+            Some(focus),
+            "the folder above also drops the focus mark"
+        );
+        // The space outline still marks which space is active.
+        assert_eq!(buf[(row.x + row.width - 1, row.y)].style().fg, Some(focus));
     }
 
     #[test]

@@ -681,8 +681,15 @@ fn render_code_ui_pane_chrome(
         return Vec::new();
     }
 
-    let edge_color = if focused || highlighted {
+    // Peek overlays a set-down agent; its chrome uses accent so it reads as a
+    // temporary view, not as the layout's focused pane (focus color).
+    let active_accent = if matches!(mode, PaneTitleMode::Peeking) {
+        mute_when_host_unfocused(app, app.palette.accent)
+    } else {
         focus_accent(app)
+    };
+    let edge_color = if focused || highlighted {
+        active_accent
     } else {
         app.palette.overlay0
     };
@@ -732,7 +739,7 @@ fn render_code_ui_pane_chrome(
     let rule_glyph = '─';
     let unfocused_style = Style::default().fg(app.palette.overlay0).bg(Color::Reset);
     let pane_name_style = if chrome_active {
-        Style::default().fg(focus_accent(app)).bg(Color::Reset)
+        Style::default().fg(active_accent).bg(Color::Reset)
     } else {
         unfocused_style
     };
@@ -1833,6 +1840,50 @@ mod tests {
         assert!(zoomed.contains("BACK"), "{zoomed:?}");
         assert!(zoomed.contains("HIDE"), "{zoomed:?}");
         assert!(!zoomed.contains("EXIT"), "{zoomed:?}");
+    }
+
+    #[test]
+    fn a_peeked_pane_border_uses_accent_not_focus() {
+        fn left_edge_color(app: &AppState, mode: PaneTitleMode) -> Option<Color> {
+            let area = Rect::new(0, 0, 24, 5);
+            let backend = ratatui::backend::TestBackend::new(24, 5);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_code_ui_pane_chrome(
+                        app,
+                        frame,
+                        area,
+                        PaneChromeTitle::name_only("panel"),
+                        PaneId::from_raw(1),
+                        true,
+                        false,
+                        mode,
+                        true,
+                        ExposedSides::all(),
+                        None,
+                    );
+                })
+                .unwrap();
+            terminal.backend().buffer()[(0, 2)].fg.into()
+        }
+
+        let mut app = AppState::test_new();
+        app.palette = crate::app::state::Palette::synthwave();
+        assert_ne!(
+            app.palette.accent,
+            app.palette.focused_pane_border(),
+            "synthwave keeps accent and focus apart"
+        );
+
+        assert_eq!(
+            left_edge_color(&app, PaneTitleMode::Peeking),
+            Some(app.palette.accent)
+        );
+        assert_eq!(
+            left_edge_color(&app, PaneTitleMode::Normal),
+            Some(app.palette.focused_pane_border())
+        );
     }
 
     #[test]
