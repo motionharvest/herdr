@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.12.0] - 2026-09-27
+
 ### Added
 - Each space shows a tab strip again between the agent table and the panes. Create, switch, rename, close, scroll, and drag-reorder tabs the way the old chrome did (`prefix+c`, `prefix+p`/`n`, `prefix+1..9`, `prefix+shift+t`, `prefix+shift+x`, click/`+`, wheel, double-click or right-click → Rename). The spaces sidebar lists those tabs under each space, with that space's agents nested under the active tab. The agent table still indexes agents; tabs index layouts inside a space. CLI/API `tab.*` stays the model surface.
 - The agent table can collapse to a one-row `▸ Agents` chrome (`prefix+shift+b`, or the `▾` gutter / collapsed row). Composer stays; collapsed state is remembered in the session snapshot as `agent_table_collapsed`.
