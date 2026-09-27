@@ -957,9 +957,9 @@ mod tests {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");
         let first_pane = ws.tabs[0].root_pane;
-        // Only the active tab's agents are listed, so the rows under test all
-        // live in the second tab, which is made active; the split that is
-        // made last holds the focus until the click moves it.
+        // The rows under test live in the second tab, which is made active;
+        // the split that is made last holds the focus until the click moves
+        // it.
         let second_tab = ws.test_add_tab(Some("logs"));
         ws.active_tab = second_tab;
         let second_pane = ws.tabs[second_tab].root_pane;
@@ -1031,6 +1031,61 @@ mod tests {
             second_pane
         );
         assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn agents_in_every_tab_are_listed_and_a_click_switches_to_their_tab() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let first_pane = ws.tabs[0].root_pane;
+        let second_tab = ws.test_add_tab(Some("logs"));
+        ws.active_tab = second_tab;
+        let second_pane = ws.tabs[second_tab].root_pane;
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        for (tab_idx, pane_id, agent) in [
+            (0, first_pane, Agent::Pi),
+            (second_tab, second_pane, Agent::Claude),
+        ] {
+            let terminal_id = app.state.workspaces[0].tabs[tab_idx].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(agent);
+        }
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 30);
+        let (cards, tabs, agent_rows, folder_rows) =
+            crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
+        app.state.view.workspace_card_areas = cards;
+        app.state.view.tab_row_areas = tabs;
+        app.state.view.agent_row_areas = agent_rows;
+        app.state.view.agent_folder_areas = folder_rows;
+
+        let rows = &app.state.view.agent_row_areas;
+        let background = rows
+            .iter()
+            .find(|row| row.pane_id == first_pane)
+            .expect("the inactive tab's agent is listed")
+            .rect;
+        assert!(
+            rows.iter().any(|row| row.pane_id == second_pane),
+            "and so is the active tab's"
+        );
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            background.x + 2,
+            background.y,
+        ));
+
+        assert_eq!(app.state.workspaces[0].active_tab, 0);
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), first_pane);
     }
 
     #[test]

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- The spaces sidebar lists the agents of every tab, each under its own tab row. It used to list only the active tab's agents, so an agent working in another tab dropped out of the sidebar. Clicking one still switches to its tab and focuses it.
+
 ## [0.12.0] - 2026-09-27
 
 ### Added

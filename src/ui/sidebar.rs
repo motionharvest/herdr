@@ -255,12 +255,12 @@ pub(crate) enum WorkspaceListEntry {
         ws_idx: usize,
         indented: bool,
     },
-    /// Tab listed under its space's card. Agents of the active tab nest under it.
+    /// Tab listed under its space's card. That tab's agents nest under it.
     Tab {
         ws_idx: usize,
         tab_idx: usize,
     },
-    /// Agent pane listed under its space's active tab.
+    /// Agent pane listed under the tab that holds it.
     Agent {
         ws_idx: usize,
         tab_idx: usize,
@@ -349,12 +349,10 @@ fn push_workspace_with_agents(
     let Some(ws) = app.workspaces.get(ws_idx) else {
         return;
     };
-    let active_tab = ws.active_tab;
+    // Every tab lists its own agents, not only the active one, so an agent
+    // working in a tab you are not looking at is still on show.
     for tab_idx in 0..ws.tabs.len() {
         entries.push(WorkspaceListEntry::Tab { ws_idx, tab_idx });
-        if tab_idx != active_tab {
-            continue;
-        }
         for group in workspace_agent_groups(app, ws_idx) {
             for member in group
                 .agents
@@ -3234,7 +3232,7 @@ mod tests {
     }
 
     /// Spaces holding `pane_counts[i]` agent panes each, all in the space's
-    /// one tab: only the active tab's agents are listed under a space.
+    /// one tab.
     fn app_with_agents(pane_counts: &[usize]) -> AppState {
         let mut app = AppState::test_new();
         app.workspaces = pane_counts
