@@ -2103,7 +2103,8 @@ impl AppState {
     /// A click in the band takes the keyboard to the control it landed on, and
     /// a click on the folder or the agent opens its list there and then — the
     /// click is the asking to see the choices. A click on a control whose list
-    /// is already open leaves it as it is. A click in the task puts the cursor
+    /// is already open closes it again, the way Escape does, and leaves the
+    /// keyboard on that control. A click in the task puts the cursor
     /// on the character clicked, the way any text field would. A drag from
     /// there selects; Shift-click extends an existing selection.
     fn click_composer(
@@ -2134,6 +2135,7 @@ impl AppState {
             return;
         };
         if self.composer.open == Some(which) {
+            self.composer.close_dropdown();
             return;
         }
         self.composer.close_dropdown();
@@ -5887,6 +5889,44 @@ mod tests {
         assert_eq!(app.state.composer.hover, Some(1));
         assert_eq!(app.state.composer.highlight, 0);
         assert_eq!(app.state.composer.open, Some(crate::composer::Focus::Agent));
+    }
+
+    #[test]
+    fn clicking_an_open_control_again_closes_its_list() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("space")];
+        app.state.active = Some(0);
+        app.state
+            .composer
+            .use_harnesses(vec![&crate::harness::ALL[0], &crate::harness::ALL[1]]);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+
+        for which in [
+            crate::composer::Focus::Folder,
+            crate::composer::Focus::Agent,
+        ] {
+            let control = match which {
+                crate::composer::Focus::Folder => app.state.view.composer.folder,
+                _ => app.state.view.composer.agent,
+            };
+            let (col, row) = (control.x + 1, app.state.view.composer.value_row);
+
+            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+            crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+            assert_eq!(
+                app.state.composer.open,
+                Some(which),
+                "the first click opens it"
+            );
+
+            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+            crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+            assert_eq!(app.state.composer.open, None, "the second click closes it");
+            assert_eq!(
+                app.state.composer.focus, which,
+                "and keeps the keyboard there"
+            );
+        }
     }
 
     #[test]
