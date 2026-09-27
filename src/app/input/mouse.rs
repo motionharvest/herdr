@@ -88,15 +88,19 @@ impl AppState {
             return self.handle_settings_mouse(mouse);
         }
 
-        if self.mode == Mode::SpaceDialog {
-            super::space_dialog::handle_space_dialog_mouse(self, mouse);
+        if self.mode == Mode::DescribeDialog {
+            super::describe_dialog::handle_describe_dialog_mouse(self, mouse);
             return None;
         }
 
-        // The purpose fly-out follows the pointer across the space cards. Only
+        // The fly-outs follow the pointer across the space cards and tabs. Only
         // motion moves it; the event still goes on to whatever it is for.
         if matches!(mouse.kind, MouseEventKind::Moved) {
             self.hovered_space = self.space_card_at(mouse.column, mouse.row);
+            self.hovered_tab =
+                matches!(self.mode, Mode::Terminal | Mode::Navigate | Mode::Composer)
+                    .then(|| self.tab_at(mouse.column, mouse.row))
+                    .flatten();
         }
 
         // The launcher shares the composer's caption row, so it gets first

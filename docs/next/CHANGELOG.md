@@ -4,6 +4,7 @@
 
 ### Added
 - Making a space opens a small dialog that asks what the space is for and which directory it starts in. The purpose is a text area; `Shift+Enter` breaks a line and `Enter` creates the space. The directory is picked the way the composer's Directory is: type to search, `Tab` to complete, `★` marks folders you started agents in. It starts on the folder the space would have used before. Resting the pointer on a space's card in the sidebar shows its purpose in a fly-out beside it, and right-clicking the card offers `Edit purpose`. The purpose is saved in the session snapshot as `purpose`; blank means none. `+ new`, the new-space key, and the mobile switcher all open the dialog; the CLI and API still make spaces directly.
+- Making a tab opens the same dialog, asking for a goal and an optional name. With no name the tab keeps its number. Resting the pointer on a tab in the tab strip shows its goal in a fly-out under it, and the tab's right-click menu offers `Edit goal`. The goal is saved in the session snapshot as the tab's `goal`. This replaces the name-only prompt `+` and `prefix+c` used to open.
 
 ### Changed
 - The spaces sidebar lists the agents of every tab, each under its own tab row. It used to list only the active tab's agents, so an agent working in another tab dropped out of the sidebar. Clicking one still switches to its tab and focuses it.

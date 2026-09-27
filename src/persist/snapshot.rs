@@ -201,6 +201,8 @@ struct LegacyWorkspaceSnapshot {
 pub struct TabSnapshot {
     #[serde(default)]
     pub custom_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -283,6 +285,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
     fn from(snap: LegacyWorkspaceSnapshot) -> Self {
         let identity_cwd = legacy_identity_cwd(&snap);
         let tab = TabSnapshot {
+            goal: None,
             custom_name: None,
             layout: snap.layout,
             panes: snap.panes,
@@ -577,6 +580,7 @@ fn capture_tab(
     }
     TabSnapshot {
         custom_name: tab.custom_name.clone(),
+        goal: tab.goal.clone(),
         layout: capture_node(tab.layout.root()),
         panes,
         zoomed: tab.zoomed,
@@ -830,6 +834,7 @@ mod tests {
                 worktree_space: None,
                 agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
+                    goal: None,
                     custom_name: Some("api".to_string()),
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
@@ -985,6 +990,20 @@ mod tests {
         let json = serde_json::to_string(&snapshot.workspaces[0]).unwrap();
         let back: WorkspaceSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(back.purpose.as_deref(), Some("ship the sidebar"));
+    }
+
+    #[test]
+    fn capture_contract_tracks_tab_goal() {
+        let mut state = state_with_workspaces(&["one"]);
+        state.workspaces[0].tabs[0].set_goal("reproduce the crash");
+
+        let snapshot = capture_from_state(&state);
+        let tab = &snapshot.workspaces[0].tabs[0];
+        assert_eq!(tab.goal.as_deref(), Some("reproduce the crash"));
+
+        let json = serde_json::to_string(tab).unwrap();
+        let back: TabSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.goal.as_deref(), Some("reproduce the crash"));
     }
 
     #[test]
@@ -1409,6 +1428,7 @@ mod tests {
                 worktree_space: None,
                 agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
+                    goal: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,

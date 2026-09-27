@@ -31,6 +31,9 @@ enum SplitCommand<'a> {
 
 pub struct Tab {
     pub custom_name: Option<String>,
+    /// What the tab is for, in the user's words. Written when the tab is made
+    /// and edited from its menu; shown when the pointer rests on the tab.
+    pub goal: Option<String>,
     pub number: usize,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -156,6 +159,7 @@ impl Tab {
         Ok((
             Self {
                 custom_name: None,
+                goal: None,
                 number,
                 root_pane: root_id,
                 layout,
@@ -184,6 +188,12 @@ impl Tab {
 
     pub fn set_custom_name(&mut self, name: String) {
         self.custom_name = Some(name);
+    }
+
+    /// Set the goal, trimmed. Blank text clears it.
+    pub fn set_goal(&mut self, goal: &str) {
+        let goal = goal.trim();
+        self.goal = (!goal.is_empty()).then(|| goal.to_string());
     }
 
     pub fn split_focused(

@@ -1,14 +1,14 @@
-//! Drawing the space dialog and the purpose fly-out.
+//! Drawing the describe dialog and the fly-outs that read its answers back.
 //!
-//! The dialog asks what a new space is for and where it starts. The purpose is
-//! a text area of a few rows. The directory is one filled row drawn the way the
-//! launcher draws its directory control, and its list opens under that row one
-//! folder per line, the same way. Editing a space's purpose later draws the
-//! same dialog without the directory row, because a space's directory is where
-//! its panes already run.
+//! The dialog asks what a space or a tab is for: a purpose or a goal, in a
+//! text area of a few rows. Under it sit the rows a new thing also needs, each
+//! one filled row with its caption in front: a new tab's optional name, and a
+//! new space's directory, drawn the way the launcher draws its directory
+//! control, with its list opening under that row one folder per line. Editing
+//! an existing space or tab draws the text area alone.
 //!
-//! The fly-out is the purpose read back: a small panel beside the sidebar,
-//! level with the card the pointer rests on.
+//! A fly-out is the text read back: a small panel beside the sidebar, level
+//! with the space card the pointer rests on, or under the tab it rests on.
 
 use ratatui::{
     layout::Rect,
@@ -26,29 +26,29 @@ use super::widgets::{
     action_button_row_rects, centered_popup_rect, panel_contrast_fg, render_action_button,
     render_modal_header, render_panel_shell, ActionButtonSpec,
 };
-use crate::app::state::{SpaceDialogField, SpaceDialogState};
+use crate::app::state::{DescribeDialogState, DescribeField, DescribeTarget};
 use crate::app::{AppState, Mode};
 use crate::composer::Focus;
 
 const DIALOG_WIDTH: u16 = 64;
-/// How many rows the purpose area shows. A longer purpose scrolls with the
-/// cursor.
-const PURPOSE_ROWS: u16 = 4;
+/// How many rows the text area shows. Longer text scrolls with the cursor.
+const TEXT_ROWS: u16 = 4;
 /// The most folders the open list shows at once.
 const LIST_ROWS: u16 = 8;
-const PURPOSE_CAPTION: &str = "Purpose";
-const PURPOSE_PLACEHOLDER: &str = "what is this space for?";
+const NAME_CAPTION: &str = "Name";
 const FLYOUT_WIDTH: u16 = 44;
 
 /// Where everything in the dialog sits. The drawing and the mouse both read
 /// this, so a click lands on what was drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SpaceDialogLayout {
+pub(crate) struct DescribeDialogLayout {
     pub inner: Rect,
     pub header: Rect,
-    /// The purpose text area, including its one-column margins.
-    pub purpose: Rect,
-    /// The directory row. Absent when editing an existing space.
+    /// The purpose or goal text area.
+    pub text: Rect,
+    /// The name row. Present only when making a tab.
+    pub name: Option<Rect>,
+    /// The directory row. Present only when making a space.
     pub directory: Option<Rect>,
     /// The rows of the open folder list, hung under the directory row.
     pub list: Option<Rect>,
@@ -57,21 +57,47 @@ pub(crate) struct SpaceDialogLayout {
     pub cancel: Rect,
 }
 
-fn submit_label(dialog: &SpaceDialogState) -> &'static str {
-    if dialog.editing.is_some() {
-        "save"
-    } else {
+fn submit_label(dialog: &DescribeDialogState) -> &'static str {
+    if dialog.target.is_new() {
         "create"
+    } else {
+        "save"
     }
 }
 
-pub(crate) fn space_dialog_layout(
-    dialog: &SpaceDialogState,
+fn title(dialog: &DescribeDialogState) -> &'static str {
+    match dialog.target {
+        DescribeTarget::NewSpace => " new space",
+        DescribeTarget::Space { .. } => " space purpose",
+        DescribeTarget::NewTab => " new tab",
+        DescribeTarget::Tab { .. } => " tab goal",
+    }
+}
+
+fn text_caption(dialog: &DescribeDialogState) -> &'static str {
+    if dialog.target.is_tab() {
+        "Goal"
+    } else {
+        "Purpose"
+    }
+}
+
+fn text_placeholder(dialog: &DescribeDialogState) -> &'static str {
+    if dialog.target.is_tab() {
+        "what should this tab get done?"
+    } else {
+        "what is this space for?"
+    }
+}
+
+pub(crate) fn describe_dialog_layout(
+    dialog: &DescribeDialogState,
     area: Rect,
-) -> Option<SpaceDialogLayout> {
-    // Header, gap, caption, purpose rows, gap, then either the directory row
-    // and a message row, or just the message row, then the buttons.
-    let body = 1 + 1 + 1 + PURPOSE_ROWS + 1 + if dialog.folders.is_some() { 2 } else { 1 } + 1;
+) -> Option<DescribeDialogLayout> {
+    // Header, gap, caption, text rows, gap, a row for each of the name and
+    // the directory the dialog has, a message row, then the buttons.
+    let rows_below = u16::from(dialog.name.is_some()) + u16::from(dialog.folders.is_some()) + 1;
+    let body = 1 + 1 + 1 + TEXT_ROWS + 1 + rows_below + 1;
     let popup = centered_popup_rect(area, DIALOG_WIDTH, body + 2)?;
     let inner = Rect::new(
         popup.x + 1,
@@ -84,13 +110,15 @@ pub(crate) fn space_dialog_layout(
     }
     let row = |offset: u16| Rect::new(inner.x, inner.y + offset, inner.width, 1);
     let header = row(0);
-    let purpose = Rect::new(inner.x + 1, inner.y + 3, inner.width - 2, PURPOSE_ROWS);
-    let mut next = 3 + PURPOSE_ROWS + 1;
-    let directory = dialog.folders.as_ref().map(|_| {
+    let text = Rect::new(inner.x + 1, inner.y + 3, inner.width - 2, TEXT_ROWS);
+    let mut next = 3 + TEXT_ROWS + 1;
+    let mut field_row = || {
         let rect = Rect::new(inner.x + 1, inner.y + next, inner.width - 2, 1);
         next += 1;
         rect
-    });
+    };
+    let name = dialog.name.as_ref().map(|_| field_row());
+    let directory = dialog.folders.as_ref().map(|_| field_row());
     let message = row(next);
     let buttons = action_button_row_rects(
         inner,
@@ -116,10 +144,11 @@ pub(crate) fn space_dialog_layout(
         }
         _ => None,
     };
-    Some(SpaceDialogLayout {
+    Some(DescribeDialogLayout {
         inner,
         header,
-        purpose,
+        text,
+        name,
         directory,
         list,
         message,
@@ -128,16 +157,16 @@ pub(crate) fn space_dialog_layout(
     })
 }
 
-/// The width the purpose wraps at, which is the width of its text area.
-pub(crate) fn space_dialog_purpose_width(dialog: &SpaceDialogState, area: Rect) -> usize {
-    space_dialog_layout(dialog, area)
-        .map(|layout| layout.purpose.width as usize)
+/// The width the text wraps at, which is the width of its area.
+pub(crate) fn describe_dialog_text_width(dialog: &DescribeDialogState, area: Rect) -> usize {
+    describe_dialog_layout(dialog, area)
+        .map(|layout| layout.text.width as usize)
         .unwrap_or(0)
 }
 
 /// The first row of the folder list on show: the list scrolls so the row
 /// pointed at stays inside it.
-pub(crate) fn space_dialog_list_first(dialog: &SpaceDialogState, rows: u16) -> usize {
+pub(crate) fn describe_dialog_list_first(dialog: &DescribeDialogState, rows: u16) -> usize {
     let Some(folders) = dialog.folders.as_ref() else {
         return 0;
     };
@@ -149,17 +178,17 @@ pub(crate) fn space_dialog_list_first(dialog: &SpaceDialogState, rows: u16) -> u
         .min(count.saturating_sub(rows))
 }
 
-/// The first purpose row on show: the area scrolls so the cursor stays in it.
-pub(crate) fn space_dialog_purpose_first(dialog: &SpaceDialogState) -> usize {
-    let (row, _) = dialog.purpose.cursor_row();
-    row.saturating_sub(PURPOSE_ROWS as usize - 1)
+/// The first text row on show: the area scrolls so the cursor stays in it.
+pub(crate) fn describe_dialog_text_first(dialog: &DescribeDialogState) -> usize {
+    let (row, _) = dialog.text.cursor_row();
+    row.saturating_sub(TEXT_ROWS as usize - 1)
 }
 
-pub(super) fn render_space_dialog(app: &AppState, frame: &mut Frame, area: Rect) {
-    let Some(dialog) = app.space_dialog.as_ref() else {
+pub(super) fn render_describe_dialog(app: &AppState, frame: &mut Frame, area: Rect) {
+    let Some(dialog) = app.describe_dialog.as_ref() else {
         return;
     };
-    let Some(layout) = space_dialog_layout(dialog, area) else {
+    let Some(layout) = describe_dialog_layout(dialog, area) else {
         return;
     };
     let p = &app.palette;
@@ -174,37 +203,42 @@ pub(super) fn render_space_dialog(app: &AppState, frame: &mut Frame, area: Rect)
         return;
     }
 
-    let title = if dialog.editing.is_some() {
-        " space purpose"
-    } else {
-        " new space"
-    };
-    render_modal_header(frame, layout.header, title, p);
+    render_modal_header(frame, layout.header, title(dialog), p);
 
-    let purpose_focused = dialog.field == SpaceDialogField::Purpose;
-    let caption_colour = if purpose_focused {
-        p.accent
-    } else {
-        p.overlay0
-    };
+    let text_focused = dialog.field == DescribeField::Text;
+    let caption_colour = if text_focused { p.accent } else { p.overlay0 };
     frame.render_widget(
         Paragraph::new(Line::styled(
-            PURPOSE_CAPTION,
+            text_caption(dialog),
             Style::default()
                 .fg(caption_colour)
                 .add_modifier(Modifier::ITALIC),
         )),
-        Rect::new(
-            layout.purpose.x,
-            layout.purpose.y - 1,
-            layout.purpose.width,
-            1,
-        ),
+        Rect::new(layout.text.x, layout.text.y - 1, layout.text.width, 1),
     );
-    draw_purpose(app, frame, dialog, layout.purpose);
+    draw_text(app, frame, dialog, layout.text);
+
+    if let (Some(rect), Some(name)) = (layout.name, dialog.name.as_ref()) {
+        let focused = dialog.field == DescribeField::Name;
+        paint_fill(frame.buffer_mut(), rect, p.surface0);
+        draw_caption(app, frame, rect, NAME_CAPTION, focused, p.surface0);
+        let value = value_rect(rect);
+        let line = if name.is_empty() {
+            Line::styled(
+                format!("optional · {}", next_tab_number(app)),
+                Style::default().fg(p.overlay0),
+            )
+        } else {
+            Line::styled(
+                visible_tail(&name.text(), name.cursor_row().1, value.width).0,
+                Style::default().fg(p.text),
+            )
+        };
+        frame.render_widget(Paragraph::new(line), value);
+    }
 
     if let (Some(rect), Some(folders)) = (layout.directory, dialog.folders.as_ref()) {
-        let focused = dialog.field == SpaceDialogField::Directory;
+        let focused = dialog.field == DescribeField::Directory;
         let open = folders.open == Some(Focus::Folder);
         let fill = p.surface0;
         paint_fill(frame.buffer_mut(), rect, fill);
@@ -284,24 +318,24 @@ pub(super) fn render_space_dialog(app: &AppState, frame: &mut Frame, area: Rect)
     place_cursor(frame, dialog, &layout);
 }
 
-fn draw_purpose(app: &AppState, frame: &mut Frame, dialog: &SpaceDialogState, rect: Rect) {
+fn draw_text(app: &AppState, frame: &mut Frame, dialog: &DescribeDialogState, rect: Rect) {
     let p = &app.palette;
     paint_fill(frame.buffer_mut(), rect, p.surface0);
-    if dialog.purpose.is_empty() {
+    if dialog.text.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::styled(
-                PURPOSE_PLACEHOLDER,
+                text_placeholder(dialog),
                 Style::default().fg(p.overlay0).bg(p.surface0),
             )),
             Rect::new(rect.x, rect.y, rect.width, 1),
         );
         return;
     }
-    let first = space_dialog_purpose_first(dialog);
+    let first = describe_dialog_text_first(dialog);
     let text = Style::default().fg(p.text).bg(p.surface0);
     let selected = Style::default().fg(panel_contrast_fg(p)).bg(p.accent);
     for (offset, row) in dialog
-        .purpose
+        .text
         .rows()
         .iter()
         .skip(first)
@@ -309,7 +343,7 @@ fn draw_purpose(app: &AppState, frame: &mut Frame, dialog: &SpaceDialogState, re
         .enumerate()
     {
         let chars: Vec<char> = row.text.chars().collect();
-        let spans = match dialog.purpose.selection_on_row(row) {
+        let spans = match dialog.text.selection_on_row(row) {
             Some((start, end)) => vec![
                 Span::styled(chars[..start].iter().collect::<String>(), text),
                 Span::styled(chars[start..end].iter().collect::<String>(), selected),
@@ -327,7 +361,7 @@ fn draw_purpose(app: &AppState, frame: &mut Frame, dialog: &SpaceDialogState, re
 fn draw_list(
     app: &AppState,
     frame: &mut Frame,
-    dialog: &SpaceDialogState,
+    dialog: &DescribeDialogState,
     list: Rect,
     directory: Rect,
 ) {
@@ -337,7 +371,7 @@ fn draw_list(
     let p = &app.palette;
     frame.render_widget(Clear, list);
     paint_fill(frame.buffer_mut(), list, p.surface0);
-    let first = space_dialog_list_first(dialog, list.height);
+    let first = describe_dialog_list_first(dialog, list.height);
     let value = value_rect(directory);
     for offset in 0..list.height {
         let index = first + offset as usize;
@@ -379,12 +413,17 @@ fn value_rect(row: Rect) -> Rect {
 
 /// The stretch of the path being typed that fits, and the cursor's column in
 /// it. It follows the cursor once the path is wider than the row.
-fn typed_path(dialog: &SpaceDialogState, room: u16) -> (String, usize) {
+fn typed_path(dialog: &DescribeDialogState, room: u16) -> (String, usize) {
     let Some(folders) = dialog.folders.as_ref() else {
         return (String::new(), 0);
     };
-    let text: Vec<char> = folders.path().text().chars().collect();
-    let (_, cursor) = folders.path().cursor_row();
+    visible_tail(&folders.path().text(), folders.path().cursor_row().1, room)
+}
+
+/// The stretch of a one-line value that fits in `room` columns, and the
+/// cursor's column in it. It follows the cursor once the value is wider.
+fn visible_tail(text: &str, cursor: usize, room: u16) -> (String, usize) {
+    let text: Vec<char> = text.chars().collect();
     let room = room as usize;
     if room == 0 {
         return (String::new(), 0);
@@ -394,17 +433,33 @@ fn typed_path(dialog: &SpaceDialogState, room: u16) -> (String, usize) {
     (text[start..end].iter().collect(), cursor - start)
 }
 
-fn place_cursor(frame: &mut Frame, dialog: &SpaceDialogState, layout: &SpaceDialogLayout) {
+/// The number a new tab in the active space would be shown as, which is what
+/// it is called when no name is given.
+fn next_tab_number(app: &AppState) -> usize {
+    app.active
+        .and_then(|ws_idx| app.workspaces.get(ws_idx))
+        .map_or(1, |ws| ws.tabs.len() + 1)
+}
+
+fn place_cursor(frame: &mut Frame, dialog: &DescribeDialogState, layout: &DescribeDialogLayout) {
     match dialog.field {
-        SpaceDialogField::Purpose => {
-            let (row, col) = dialog.purpose.cursor_row();
-            let row = row - space_dialog_purpose_first(dialog);
+        DescribeField::Text => {
+            let (row, col) = dialog.text.cursor_row();
+            let row = row - describe_dialog_text_first(dialog);
             frame.set_cursor_position((
-                layout.purpose.x + (col as u16).min(layout.purpose.width.saturating_sub(1)),
-                layout.purpose.y + row as u16,
+                layout.text.x + (col as u16).min(layout.text.width.saturating_sub(1)),
+                layout.text.y + row as u16,
             ));
         }
-        SpaceDialogField::Directory => {
+        DescribeField::Name => {
+            let (Some(rect), Some(name)) = (layout.name, dialog.name.as_ref()) else {
+                return;
+            };
+            let value = value_rect(rect);
+            let (_, col) = visible_tail(&name.text(), name.cursor_row().1, value.width);
+            frame.set_cursor_position((value.x + col as u16, value.y));
+        }
+        DescribeField::Directory => {
             let Some(directory) = layout.directory else {
                 return;
             };
@@ -421,13 +476,28 @@ fn place_cursor(frame: &mut Frame, dialog: &SpaceDialogState, layout: &SpaceDial
     }
 }
 
+fn flyout_modes(app: &AppState) -> bool {
+    matches!(app.mode, Mode::Terminal | Mode::Navigate | Mode::Composer)
+}
+
+/// The panel a fly-out needs for `text` starting at column `x`: as wide as
+/// fits up to its usual width, as tall as the wrapped text. `None` when there
+/// is too little room to be worth drawing.
+fn flyout_size(text: &str, x: u16, area: Rect) -> Option<(u16, Vec<String>)> {
+    let room = area.right().saturating_sub(x).saturating_sub(1);
+    let width = FLYOUT_WIDTH.min(room);
+    if width < 12 {
+        return None;
+    }
+    let lines = wrap_words(text, width.saturating_sub(4) as usize);
+    Some((width, lines))
+}
+
 /// Where the purpose fly-out goes for the hovered space: beside the sidebar,
 /// level with the space's card, and pulled up when it would run off the
-/// bottom. `None` when there is nothing to show.
+/// bottom.
 fn space_purpose_flyout(app: &AppState, area: Rect) -> Option<(Rect, Vec<String>)> {
-    if !matches!(app.mode, Mode::Terminal | Mode::Navigate | Mode::Composer)
-        || app.sidebar_collapsed
-    {
+    if !flyout_modes(app) || app.sidebar_collapsed {
         return None;
     }
     let ws_idx = app.hovered_space?;
@@ -438,22 +508,44 @@ fn space_purpose_flyout(app: &AppState, area: Rect) -> Option<(Rect, Vec<String>
         .iter()
         .find(|card| card.ws_idx == ws_idx)?;
     let x = app.view.sidebar_rect.right();
-    let room = area.right().saturating_sub(x).saturating_sub(1);
-    let width = FLYOUT_WIDTH.min(room);
-    if width < 12 {
-        return None;
-    }
-    let text_width = width.saturating_sub(4) as usize;
-    let lines = wrap_words(purpose, text_width);
+    let (width, lines) = flyout_size(purpose, x, area)?;
     let height = (lines.len() as u16 + 2).min(area.height);
     let y = card.rect.y.min(area.bottom().saturating_sub(height));
     Some((Rect::new(x, y, width, height), lines))
 }
 
-pub(super) fn render_space_purpose_flyout(app: &AppState, frame: &mut Frame, area: Rect) {
-    let Some((rect, lines)) = space_purpose_flyout(app, area) else {
-        return;
-    };
+/// Where the goal fly-out goes for the hovered tab: under the tab, starting
+/// at its left edge, and pulled left when it would run off the right.
+fn tab_goal_flyout(app: &AppState, area: Rect) -> Option<(Rect, Vec<String>)> {
+    if !flyout_modes(app) {
+        return None;
+    }
+    let tab_idx = app.hovered_tab?;
+    let ws = app.active.and_then(|ws_idx| app.workspaces.get(ws_idx))?;
+    let goal = ws.tabs.get(tab_idx)?.goal.as_deref()?;
+    let tab = app
+        .view
+        .tab_hit_areas
+        .get(tab_idx)
+        .filter(|rect| rect.width > 0)?;
+    let left = area.x.max(area.right().saturating_sub(FLYOUT_WIDTH + 1));
+    let x = tab.x.min(left);
+    let (width, lines) = flyout_size(goal, x, area)?;
+    let y = tab.bottom();
+    let height = (lines.len() as u16 + 2).min(area.bottom().saturating_sub(y));
+    (height >= 3).then(|| (Rect::new(x, y, width, height), lines))
+}
+
+pub(super) fn render_flyouts(app: &AppState, frame: &mut Frame, area: Rect) {
+    for (rect, lines) in [space_purpose_flyout(app, area), tab_goal_flyout(app, area)]
+        .into_iter()
+        .flatten()
+    {
+        render_flyout(app, frame, rect, &lines);
+    }
+}
+
+fn render_flyout(app: &AppState, frame: &mut Frame, rect: Rect, lines: &[String]) {
     let p = &app.palette;
     let Some(inner) = render_panel_shell(frame, rect, p.accent, p.panel_bg) else {
         return;

@@ -431,13 +431,14 @@ impl App {
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
-            creating_new_tab: false,
             requested_new_tab_name: None,
+            requested_new_tab_goal: None,
             rename_pane_target: None,
             worktree_create: None,
-            space_dialog: None,
-            request_submit_space_dialog: false,
+            describe_dialog: None,
+            request_submit_describe_dialog: false,
             hovered_space: None,
+            hovered_tab: None,
             worktree_open: None,
             worktree_remove: None,
             worktree_land: None,
@@ -799,12 +800,12 @@ impl App {
 
             if self.state.request_new_workspace {
                 self.state.request_new_workspace = false;
-                self.open_new_space_dialog();
+                self.open_new_describe_dialog();
                 needs_render = true;
             }
 
-            if self.state.request_submit_space_dialog {
-                self.state.request_submit_space_dialog = false;
+            if self.state.request_submit_describe_dialog {
+                self.state.request_submit_describe_dialog = false;
                 self.create_space_from_dialog();
                 needs_render = true;
             }
@@ -1479,8 +1480,8 @@ impl App {
             Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
                 input::handle_rename_key(&mut self.state, key_event);
             }
-            Mode::SpaceDialog => {
-                input::handle_space_dialog_key(&mut self.state, key_event);
+            Mode::DescribeDialog => {
+                input::handle_describe_dialog_key(&mut self.state, key_event);
             }
             Mode::NewLinkedWorktree => {
                 self.handle_worktree_create_key(key_event);

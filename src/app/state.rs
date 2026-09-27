@@ -621,31 +621,97 @@ impl Palette {
     }
 }
 
-/// Which field of the space dialog has the keyboard.
+/// Which field of the describe dialog has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpaceDialogField {
+pub enum DescribeField {
+    /// The purpose of a space or the goal of a tab.
+    Text,
+    Name,
     Directory,
-    Purpose,
 }
 
-/// The dialog that makes a space, or edits the purpose of one that exists.
+/// What the describe dialog is describing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DescribeTarget {
+    NewSpace,
+    /// An existing space, by its stable id.
+    Space {
+        id: String,
+    },
+    /// A tab about to be made in the active space.
+    NewTab,
+    /// An existing tab: its space's stable id and its place in that space.
+    Tab {
+        space_id: String,
+        tab_idx: usize,
+    },
+}
+
+impl DescribeTarget {
+    pub fn is_tab(&self) -> bool {
+        matches!(self, DescribeTarget::NewTab | DescribeTarget::Tab { .. })
+    }
+
+    pub fn is_new(&self) -> bool {
+        matches!(self, DescribeTarget::NewSpace | DescribeTarget::NewTab)
+    }
+}
+
+/// The dialog that asks what a space or a tab is for.
 ///
-/// A new space is asked two things: which directory it starts in and what it
-/// is for. The directory is picked the way the launcher picks one, so the
-/// dialog carries its own copy of the launcher's folder list. It is a copy,
-/// not the launcher's own state, so choosing here never changes the folder the
-/// launcher has on show. Editing asks only the purpose: a space's directory is
-/// where its panes already run.
+/// A space's answer is its purpose and a tab's is its goal; both are a few
+/// lines of free text, and that text area is the one field every use of the
+/// dialog has. Making something asks a little more. A new space is asked
+/// which directory it starts in, picked the way the launcher picks one, so the
+/// dialog carries its own copy of the launcher's folder list; a copy, so
+/// choosing here never changes the folder the launcher has on show. A new tab
+/// is asked for an optional name. Editing an existing space or tab asks only
+/// the text, because its directory is where its panes already run and its
+/// name has its own Rename.
 #[derive(Debug, Clone)]
-pub struct SpaceDialogState {
-    /// The space being edited, by its stable id. `None` makes a new space.
-    pub editing: Option<String>,
-    /// The folder picker. Present only when making a new space.
+pub struct DescribeDialogState {
+    pub target: DescribeTarget,
+    /// The purpose or goal.
+    pub text: crate::composer::TextField,
+    /// The name field. Present only when making a tab.
+    pub name: Option<crate::composer::TextField>,
+    /// The folder picker. Present only when making a space.
     pub folders: Option<crate::composer::ComposerState>,
-    pub purpose: crate::composer::TextField,
-    pub field: SpaceDialogField,
+    pub field: DescribeField,
     /// Why the last attempt to settle a directory failed, shown under it.
     pub error: Option<String>,
+}
+
+impl DescribeDialogState {
+    pub fn new(target: DescribeTarget) -> Self {
+        Self {
+            name: (target == DescribeTarget::NewTab).then(Default::default),
+            target,
+            text: Default::default(),
+            folders: None,
+            field: DescribeField::Text,
+            error: None,
+        }
+    }
+
+    /// The fields in the order `Tab` walks them.
+    pub fn fields(&self) -> Vec<DescribeField> {
+        let mut fields = vec![DescribeField::Text];
+        if self.name.is_some() {
+            fields.push(DescribeField::Name);
+        }
+        if self.folders.is_some() {
+            fields.push(DescribeField::Directory);
+        }
+        fields
+    }
+
+    pub fn step_field(&mut self, delta: isize) {
+        let fields = self.fields();
+        let at = fields.iter().position(|f| *f == self.field).unwrap_or(0) as isize;
+        let len = fields.len() as isize;
+        self.field = fields[((at + delta) % len + len) as usize % fields.len()];
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -968,7 +1034,7 @@ pub enum Mode {
     RenameWorkspace,
     RenameTab,
     RenamePane,
-    SpaceDialog,
+    DescribeDialog,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
@@ -1504,7 +1570,12 @@ impl ContextMenuState {
                 vec!["Rename".into(), "Edit purpose".into(), "Close".into()]
             }
             ContextMenuKind::Tab { .. } => {
-                vec!["New tab".into(), "Rename".into(), "Close".into()]
+                vec![
+                    "New tab".into(),
+                    "Rename".into(),
+                    "Edit goal".into(),
+                    "Close".into(),
+                ]
             }
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
@@ -1732,17 +1803,20 @@ pub struct AppState {
     /// Set when UI interaction requested a clipboard write that must be
     /// handled by the outer App/event loop instead of directly from AppState.
     pub request_clipboard_write: Option<Vec<u8>>,
-    pub creating_new_tab: bool,
     pub requested_new_tab_name: Option<String>,
+    pub requested_new_tab_goal: Option<String>,
     pub rename_pane_target: Option<PaneId>,
     pub worktree_create: Option<WorktreeCreateState>,
-    pub space_dialog: Option<SpaceDialogState>,
+    pub describe_dialog: Option<DescribeDialogState>,
     /// Set when the space dialog's create button or Enter asks for the space
     /// to be made. The event loop owns what making a pane needs.
-    pub request_submit_space_dialog: bool,
+    pub request_submit_describe_dialog: bool,
     /// The space whose card the pointer rests on, which shows its purpose in a
     /// fly-out beside the sidebar.
     pub hovered_space: Option<usize>,
+    /// The tab in the tab strip the pointer rests on, which shows its goal in
+    /// a fly-out under it.
+    pub hovered_tab: Option<usize>,
     pub worktree_open: Option<WorktreeOpenState>,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_land: Option<WorktreeLandState>,
@@ -2198,13 +2272,14 @@ impl AppState {
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
-            creating_new_tab: false,
             requested_new_tab_name: None,
+            requested_new_tab_goal: None,
             rename_pane_target: None,
             worktree_create: None,
-            space_dialog: None,
-            request_submit_space_dialog: false,
+            describe_dialog: None,
+            request_submit_describe_dialog: false,
             hovered_space: None,
+            hovered_tab: None,
             worktree_open: None,
             worktree_remove: None,
             worktree_land: None,

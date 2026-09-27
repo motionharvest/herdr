@@ -7,6 +7,7 @@ use ratatui::{
 
 mod agent_table;
 mod composer;
+mod describe_dialog;
 mod dialogs;
 mod keybind_help;
 mod menus;
@@ -18,7 +19,6 @@ mod release_notes;
 mod scrollbar;
 mod settings;
 mod sidebar;
-mod space_dialog;
 mod status;
 mod tabs;
 mod widgets;
@@ -30,6 +30,7 @@ pub(crate) use self::agent_table::{
 };
 pub(crate) use self::composer::ComposerLayout;
 use self::composer::{render_composer, render_composer_dropdown};
+use self::describe_dialog::{render_describe_dialog, render_flyouts};
 use self::dialogs::{
     render_confirm_close_agent_overlay, render_confirm_close_overlay, render_land_worktree_overlay,
     render_new_linked_worktree_overlay, render_open_existing_worktree_overlay,
@@ -69,7 +70,6 @@ pub(crate) use self::sidebar::{
     workspace_list_rect, workspace_list_scroll_metrics, workspace_list_scrollbar_rect,
     workspace_parent_group_state, AgentFolderGroup, WorkspaceListEntry,
 };
-use self::space_dialog::{render_space_dialog, render_space_purpose_flyout};
 pub(crate) use self::status::config_diagnostic_dismiss_rect;
 use self::status::{
     render_config_diagnostic, render_copy_feedback, render_toast_notification,
@@ -78,16 +78,16 @@ use self::status::{
 use self::tabs::{compute_tab_bar_view, render_tab_bar};
 pub(crate) use self::{
     composer::split_composer,
+    describe_dialog::{
+        describe_dialog_layout, describe_dialog_list_first, describe_dialog_text_first,
+        describe_dialog_text_width,
+    },
     keybind_help::keybind_help_lines,
     mobile::{
         mobile_switcher_areas, mobile_switcher_max_scroll, mobile_switcher_target_at,
         mobile_switcher_workspace_doc_range, MobileSwitcherTarget,
     },
     panes::{cursor_hidden_by_host_focus, pane_is_scrolled_back},
-    space_dialog::{
-        space_dialog_layout, space_dialog_list_first, space_dialog_purpose_first,
-        space_dialog_purpose_width,
-    },
     widgets::{centered_popup_rect, modal_stack_areas},
 };
 pub(crate) use self::{
@@ -202,9 +202,9 @@ fn compute_view_internal(
     agent_table::sync_agent_order(app);
 
     // The purpose area wraps at its own width, which depends on the frame.
-    if let Some(dialog) = app.space_dialog.as_mut() {
-        let width = space_dialog_purpose_width(dialog, area);
-        dialog.purpose.set_width(width);
+    if let Some(dialog) = app.describe_dialog.as_mut() {
+        let width = describe_dialog_text_width(dialog, area);
+        dialog.text.set_width(width);
     }
 
     if is_mobile_width(area, app.mobile_width_threshold) {
@@ -469,7 +469,7 @@ pub fn render_with_runtime_registry(
     render_notifications(app, frame, terminal_area);
 
     if app.view.layout != ViewLayout::Mobile {
-        render_space_purpose_flyout(app, frame, frame.area());
+        render_flyouts(app, frame, frame.area());
     }
 
     match app.mode {
@@ -492,7 +492,7 @@ pub fn render_with_runtime_registry(
         Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
             render_rename_overlay(app, frame, frame.area())
         }
-        Mode::SpaceDialog => render_space_dialog(app, frame, frame.area()),
+        Mode::DescribeDialog => render_describe_dialog(app, frame, frame.area()),
         Mode::NewLinkedWorktree => render_new_linked_worktree_overlay(app, frame, frame.area()),
         Mode::OpenExistingWorktree => {
             render_open_existing_worktree_overlay(app, frame, frame.area())

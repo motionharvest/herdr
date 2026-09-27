@@ -26,6 +26,7 @@ const PANE_DRAG_THRESHOLD: u16 = 1;
 mod agent_table;
 mod composer;
 mod copy_mode;
+mod describe_dialog;
 mod modal;
 mod mouse;
 mod navigate;
@@ -33,7 +34,6 @@ mod overlays;
 mod selection;
 mod settings;
 mod sidebar;
-mod space_dialog;
 mod terminal;
 
 pub(crate) use self::agent_table::{
@@ -43,7 +43,9 @@ pub(crate) use self::agent_table::{
 pub(crate) use self::composer::{
     enter_composer_mode, handle_composer_key, leave_composer_mode, ComposerKeyOutcome,
 };
-pub(crate) use self::space_dialog::{handle_space_dialog_key, open_space_purpose_editor};
+pub(crate) use self::describe_dialog::{
+    handle_describe_dialog_key, open_space_purpose_editor, open_tab_goal_editor,
+};
 pub(crate) use self::{
     modal::{
         handle_confirm_close_key, handle_context_menu_key, handle_global_menu_key,
@@ -93,7 +95,7 @@ impl App {
                     Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
                         handle_rename_key(&mut self.state, key_event)
                     }
-                    Mode::SpaceDialog => handle_space_dialog_key(&mut self.state, key_event),
+                    Mode::DescribeDialog => handle_describe_dialog_key(&mut self.state, key_event),
                     Mode::NewLinkedWorktree => self.handle_worktree_create_key(key_event),
                     Mode::OpenExistingWorktree => self.handle_worktree_open_key(key_event),
                     Mode::ConfirmRemoveWorktree => self.handle_worktree_remove_key(key_event),
