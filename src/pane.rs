@@ -483,6 +483,7 @@ fn spawn_basic_detection_task(
         let mut acquisition_started_at = None;
         let mut last_content_change_at = None;
         let mut release_was_active = false;
+        let mut last_claude_working_at = None;
         let mut last_detection_text = String::new();
 
         loop {
@@ -491,6 +492,7 @@ fn spawn_basic_detection_task(
                 _ = detect_reset.notified() => {
                     agent_presence = AgentDetectionPresence::from_agent(None);
                     state = AgentState::Unknown;
+                    last_claude_working_at = None;
                     last_visible_blocker = false;
                     last_visible_idle = false;
                     last_visible_working = false;
@@ -585,7 +587,17 @@ fn spawn_basic_detection_task(
             let Some(detection) = detection_update_for_publish(agent, &content, false) else {
                 continue;
             };
-            let new_state = detection.state;
+            // Panes handed to a fresh build run this loop instead of the full
+            // one, so it needs the same smoothing: without it a single
+            // mid-repaint frame reads as the end of a turn.
+            let new_state = crate::terminal::state::stabilize_agent_detection(
+                agent,
+                state,
+                detection,
+                false,
+                now,
+                &mut last_claude_working_at,
+            );
             let visible_blocker = detection.visible_blocker && new_state == AgentState::Blocked;
             let visible_idle = detection.visible_idle && new_state == AgentState::Idle;
             let visible_working = detection.visible_working && new_state == AgentState::Working;

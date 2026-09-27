@@ -201,6 +201,9 @@ pub(in crate::detect) fn has_spinner_activity(content: &str) -> bool {
     const SPINNER_CHARS: &str = "·✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❇❈❉❊❋✢✣✤✥✦✧✨⊛⊕⊙◉◎◍⁂⁕※⍟☼★☆";
     for line in content.lines() {
         let trimmed = line.trim();
+        if is_ascii_star_spinner_frame(trimmed) {
+            return true;
+        }
         let mut chars = trimmed.chars();
         if let Some(first) = chars.next() {
             if SPINNER_CHARS.contains(first) {
@@ -215,6 +218,23 @@ pub(in crate::detect) fn has_spinner_activity(content: &str) -> bool {
         }
     }
     false
+}
+
+/// Off macOS, Claude's spinner swaps `✳` for a plain `*`, so one frame in
+/// every sweep starts with a character Markdown bullets also use. Accept it
+/// only in the spinner's own shape — a single verb, the ellipsis, then nothing
+/// or the parenthesised timer — so a bullet in the transcript never reads as
+/// a live turn.
+fn is_ascii_star_spinner_frame(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("* ") else {
+        return false;
+    };
+    let Some((verb, tail)) = rest.split_once('\u{2026}') else {
+        return false;
+    };
+    !verb.is_empty()
+        && verb.chars().all(char::is_alphabetic)
+        && (tail.is_empty() || tail.starts_with(" ("))
 }
 
 /// Extract content above Claude's prompt box.
@@ -404,6 +424,25 @@ mod tests {
     fn search_and_history_overlays_are_ambiguous() {
         assert!(is_ambiguous("⌕ Search…"));
         assert!(is_ambiguous("bck-i-search: cargo\nctrl+r to toggle"));
+    }
+
+    #[test]
+    fn ascii_star_spinner_frame_is_working() {
+        // Linux frame of Claude's spinner. Missing it read one frame per sweep
+        // as a finished turn. Shape taken from a real pane.
+        let content = prompt_box_below("* Jiving… (40s · ↓ 2.6k tokens)");
+
+        assert_eq!(detect(&content), AgentState::Working);
+        assert!(!is_ambiguous(&content));
+        assert!(has_working_chrome(&prompt_box_below("* Jiving…")));
+    }
+
+    #[test]
+    fn markdown_star_bullet_with_ellipsis_is_not_working() {
+        let content = prompt_box_below("* Then it waits… (see below)\n* Loading the config… maybe");
+
+        assert_eq!(detect(&content), AgentState::Idle);
+        assert!(!has_working_chrome(&content));
     }
 
     #[test]
