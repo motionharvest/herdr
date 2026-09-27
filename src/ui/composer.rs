@@ -27,16 +27,16 @@ use crate::composer::{Focus, TextField};
 
 use super::widgets::panel_contrast_fg;
 
-const CLOSED: &str = "▾";
-const OPENED: &str = "▴";
-const FOLDER_CAPTION: &str = "Directory";
+pub(super) const CLOSED: &str = "▾";
+pub(super) const OPENED: &str = "▴";
+pub(super) const FOLDER_CAPTION: &str = "Directory";
 const AGENT_CAPTION: &str = "Agent";
 const TASK_CAPTION: &str = "Task";
 const WORKTREE_CAPTION: &str = "Wt";
 const WORKTREE_MARK: &str = "✓";
 /// What marks a folder an agent has been started in, two columns left of
 /// its name, so the section those folders lead the list with reads as one.
-const USED_MARK: &str = "★";
+pub(super) const USED_MARK: &str = "★";
 /// What the folder control says when there is nowhere to work yet.
 const PLACEHOLDER: &str = "add a directory…";
 /// What the agent control says when nothing this band can start is installed.
@@ -573,13 +573,13 @@ fn value_style(app: &AppState, in_band: bool) -> Style {
 
 /// One colour per directory, so a folder reads as the same place wherever it
 /// appears.
-fn directory_style(app: &AppState, index: usize) -> Style {
+pub(super) fn directory_style(app: &AppState, index: usize) -> Style {
     let p = &app.palette;
     let colours = [p.blue, p.mauve, p.teal, p.peach];
     Style::default().fg(colours[index % colours.len()])
 }
 
-fn item_style(app: &AppState, pointed: bool, hovered: bool) -> Style {
+pub(super) fn item_style(app: &AppState, pointed: bool, hovered: bool) -> Style {
     let p = &app.palette;
     if hovered {
         Style::default()
@@ -607,7 +607,7 @@ fn fill_colour(app: &AppState, in_band: bool) -> Color {
 
 /// Fill every cell of `area` with the background colour, the way a tab's
 /// row is filled. Every cell is written, so nothing drawn under it shows.
-fn paint_fill(buffer: &mut Buffer, area: Rect, fill: Color) {
+pub(super) fn paint_fill(buffer: &mut Buffer, area: Rect, fill: Color) {
     let style = Style::reset().bg(fill);
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
@@ -623,7 +623,7 @@ fn paint_fill(buffer: &mut Buffer, area: Rect, fill: Color) {
 /// reads as a note about the value rather than as part of it — and lit when
 /// that control has the keyboard, because a shade of fill alone is too quiet
 /// to answer "where does what I type go?" at a glance.
-fn draw_caption(
+pub(super) fn draw_caption(
     app: &AppState,
     frame: &mut Frame,
     strip: Rect,
@@ -730,7 +730,7 @@ fn inner(box_area: Rect, row: u16, indent: u16) -> Rect {
 /// A path drops whole leading folders, marked `…/`, the way the sidebar drops
 /// them — half a folder name reads as a folder that does not exist. When even
 /// the last folder will not fit, the cut falls wherever it has to.
-fn elide(text: &str, room: usize) -> String {
+pub(super) fn elide(text: &str, room: usize) -> String {
     let count = text.chars().count();
     if room == 0 {
         return String::new();

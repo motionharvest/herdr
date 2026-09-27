@@ -621,6 +621,33 @@ impl Palette {
     }
 }
 
+/// Which field of the space dialog has the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaceDialogField {
+    Directory,
+    Purpose,
+}
+
+/// The dialog that makes a space, or edits the purpose of one that exists.
+///
+/// A new space is asked two things: which directory it starts in and what it
+/// is for. The directory is picked the way the launcher picks one, so the
+/// dialog carries its own copy of the launcher's folder list. It is a copy,
+/// not the launcher's own state, so choosing here never changes the folder the
+/// launcher has on show. Editing asks only the purpose: a space's directory is
+/// where its panes already run.
+#[derive(Debug, Clone)]
+pub struct SpaceDialogState {
+    /// The space being edited, by its stable id. `None` makes a new space.
+    pub editing: Option<String>,
+    /// The folder picker. Present only when making a new space.
+    pub folders: Option<crate::composer::ComposerState>,
+    pub purpose: crate::composer::TextField,
+    pub field: SpaceDialogField,
+    /// Why the last attempt to settle a directory failed, shown under it.
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -941,6 +968,7 @@ pub enum Mode {
     RenameWorkspace,
     RenameTab,
     RenamePane,
+    SpaceDialog,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
@@ -1472,7 +1500,9 @@ pub struct ContextMenuState {
 impl ContextMenuState {
     pub fn items(&self) -> Vec<String> {
         match &self.kind {
-            ContextMenuKind::Workspace { .. } => vec!["Rename".into(), "Close".into()],
+            ContextMenuKind::Workspace { .. } => {
+                vec!["Rename".into(), "Edit purpose".into(), "Close".into()]
+            }
             ContextMenuKind::Tab { .. } => {
                 vec!["New tab".into(), "Rename".into(), "Close".into()]
             }
@@ -1482,6 +1512,7 @@ impl ContextMenuState {
                 ..
             } => vec![
                 "Rename".into(),
+                "Edit purpose".into(),
                 "Close".into(),
                 "New worktree".into(),
                 "Open worktree...".into(),
@@ -1491,6 +1522,7 @@ impl ContextMenuState {
                 ..
             } => vec![
                 "Rename".into(),
+                "Edit purpose".into(),
                 "Close".into(),
                 "Delete worktree checkout...".into(),
             ],
@@ -1501,6 +1533,7 @@ impl ContextMenuState {
                 ..
             } => vec![
                 "Rename".into(),
+                "Edit purpose".into(),
                 "Close group".into(),
                 "New worktree".into(),
                 "Open worktree...".into(),
@@ -1703,6 +1736,13 @@ pub struct AppState {
     pub requested_new_tab_name: Option<String>,
     pub rename_pane_target: Option<PaneId>,
     pub worktree_create: Option<WorktreeCreateState>,
+    pub space_dialog: Option<SpaceDialogState>,
+    /// Set when the space dialog's create button or Enter asks for the space
+    /// to be made. The event loop owns what making a pane needs.
+    pub request_submit_space_dialog: bool,
+    /// The space whose card the pointer rests on, which shows its purpose in a
+    /// fly-out beside the sidebar.
+    pub hovered_space: Option<usize>,
     pub worktree_open: Option<WorktreeOpenState>,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_land: Option<WorktreeLandState>,
@@ -2162,6 +2202,9 @@ impl AppState {
             requested_new_tab_name: None,
             rename_pane_target: None,
             worktree_create: None,
+            space_dialog: None,
+            request_submit_space_dialog: false,
+            hovered_space: None,
             worktree_open: None,
             worktree_remove: None,
             worktree_land: None,

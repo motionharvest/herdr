@@ -167,6 +167,8 @@ pub struct WorkspaceSnapshot {
     pub id: Option<String>,
     #[serde(default)]
     pub custom_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
     pub identity_cwd: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
@@ -292,6 +294,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
         Self {
             id: None,
             custom_name: snap.custom_name,
+            purpose: None,
             identity_cwd,
             worktree_space: None,
             tabs: vec![tab],
@@ -471,6 +474,7 @@ fn capture_workspace(
     WorkspaceSnapshot {
         id: Some(ws.id.clone()),
         custom_name: ws.custom_name.clone(),
+        purpose: ws.purpose.clone(),
         identity_cwd: ws
             .resolved_identity_cwd_from(terminals, terminal_runtimes)
             .unwrap_or_else(|| ws.identity_cwd.clone()),
@@ -819,6 +823,7 @@ mod tests {
 
         let snap = SessionSnapshot {
             workspaces: vec![WorkspaceSnapshot {
+                purpose: None,
                 id: Some("wproj".to_string()),
                 custom_name: Some("pi-mono".to_string()),
                 identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
@@ -961,6 +966,25 @@ mod tests {
         assert_eq!(workspace.active_tab, second_tab);
         assert_eq!(workspace.tabs[0].custom_name.as_deref(), Some("main"));
         assert_eq!(workspace.tabs[1].custom_name.as_deref(), Some("logs"));
+    }
+
+    #[test]
+    fn capture_contract_tracks_workspace_purpose() {
+        let mut state = state_with_workspaces(&["one", "two"]);
+        state.workspaces[0].set_purpose("ship the sidebar");
+
+        let snapshot = capture_from_state(&state);
+        assert_eq!(
+            snapshot.workspaces[0].purpose.as_deref(),
+            Some("ship the sidebar")
+        );
+        assert_eq!(snapshot.workspaces[1].purpose, None);
+
+        let json = serde_json::to_string(&snapshot.workspaces[1]).unwrap();
+        assert!(!json.contains("purpose"));
+        let json = serde_json::to_string(&snapshot.workspaces[0]).unwrap();
+        let back: WorkspaceSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.purpose.as_deref(), Some("ship the sidebar"));
     }
 
     #[test]
@@ -1378,6 +1402,7 @@ mod tests {
         let snap = SessionSnapshot {
             version: SNAPSHOT_VERSION,
             workspaces: vec![WorkspaceSnapshot {
+                purpose: None,
                 id: Some("test-ws".to_string()),
                 custom_name: Some("fallback test".to_string()),
                 identity_cwd: PathBuf::from("/tmp"),

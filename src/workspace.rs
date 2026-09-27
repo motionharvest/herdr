@@ -119,6 +119,9 @@ pub struct Workspace {
     pub id: String,
     /// User-provided override. If set, auto-derived identity stops updating.
     pub custom_name: Option<String>,
+    /// What the space is for, in the user's words. Written when the space is
+    /// made and edited from its menu; shown when the pointer rests on its card.
+    pub purpose: Option<String>,
     /// Fallback workspace identity source for tests, old snapshots, or missing runtimes.
     pub identity_cwd: PathBuf,
     /// Cached current git branch for the workspace repo.
@@ -263,6 +266,7 @@ impl Workspace {
             Self {
                 id: generate_workspace_id(),
                 custom_name: None,
+                purpose: None,
                 identity_cwd: initial_cwd.clone(),
                 cached_git_branch: git_branch(&initial_cwd),
                 cached_git_ahead_behind: None,
@@ -657,6 +661,13 @@ impl Workspace {
         self.custom_name = Some(name);
     }
 
+    /// Set the purpose, trimmed. Blank text clears it: a purpose of nothing is
+    /// no purpose, and would otherwise show an empty fly-out.
+    pub fn set_purpose(&mut self, purpose: &str) {
+        let purpose = purpose.trim();
+        self.purpose = (!purpose.is_empty()).then(|| purpose.to_string());
+    }
+
     pub fn resolved_identity_cwd(&self) -> Option<PathBuf> {
         Some(self.identity_cwd.clone())
     }
@@ -909,6 +920,7 @@ impl Workspace {
         Self {
             id: generate_workspace_id(),
             custom_name: None,
+            purpose: None,
             identity_cwd: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
             cached_git_ahead_behind: None,
@@ -983,6 +995,7 @@ impl Workspace {
         Self {
             id: generate_workspace_id(),
             custom_name: Some(name.to_string()),
+            purpose: None,
             identity_cwd: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
             cached_git_ahead_behind: None,

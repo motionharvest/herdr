@@ -313,7 +313,7 @@ fn copy_focused_selection(state: &mut AppState) -> bool {
 
 /// The editing keys every field in the band shares. Returns whether the key was
 /// one of them.
-fn edit_field(
+pub(super) fn edit_field(
     field: &mut crate::composer::TextField,
     code: KeyCode,
     modifiers: KeyModifiers,

@@ -18,6 +18,7 @@ mod release_notes;
 mod scrollbar;
 mod settings;
 mod sidebar;
+mod space_dialog;
 mod status;
 mod tabs;
 mod widgets;
@@ -68,6 +69,7 @@ pub(crate) use self::sidebar::{
     workspace_list_rect, workspace_list_scroll_metrics, workspace_list_scrollbar_rect,
     workspace_parent_group_state, AgentFolderGroup, WorkspaceListEntry,
 };
+use self::space_dialog::{render_space_dialog, render_space_purpose_flyout};
 pub(crate) use self::status::config_diagnostic_dismiss_rect;
 use self::status::{
     render_config_diagnostic, render_copy_feedback, render_toast_notification,
@@ -82,6 +84,10 @@ pub(crate) use self::{
         mobile_switcher_workspace_doc_range, MobileSwitcherTarget,
     },
     panes::{cursor_hidden_by_host_focus, pane_is_scrolled_back},
+    space_dialog::{
+        space_dialog_layout, space_dialog_list_first, space_dialog_purpose_first,
+        space_dialog_purpose_width,
+    },
     widgets::{centered_popup_rect, modal_stack_areas},
 };
 pub(crate) use self::{
@@ -194,6 +200,12 @@ fn compute_view_internal(
     // either desktop or mobile computes rows so later pane rearrangement can
     // never feed back into the list.
     agent_table::sync_agent_order(app);
+
+    // The purpose area wraps at its own width, which depends on the frame.
+    if let Some(dialog) = app.space_dialog.as_mut() {
+        let width = space_dialog_purpose_width(dialog, area);
+        dialog.purpose.set_width(width);
+    }
 
     if is_mobile_width(area, app.mobile_width_threshold) {
         // Mobile has no sidebar, so the composer still spans the frame.
@@ -456,6 +468,10 @@ pub fn render_with_runtime_registry(
     // Ambient notifications sit above panes, but below interactive overlays.
     render_notifications(app, frame, terminal_area);
 
+    if app.view.layout != ViewLayout::Mobile {
+        render_space_purpose_flyout(app, frame, frame.area());
+    }
+
     match app.mode {
         Mode::Onboarding => render_onboarding_overlay(app, frame, frame.area()),
         Mode::ReleaseNotes => render_release_notes_overlay(app, frame, frame.area()),
@@ -476,6 +492,7 @@ pub fn render_with_runtime_registry(
         Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
             render_rename_overlay(app, frame, frame.area())
         }
+        Mode::SpaceDialog => render_space_dialog(app, frame, frame.area()),
         Mode::NewLinkedWorktree => render_new_linked_worktree_overlay(app, frame, frame.area()),
         Mode::OpenExistingWorktree => {
             render_open_existing_worktree_overlay(app, frame, frame.area())

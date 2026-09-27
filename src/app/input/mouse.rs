@@ -88,6 +88,17 @@ impl AppState {
             return self.handle_settings_mouse(mouse);
         }
 
+        if self.mode == Mode::SpaceDialog {
+            super::space_dialog::handle_space_dialog_mouse(self, mouse);
+            return None;
+        }
+
+        // The purpose fly-out follows the pointer across the space cards. Only
+        // motion moves it; the event still goes on to whatever it is for.
+        if matches!(mouse.kind, MouseEventKind::Moved) {
+            self.hovered_space = self.space_card_at(mouse.column, mouse.row);
+        }
+
         // The launcher shares the composer's caption row, so it gets first
         // claim on that small piece of chrome. This also lets it take focus
         // from a selected task field instead of the composer swallowing the
@@ -1650,6 +1661,21 @@ impl AppState {
     /// not shift as the table above the panes grows and shrinks. The sidebar is
     /// part of that frame: without it, a popup drawn on `frame.area()` sits
     /// left of the hit rects by half the sidebar width.
+    /// The space whose card is under the pointer, while the sidebar is open
+    /// and nothing modal is up.
+    fn space_card_at(&self, col: u16, row: u16) -> Option<usize> {
+        if self.sidebar_collapsed
+            || !matches!(self.mode, Mode::Terminal | Mode::Navigate | Mode::Composer)
+        {
+            return None;
+        }
+        self.view
+            .workspace_card_areas
+            .iter()
+            .find(|card| rect_contains(card.rect, col, row))
+            .map(|card| card.ws_idx)
+    }
+
     pub(super) fn screen_rect(&self) -> Rect {
         let table = self.view.agent_table.area;
         let composer = self.view.composer.area;

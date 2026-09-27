@@ -4,6 +4,7 @@ use tracing::error;
 
 use super::{
     api_helpers::{pane_agent_status, tab_attention_priority},
+    state::{SpaceDialogField, SpaceDialogState},
     App, Mode,
 };
 use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
@@ -55,15 +56,54 @@ impl App {
         })
     }
 
-    /// Create a workspace with a real PTY (needs event_tx).
-    pub(crate) fn create_workspace(&mut self) {
+    /// Ask what a new space is for and where it starts. The directory begins
+    /// at the folder the space would have been made in without asking.
+    pub(crate) fn open_new_space_dialog(&mut self) {
         let follow_cwd = self
             .workspace_creation_source()
             .and_then(|ws_idx| self.seed_cwd_from_workspace(ws_idx));
         let initial_cwd = self.resolve_new_terminal_cwd(follow_cwd);
-        if let Err(e) = self.create_workspace_with_options(initial_cwd, true) {
-            error!(err = %e, "failed to create workspace");
-            self.state.mode = Mode::Navigate;
+        self.state.refresh_composer_folders(&self.terminal_runtimes);
+        let mut folders = self.state.composer.clone();
+        folders.close_dropdown();
+        folders.add_folder(initial_cwd.canonicalize().unwrap_or(initial_cwd));
+        self.state.space_dialog = Some(SpaceDialogState {
+            editing: None,
+            folders: Some(folders),
+            purpose: Default::default(),
+            field: SpaceDialogField::Purpose,
+            error: None,
+        });
+        self.state.hovered_space = None;
+        self.state.mode = Mode::SpaceDialog;
+    }
+
+    /// Make the space the dialog describes, then close the dialog.
+    pub(crate) fn create_space_from_dialog(&mut self) {
+        let Some(dialog) = self.state.space_dialog.as_mut() else {
+            return;
+        };
+        let Some(cwd) = dialog
+            .folders
+            .as_ref()
+            .and_then(|folders| folders.folder_path())
+            .map(PathBuf::from)
+        else {
+            dialog.error = Some("choose a directory first".to_string());
+            dialog.field = SpaceDialogField::Directory;
+            return;
+        };
+        let purpose = dialog.purpose.text();
+        self.state.space_dialog = None;
+        match self.create_workspace_with_options(cwd, true) {
+            Ok(ws_idx) => {
+                self.state.workspaces[ws_idx].set_purpose(&purpose);
+                self.schedule_session_save();
+            }
+            Err(e) => {
+                error!(err = %e, "failed to create workspace");
+                self.state.mode = Mode::Navigate;
+            }
         }
     }
 

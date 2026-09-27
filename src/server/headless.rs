@@ -1531,9 +1531,16 @@ impl HeadlessServer {
 
         if self.app.state.request_new_workspace {
             self.app.state.request_new_workspace = false;
-            self.app.create_workspace();
+            self.app.open_new_space_dialog();
             needs_render = true;
             crate::render_prof::event("full_render_cause.deferred_new_workspace");
+        }
+
+        if self.app.state.request_submit_space_dialog {
+            self.app.state.request_submit_space_dialog = false;
+            self.app.create_space_from_dialog();
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_space_dialog");
         }
 
         if self.app.state.request_new_tab {
