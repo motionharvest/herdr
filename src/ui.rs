@@ -580,8 +580,8 @@ mod tests {
         app.mobile_width_threshold = 90;
         compute_view(&mut app, Rect::new(0, 0, 80, 20));
         assert_eq!(app.view.layout, ViewLayout::Mobile);
-        assert_eq!(app.view.mobile_header_rect, Rect::new(0, 4, 80, 2));
-        assert_eq!(app.view.terminal_area, Rect::new(0, 6, 80, 14));
+        assert_eq!(app.view.mobile_header_rect, Rect::new(0, 2, 80, 2));
+        assert_eq!(app.view.terminal_area, Rect::new(0, 4, 80, 16));
     }
 
     #[test]

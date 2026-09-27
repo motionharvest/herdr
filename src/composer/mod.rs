@@ -5,10 +5,13 @@
 //! agent is running. An empty task still starts the chosen agent, with nothing
 //! typed into it. Opening the directory copies the folder on show into the
 //! field so it can be edited. While a path is being typed, the best match
-//! fills in the letters not yet typed; `Tab` takes that guess and `Enter`
-//! takes only what was typed. Settling a control hands the keyboard on to the
-//! next: directory, agent, task. The worktree box sits between directory and
-//! agent and is flipped by a click.
+//! fills in the letters not yet typed. `Tab` writes that guess, or the row
+//! pointed at, into the field with the cursor after it; a second `Tab` settles
+//! it, and `Enter` takes only what was typed. Settling a control hands the
+//! keyboard on to the next: directory, agent, task. The worktree box sits
+//! between directory and agent and is flipped by a click, or by `Space` once
+//! `Tab` has brought the keyboard to it; `Tab` from a settled directory lands
+//! there.
 //!
 //! Nothing here starts anything or draws anything. This is what the band holds
 //! and what a key does to it; `app::composer` starts the agent and
@@ -27,8 +30,31 @@ pub use field::TextField;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Folder,
+    Worktree,
     Agent,
     Task,
+}
+
+impl Focus {
+    /// The control `Tab` hands the keyboard to: left to right, then round.
+    pub fn next(self) -> Self {
+        match self {
+            Focus::Folder => Focus::Worktree,
+            Focus::Worktree => Focus::Agent,
+            Focus::Agent => Focus::Task,
+            Focus::Task => Focus::Folder,
+        }
+    }
+
+    /// The control `Shift-Tab` hands the keyboard to.
+    pub fn previous(self) -> Self {
+        match self {
+            Focus::Folder => Focus::Task,
+            Focus::Worktree => Focus::Folder,
+            Focus::Agent => Focus::Worktree,
+            Focus::Task => Focus::Agent,
+        }
+    }
 }
 
 /// A folder the composer can start an agent in, and the label it is listed
@@ -107,7 +133,14 @@ pub struct ComposerState {
     /// is the default, because two agents editing one checkout overwrite each
     /// other.
     pub worktree: bool,
+    /// The folders an agent has been started in, most recent first. They lead
+    /// the folder list as its own short section, because the places work was
+    /// sent before are where the next piece of work usually goes.
+    used: Vec<PathBuf>,
 }
+
+/// How many started-in folders the list keeps at its head.
+pub const USED_MOST: usize = 5;
 
 impl Default for ComposerState {
     fn default() -> Self {
@@ -127,6 +160,7 @@ impl Default for ComposerState {
             selecting: false,
             typed_agent: String::new(),
             worktree: true,
+            used: Vec::new(),
         }
     }
 }
@@ -271,7 +305,8 @@ impl ComposerState {
     }
 
     /// The letters of the best match that have not been typed yet. Drawn after
-    /// the cursor, muted, and not in the field: Tab takes them, Enter does not.
+    /// the cursor, muted, and not in the field: Tab writes them in, Enter does
+    /// not.
     pub fn ghost_suffix(&self) -> Option<String> {
         if self.open != Some(Focus::Folder) || self.pointing() || !self.path.at_end() {
             return None;
@@ -282,6 +317,35 @@ impl ComposerState {
         }
         let top = self.matches.first()?;
         ghost_after(&typed, &top.label)
+    }
+
+    /// Write the current guess into the field with the cursor after it, so it
+    /// can be read, extended, or settled: the row pointed at replaces the
+    /// field, and otherwise the ghost is added to what was typed. Reports
+    /// whether the field changed; when it did not, there was nothing to fill.
+    pub fn fill_in_guess(&mut self) -> bool {
+        if self.open != Some(Focus::Folder) {
+            return false;
+        }
+        if self.pointing() {
+            let Some(label) = self
+                .folder_rows()
+                .get(self.highlight)
+                .map(|f| f.label.clone())
+            else {
+                return false;
+            };
+            if self.path.text() == label {
+                return false;
+            }
+            self.edit_path(|path| path.set_text(&label));
+            return true;
+        }
+        let Some(ghost) = self.ghost_suffix() else {
+            return false;
+        };
+        self.edit_path(|path| path.insert_str(&ghost));
+        true
     }
 
     /// Whether a row of the open list is the thing being pointed at. It is not,
@@ -318,6 +382,59 @@ impl ComposerState {
             .unwrap_or(0)
     }
 
+    /// The folders an agent has been started in, most recent first.
+    pub fn used_folders(&self) -> &[PathBuf] {
+        &self.used
+    }
+
+    /// Whether an agent has been started in this folder.
+    pub fn is_used(&self, path: &Path) -> bool {
+        self.used.iter().any(|used| used == path)
+    }
+
+    /// Record that an agent was started in this folder, which moves it to the
+    /// head of the list's started-in section.
+    pub fn mark_used(&mut self, path: PathBuf) {
+        let path = path.canonicalize().unwrap_or(path);
+        self.used.retain(|used| used != &path);
+        self.used.insert(0, path);
+        self.used.truncate(USED_MOST);
+        self.arrange();
+    }
+
+    /// Restore the started-in folders a saved session remembered. A folder that
+    /// is no longer a directory is dropped rather than offered as a dead row.
+    pub(crate) fn restore_used(&mut self, paths: &[PathBuf]) {
+        self.used = paths
+            .iter()
+            .filter(|path| path.is_dir())
+            .take(USED_MOST)
+            .cloned()
+            .collect();
+        self.arrange();
+    }
+
+    /// Put the started-in folders at the head of the list, in the order they
+    /// were last used, and every other folder after them in its own order. The
+    /// folder on show stays on show wherever it moves to.
+    fn arrange(&mut self) {
+        let showing = self.folder_path().map(Path::to_path_buf);
+        let mut rest = std::mem::take(&mut self.folders);
+        let mut folders: Vec<Folder> = Vec::with_capacity(rest.len() + self.used.len());
+        for path in &self.used {
+            match rest.iter().position(|folder| &folder.path == path) {
+                Some(at) => folders.push(rest.remove(at)),
+                None => folders.push(Folder::new(path.clone())),
+            }
+        }
+        folders.append(&mut rest);
+        self.folders = folders;
+        self.folder = showing
+            .and_then(|path| self.folders.iter().position(|folder| folder.path == path))
+            .or_else(|| (!self.folders.is_empty()).then_some(0));
+        self.recompute_matches();
+    }
+
     /// Add a folder and put it on show, or move it to the front if it is
     /// already listed. A folder listed twice would be two ways to say the same
     /// place, and the list is short enough that the second one would be found
@@ -330,6 +447,7 @@ impl ComposerState {
             self.folders.insert(0, Folder::new(path));
         }
         self.folder = Some(0);
+        self.arrange();
     }
 
     /// Replace the list, keeping whichever folder was on show if it survives.
@@ -341,7 +459,7 @@ impl ComposerState {
         self.folder = showing
             .and_then(|path| self.folders.iter().position(|folder| folder.path == path))
             .or_else(|| (!self.folders.is_empty()).then_some(0));
-        self.recompute_matches();
+        self.arrange();
     }
 
     /// The keyboard starts wherever the first thing left to do is. With no
@@ -365,7 +483,7 @@ impl ComposerState {
     }
 
     pub fn open_dropdown(&mut self, which: Focus) {
-        if which == Focus::Task {
+        if matches!(which, Focus::Task | Focus::Worktree) {
             return;
         }
         self.focus = which;
@@ -516,7 +634,7 @@ impl ComposerState {
                 let at = (self.agent_row() as isize + delta).clamp(0, last) as usize;
                 self.agent = self.harnesses[at].name.to_string();
             }
-            Focus::Task => {}
+            Focus::Worktree | Focus::Task => {}
         }
     }
 
@@ -700,6 +818,43 @@ mod tests {
         assert_eq!(paths, ["/var", "/tmp", "/usr"]);
         assert_eq!(composer.folder, Some(0));
         assert_eq!(composer.folders.len(), 3, "and is not listed twice");
+    }
+
+    #[test]
+    fn folders_an_agent_was_started_in_lead_the_list_most_recent_first() {
+        let root = unique_temp_dir("used");
+        let [a, b, c] = ["a", "b", "c"].map(|name| {
+            let path = root.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            path.canonicalize().unwrap()
+        });
+        let mut composer = ComposerState::default();
+        composer.set_folders(vec![a.clone(), b.clone(), c.clone()]);
+        composer.mark_used(c.clone());
+        composer.mark_used(b.clone());
+
+        let order: Vec<_> = composer.folders.iter().map(|f| f.path.clone()).collect();
+        assert_eq!(order, vec![b.clone(), c.clone(), a.clone()]);
+        assert!(composer.is_used(&b) && composer.is_used(&c) && !composer.is_used(&a));
+
+        composer.add_folder(a.clone());
+        assert_eq!(
+            composer.folders[2].path, a,
+            "a new choice sits under the section"
+        );
+        assert_eq!(
+            composer.folder_path(),
+            Some(a.as_path()),
+            "and stays on show"
+        );
+
+        composer.set_folders(vec![a.clone()]);
+        let order: Vec<_> = composer.folders.iter().map(|f| f.path.clone()).collect();
+        assert_eq!(
+            order,
+            vec![b, c, a],
+            "the section outlives the panes that were running there"
+        );
     }
 
     #[test]
@@ -1019,6 +1174,28 @@ mod tests {
         let mut composer = ComposerState::default();
         composer.open_dropdown(Focus::Folder);
         assert!(composer.path().is_empty());
+    }
+
+    #[test]
+    fn accepting_the_ghost_writes_it_in_and_leaves_the_cursor_after_it() {
+        let (root, mut composer) = typing_a_path("acceptghost", "h");
+        assert!(composer.fill_in_guess());
+        assert_eq!(composer.path().text(), format!("{}/herdr", root.display()));
+        assert!(composer.path().at_end());
+        assert_eq!(composer.ghost_suffix(), None);
+        assert!(!composer.fill_in_guess(), "nothing is left to fill in");
+    }
+
+    #[test]
+    fn filling_in_a_pointed_row_writes_its_path_and_stops_pointing() {
+        let (_, mut composer) = typing_a_path("fillpointed", "h");
+        composer.point(1);
+        composer.point(1);
+        let label = composer.folder_rows()[1].label.clone();
+        assert!(composer.fill_in_guess());
+        assert_eq!(composer.path().text(), label);
+        assert!(composer.path().at_end());
+        assert!(!composer.pointing(), "the keyboard is back in the field");
     }
 
     #[test]

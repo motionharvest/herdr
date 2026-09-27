@@ -1438,9 +1438,9 @@ navigate_pane_right = "ctrl+l"
         state.active = Some(0);
         state.selected = 0;
         state.mode = Mode::Navigate;
-        // Four more rows than the switcher needs: the composer band takes the
-        // top four, leaving the same short viewport this test is about.
-        crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 44, 12));
+        // Two more rows than the switcher needs: the composer band and the
+        // blank row under it, leaving the same short viewport this test is about.
+        crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 44, 10));
         assert_eq!(state.mobile_switcher_scroll, 0);
 
         handle_navigate_key(

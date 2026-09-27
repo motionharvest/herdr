@@ -369,6 +369,9 @@ impl App {
         if let Some(agent) = restored_composer_agent {
             composer.restore_agent(&agent);
         }
+        // The started-in folders belong to the machine rather than to a
+        // session, so they are read whether or not a session was restored.
+        composer.restore_used(&crate::persist::load_used_folders());
         if let Some(folder) = restored_composer_folder {
             composer.restore_folder(&folder);
         }

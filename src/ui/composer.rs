@@ -1,21 +1,23 @@
 //! Drawing the composer band.
 //!
 //! Four controls, read left to right: where to work, whether in a worktree,
-//! who works, what to do. Directory, Agent, and Task are rounded boxes with
-//! their captions above them; Worktree is a checkbox in the same style,
-//! between Directory and Agent. A dropdown opens inside its own box: the
-//! value row, a rule, then one row per item. The band's chrome is a fixed
-//! four rows; an open dropdown or a wrapped task grows its box downward over
-//! the panes rather than pushing them down, because a band that changed
-//! height would resize every pane under it, and resizing a pane resizes the
-//! agent's terminal.
+//! who works, what to do. Each is one row of background colour, drawn the
+//! way a tab is: a space, a dim caption naming the control, a space, and its
+//! value. Every row has the same fill; the one with the keyboard is told
+//! apart by its lit caption. Worktree is a checkbox in the same style, between Directory and
+//! Agent. A dropdown opens under its own row, one row per item on the same
+//! fill. The band's chrome is a fixed single row and a blank row under it; an open dropdown or a
+//! wrapped task grows downward over the panes rather than pushing them down,
+//! because a band that changed height would resize every pane under it, and
+//! resizing a pane resizes the agent's terminal.
 
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
+    style::Color,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Clear, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
@@ -30,20 +32,22 @@ const OPENED: &str = "▴";
 const FOLDER_CAPTION: &str = "Directory";
 const AGENT_CAPTION: &str = "Agent";
 const TASK_CAPTION: &str = "Task";
-const WORKTREE_CAPTION: &str = "Worktree";
+const WORKTREE_CAPTION: &str = "Wt";
 const WORKTREE_MARK: &str = "✓";
-/// The checkbox itself: `╭───╮` / `│ ✓ │` / `╰───╯`.
-const WORKTREE_BOX_WIDTH: u16 = 5;
+/// What marks a folder an agent has been started in, two columns left of
+/// its name, so the section those folders lead the list with reads as one.
+const USED_MARK: &str = "★";
 /// What the folder control says when there is nowhere to work yet.
 const PLACEHOLDER: &str = "add a directory…";
 /// What the agent control says when nothing this band can start is installed.
 const NO_AGENT: &str = "none installed";
-/// The band's chrome: a caption row and a closed box under it.
-const BAND_HEIGHT: u16 = 4;
+/// The band's chrome: one row, the way the tab bar is one row.
+const BAND_HEIGHT: u16 = 1;
+/// The blank row between the band and what is under it, so the band's fill
+/// does not sit against the headers below.
+const BAND_GAP: u16 = 1;
 /// Below this much room the band would crowd out the panes, so it is dropped.
 const MIN_ROWS_BELOW: u16 = 3;
-/// Border, then two spaces, and a field's text begins.
-const PROMPT_INSET: u16 = 3;
 /// The gap between two controls.
 const GAP: u16 = 2;
 /// Room enough to read a line of a task in. Below this the task keeps its
@@ -71,8 +75,6 @@ pub(crate) struct ComposerLayout {
     pub task_lead: u16,
     /// The row all four boxes put their value on.
     pub value_row: u16,
-    /// The row the captions stand on, just above the boxes.
-    pub caption_row: u16,
     /// The item rows of the open dropdown, inside its box's borders.
     pub dropdown: Rect,
     /// The screen row of each of those items, in list order.
@@ -89,48 +91,43 @@ pub(crate) struct ComposerLayout {
 /// wrapping, the height of the box, and where the cursor is drawn all have to
 /// agree, and they only agree if one place decides it.
 pub(crate) fn split_composer(app: &mut AppState, area: Rect) -> (ComposerLayout, Rect) {
-    if area.width == 0 || area.height < BAND_HEIGHT + MIN_ROWS_BELOW {
+    if area.width == 0 || area.height < BAND_HEIGHT + BAND_GAP + MIN_ROWS_BELOW {
         app.composer.task.set_width(0);
         return (ComposerLayout::default(), area);
     }
 
     let lead = lead_width(app.composer.task_prefix());
-    let least_task = PROMPT_INSET + lead + 2 + MIN_TASK_TEXT;
+    let least_task = inset(TASK_CAPTION) + lead + 2 + MIN_TASK_TEXT;
     let worktree_width = worktree_control_width();
     let agent_width =
-        agent_control_width(app).min(area.width.saturating_sub(2 + 3 * GAP + worktree_width));
+        agent_control_width(app).min(area.width.saturating_sub(1 + 3 * GAP + worktree_width));
     let budget = area
         .width
-        .saturating_sub(2 + 3 * GAP + agent_width + worktree_width);
+        .saturating_sub(1 + 3 * GAP + agent_width + worktree_width);
     let folder_width = folder_control_width(app, budget.saturating_sub(least_task));
-    let task_x = 1 + folder_width + GAP + worktree_width + GAP + agent_width + GAP;
+    let task_x = folder_width + GAP + worktree_width + GAP + agent_width + GAP;
     let task_width = budget - folder_width;
 
     app.composer
         .task
-        .set_width(task_width.saturating_sub(PROMPT_INSET + lead + 2) as usize);
+        .set_width(task_width.saturating_sub(inset(TASK_CAPTION) + lead + 2) as usize);
 
-    let caption_row = area.y;
-    let top = area.y + 1;
-    let value_row = top + 1;
+    let top = area.y;
+    let value_row = top;
 
-    let task_rows = (app.composer.task.rows().len() as u16).clamp(
-        1,
-        area.height
-            .saturating_sub(BAND_HEIGHT + MIN_ROWS_BELOW)
-            .max(1),
-    );
+    let task_rows = (app.composer.task.rows().len() as u16)
+        .clamp(1, area.height.saturating_sub(MIN_ROWS_BELOW).max(1));
 
-    let most_items = area.height.saturating_sub(5) as usize;
+    let most_items = area.height.saturating_sub(1) as usize;
     let listing = |open: bool, count: usize| -> u16 {
         if open && count > 0 {
-            4 + count.min(most_items) as u16
+            1 + count.min(most_items) as u16
         } else {
-            3
+            1
         }
     };
     let folder = Rect::new(
-        area.x + 1,
+        area.x,
         top,
         folder_width,
         listing(
@@ -140,7 +137,7 @@ pub(crate) fn split_composer(app: &mut AppState, area: Rect) -> (ComposerLayout,
     );
     let worktree = Rect::new(
         folder.x + folder.width + GAP,
-        caption_row,
+        top,
         worktree_width,
         BAND_HEIGHT,
     );
@@ -153,41 +150,40 @@ pub(crate) fn split_composer(app: &mut AppState, area: Rect) -> (ComposerLayout,
             app.composer.harnesses().len(),
         ),
     );
-    let task = Rect::new(area.x + task_x, top, task_width, 2 + task_rows);
+    let task = Rect::new(area.x + task_x, top, task_width, task_rows);
 
     let (dropdown, dropdown_rows) = match app.composer.open {
-        Some(Focus::Folder) if folder.height > 3 => item_rows(folder, value_row),
-        Some(Focus::Agent) if agent.height > 3 => item_rows(agent, value_row),
+        Some(Focus::Folder) if folder.height > 1 => item_rows(folder, value_row),
+        Some(Focus::Agent) if agent.height > 1 => item_rows(agent, value_row),
         _ => (Rect::default(), Vec::new()),
     };
 
     let tallest = folder.height.max(agent.height).max(task.height);
     let layout = ComposerLayout {
-        area: Rect::new(area.x, area.y, area.width, 1 + tallest),
+        area: Rect::new(area.x, area.y, area.width, tallest),
         folder,
         worktree,
         agent,
         task,
-        task_lead: PROMPT_INSET + lead,
+        task_lead: inset(TASK_CAPTION) + lead,
         value_row,
-        caption_row,
         dropdown,
         dropdown_rows,
     };
 
     let rest = Rect::new(
         area.x,
-        area.y + BAND_HEIGHT,
+        area.y + BAND_HEIGHT + BAND_GAP,
         area.width,
-        area.height - BAND_HEIGHT,
+        area.height - BAND_HEIGHT - BAND_GAP,
     );
     (layout, rest)
 }
 
-/// The item rows of an open box: everything under its rule, inside its borders.
+/// The item rows of an open control: every row under its value row.
 fn item_rows(open_box: Rect, value_row: u16) -> (Rect, Vec<u16>) {
-    let count = open_box.height - 4;
-    let top = value_row + 2;
+    let count = open_box.height - 1;
+    let top = value_row + 1;
     let area = Rect::new(open_box.x + 1, top, open_box.width.saturating_sub(2), count);
     (area, (0..count).map(|row| top + row).collect())
 }
@@ -202,7 +198,7 @@ fn agent_control_width(app: &AppState) -> u16 {
         .map(|harness| harness.name.chars().count())
         .max()
         .unwrap_or(NO_AGENT.chars().count());
-    widest as u16 + 6
+    widest as u16 + inset(AGENT_CAPTION) + 3
 }
 
 /// The folder box is as wide as its widest row wants to be, so a path is
@@ -227,13 +223,17 @@ fn folder_control_width(app: &AppState, cap: u16) -> u16 {
             .unwrap_or(0);
         wanted = wanted.max(typed + ghost.max(1));
     }
-    (wanted + 5).min(cap)
+    (wanted + inset(FOLDER_CAPTION) + 3).min(cap)
 }
 
-/// The Worktree control is as wide as its caption; the checkbox under it is
-/// narrower and left-aligned, so the word is what spaces it from Agent.
+/// The Worktree control holds its caption and the mark: ` Wt ✓ `.
 fn worktree_control_width() -> u16 {
-    WORKTREE_CAPTION.chars().count() as u16
+    inset(WORKTREE_CAPTION) + 2
+}
+
+/// Where a control's value begins: a space, its caption, and a space.
+fn inset(caption: &str) -> u16 {
+    caption.chars().count() as u16 + 2
 }
 
 /// What stands in front of the typed text after the box's inset: the prefix,
@@ -277,28 +277,15 @@ fn draw_worktree(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_
     if rect.width == 0 {
         return;
     }
-    let box_rect = Rect {
-        x: rect.x,
-        y: layout.value_row.saturating_sub(1),
-        width: WORKTREE_BOX_WIDTH.min(rect.width),
-        height: 3,
-    };
-    frame.render_widget(
-        caption(app, WORKTREE_CAPTION, false),
-        Rect {
-            x: rect.x,
-            y: layout.caption_row,
-            width: rect.width,
-            height: 1,
-        },
-    );
-    frame.render_widget(Clear, box_rect);
-    frame.render_widget(rounded(app, false, in_band), box_rect);
+    let focused = in_band && app.composer.focus == Focus::Worktree;
+    let fill = fill_colour(app, in_band);
+    paint_fill(frame.buffer_mut(), rect, fill);
+    draw_caption(app, frame, rect, WORKTREE_CAPTION, focused, fill);
     if app.composer.worktree {
         frame.render_widget(
             Paragraph::new(Line::styled(WORKTREE_MARK, value_style(app, in_band))),
             Rect {
-                x: box_rect.x + 2,
+                x: rect.x + inset(WORKTREE_CAPTION),
                 y: layout.value_row,
                 width: 1,
                 height: 1,
@@ -314,16 +301,13 @@ fn draw_folder(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_ba
     }
     let focused = in_band && app.composer.focus == Focus::Folder;
     let open = app.composer.open == Some(Focus::Folder);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(rounded(app, focused, in_band), rect);
+    let fill = fill_colour(app, in_band);
+    paint_fill(frame.buffer_mut(), rect, fill);
     frame.render_widget(
         marker(app, open, focused, in_band),
         marker_area(rect, layout.value_row),
     );
-    frame.render_widget(
-        caption(app, FOLDER_CAPTION, focused),
-        inner(rect, layout.caption_row, 2),
-    );
+    draw_caption(app, frame, rect, FOLDER_CAPTION, focused, fill);
 
     if open {
         let (visible, _) = typing(app, rect.width);
@@ -337,17 +321,11 @@ fn draw_folder(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_ba
         }
         frame.render_widget(
             Paragraph::new(Line::from(spans)),
-            inner(rect, layout.value_row, PROMPT_INSET),
+            inner(rect, layout.value_row, inset(FOLDER_CAPTION)),
         );
         if layout.dropdown_rows.is_empty() {
             return;
         }
-        rule(
-            frame.buffer_mut(),
-            rect,
-            layout.value_row + 1,
-            border_style(app, focused, in_band),
-        );
         draw_items(app, frame, layout, rect, Focus::Folder);
         return;
     }
@@ -356,7 +334,7 @@ fn draw_folder(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_ba
         Some(index) => (
             elide(
                 app.composer.folder_label().unwrap_or_default(),
-                rect.width.saturating_sub(5) as usize,
+                rect.width.saturating_sub(inset(FOLDER_CAPTION) + 2) as usize,
             ),
             directory_style(app, index),
         ),
@@ -367,7 +345,7 @@ fn draw_folder(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_ba
     };
     frame.render_widget(
         Paragraph::new(Line::styled(text, style)),
-        inner(rect, layout.value_row, 2),
+        inner(rect, layout.value_row, inset(FOLDER_CAPTION)),
     );
 }
 
@@ -378,16 +356,13 @@ fn draw_agent(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_ban
     }
     let focused = in_band && app.composer.focus == Focus::Agent;
     let open = app.composer.open == Some(Focus::Agent);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(rounded(app, focused, in_band), rect);
+    let fill = fill_colour(app, in_band);
+    paint_fill(frame.buffer_mut(), rect, fill);
     frame.render_widget(
         marker(app, open, focused, in_band),
         marker_area(rect, layout.value_row),
     );
-    frame.render_widget(
-        caption(app, AGENT_CAPTION, focused),
-        inner(rect, layout.caption_row, 2),
-    );
+    draw_caption(app, frame, rect, AGENT_CAPTION, focused, fill);
 
     let showing = if open {
         app.composer
@@ -406,18 +381,12 @@ fn draw_agent(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_ban
     };
     frame.render_widget(
         Paragraph::new(Line::styled(text, style)),
-        inner(rect, layout.value_row, 2),
+        inner(rect, layout.value_row, inset(AGENT_CAPTION)),
     );
 
     if !open || layout.dropdown_rows.is_empty() {
         return;
     }
-    rule(
-        frame.buffer_mut(),
-        rect,
-        layout.value_row + 1,
-        border_style(app, focused, in_band),
-    );
     draw_items(app, frame, layout, rect, Focus::Agent);
 }
 
@@ -427,12 +396,9 @@ fn draw_task(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_band
         return;
     }
     let focused = in_band && app.composer.focus == Focus::Task;
-    frame.render_widget(Clear, rect);
-    frame.render_widget(rounded(app, focused, in_band), rect);
-    frame.render_widget(
-        caption(app, TASK_CAPTION, focused),
-        inner(rect, layout.caption_row, 2),
-    );
+    let fill = fill_colour(app, in_band);
+    paint_fill(frame.buffer_mut(), rect, fill);
+    draw_caption(app, frame, rect, TASK_CAPTION, focused, fill);
 
     let p = &app.palette;
     let prefix = app.composer.task_prefix();
@@ -442,7 +408,7 @@ fn draw_task(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_band
         .task
         .rows()
         .iter()
-        .take(rect.height.saturating_sub(2) as usize)
+        .take(rect.height as usize)
         .enumerate()
     {
         let y = layout.value_row + index as u16;
@@ -451,7 +417,7 @@ fn draw_task(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_band
             if !in_band {
                 line = line.style(Style::default().fg(p.overlay1));
             }
-            frame.render_widget(line, inner(rect, y, PROMPT_INSET));
+            frame.render_widget(line, inner(rect, y, inset(TASK_CAPTION)));
         } else {
             frame.render_widget(
                 Paragraph::new(Line::from(task_text_spans(
@@ -460,7 +426,7 @@ fn draw_task(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_band
                     row,
                     in_band,
                 ))),
-                inner(rect, y, PROMPT_INSET + lead),
+                inner(rect, y, inset(TASK_CAPTION) + lead),
             );
         }
     }
@@ -478,6 +444,12 @@ fn draw_items(
 ) {
     let rows = layout.dropdown_rows.len();
     let count = app.composer.item_count();
+    // The items line up under the value they would replace, clear of the
+    // caption in front of it.
+    let indent = match which {
+        Focus::Agent => inset(AGENT_CAPTION),
+        _ => inset(FOLDER_CAPTION),
+    };
     let first = app
         .composer
         .highlight
@@ -490,16 +462,32 @@ fn draw_items(
         };
         frame.render_widget(
             Paragraph::new(Line::styled(
-                elide(&text, open_box.width.saturating_sub(4) as usize),
+                elide(&text, open_box.width.saturating_sub(indent + 2) as usize),
                 item_style(
                     app,
                     app.composer.pointing() && index == app.composer.highlight,
                     app.composer.hover == Some(index),
                 ),
             )),
-            inner(open_box, y, 2),
+            inner(open_box, y, indent),
         );
+        if which == Focus::Folder && folder_is_used(app, index) {
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    USED_MARK,
+                    Style::default().fg(app.palette.accent),
+                )),
+                Rect::new(open_box.x + indent - 2, y, 1, 1),
+            );
+        }
     }
+}
+
+fn folder_is_used(app: &AppState, index: usize) -> bool {
+    app.composer
+        .folder_rows()
+        .get(index)
+        .is_some_and(|folder| app.composer.is_used(&folder.path))
 }
 
 fn item_text(app: &AppState, which: Focus, index: usize) -> Option<String> {
@@ -514,7 +502,7 @@ fn item_text(app: &AppState, which: Focus, index: usize) -> Option<String> {
             .harnesses()
             .get(index)
             .map(|harness| harness.name.to_string()),
-        Focus::Task => None,
+        Focus::Worktree | Focus::Task => None,
     }
 }
 
@@ -526,7 +514,7 @@ fn item_text(app: &AppState, which: Focus, index: usize) -> Option<String> {
 fn typing(app: &AppState, box_width: u16) -> (String, usize) {
     let text: Vec<char> = app.composer.path().text().chars().collect();
     let (_, cursor) = app.composer.path().cursor_row();
-    let room = box_width.saturating_sub(PROMPT_INSET + 2) as usize;
+    let room = box_width.saturating_sub(inset(FOLDER_CAPTION) + 2) as usize;
     if room == 0 {
         return (String::new(), 0);
     }
@@ -542,7 +530,7 @@ fn place_cursor(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_b
     match app.composer.focus {
         Focus::Task if app.composer.open.is_none() => {
             let (row, col) = app.composer.task.cursor_row();
-            let row = row.min(layout.task.height.saturating_sub(3) as usize) as u16;
+            let row = row.min(layout.task.height.saturating_sub(1) as usize) as u16;
             frame.set_cursor_position((
                 layout.task.x + layout.task_lead + col as u16,
                 layout.value_row + row,
@@ -551,7 +539,7 @@ fn place_cursor(app: &AppState, frame: &mut Frame, layout: &ComposerLayout, in_b
         Focus::Folder if app.composer.open == Some(Focus::Folder) => {
             let (_, col) = typing(app, layout.folder.width);
             frame.set_cursor_position((
-                layout.folder.x + PROMPT_INSET + col as u16,
+                layout.folder.x + inset(FOLDER_CAPTION) + col as u16,
                 layout.value_row,
             ));
         }
@@ -605,23 +593,58 @@ fn item_style(app: &AppState, pointed: bool, hovered: bool) -> Style {
     }
 }
 
-fn rounded(app: &AppState, focused: bool, in_band: bool) -> Block<'static> {
-    Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(border_style(app, focused, in_band))
+/// A control's background: the same whether or not it has the keyboard —
+/// the lit caption says which one does — and receded when the band does not
+/// have the keyboard at all.
+fn fill_colour(app: &AppState, in_band: bool) -> Color {
+    let p = &app.palette;
+    if in_band {
+        p.surface0
+    } else {
+        p.surface_dim
+    }
 }
 
-/// The word above a box. Dim and italic, so it reads as a note about the box
-/// rather than as anything in it — and lit when that box has the keyboard,
-/// because a border alone is too quiet to answer "where does what I type go?"
-/// at a glance.
-fn caption(app: &AppState, text: &'static str, focused: bool) -> Paragraph<'static> {
+/// Fill every cell of `area` with the background colour, the way a tab's
+/// row is filled. Every cell is written, so nothing drawn under it shows.
+fn paint_fill(buffer: &mut Buffer, area: Rect, fill: Color) {
+    let style = Style::reset().bg(fill);
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.reset();
+                cell.set_symbol(" ").set_style(style);
+            }
+        }
+    }
+}
+
+/// The word naming a control, at the front of its row. Dim and italic, so it
+/// reads as a note about the value rather than as part of it — and lit when
+/// that control has the keyboard, because a shade of fill alone is too quiet
+/// to answer "where does what I type go?" at a glance.
+fn draw_caption(
+    app: &AppState,
+    frame: &mut Frame,
+    strip: Rect,
+    text: &'static str,
+    focused: bool,
+    fill: Color,
+) {
     let p = &app.palette;
     let colour = if focused { p.accent } else { p.overlay0 };
-    Paragraph::new(Line::styled(
-        text,
-        Style::default().fg(colour).add_modifier(Modifier::ITALIC),
-    ))
+    let room = strip.width.saturating_sub(2);
+    let width = (text.chars().count() as u16).min(room);
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            text,
+            Style::default()
+                .fg(colour)
+                .bg(fill)
+                .add_modifier(Modifier::ITALIC),
+        )),
+        Rect::new(strip.x + 1, strip.y, width, 1),
+    );
 }
 
 /// The `▾` that says a box has more behind it.
@@ -638,23 +661,6 @@ fn marker_area(box_area: Rect, row: u16) -> Rect {
         y: row,
         width: 1,
         height: 1,
-    }
-}
-
-/// The rule between a dropdown's value row and its list.
-fn rule(buffer: &mut Buffer, box_area: Rect, row: u16, style: Style) {
-    let right = box_area.x + box_area.width.saturating_sub(1);
-    for x in box_area.x..=right {
-        let symbol = if x == box_area.x {
-            "├"
-        } else if x == right {
-            "┤"
-        } else {
-            "─"
-        };
-        if let Some(cell) = buffer.cell_mut((x, row)) {
-            cell.set_symbol(symbol).set_style(style);
-        }
     }
 }
 
@@ -707,8 +713,8 @@ fn task_text_spans(
     spans
 }
 
-/// The writable strip on one row of a box, starting `indent` in from its left
-/// border and stopping clear of the right one.
+/// The writable stretch on one row of a control, starting `indent` in from its
+/// left edge and stopping clear of the marker and the trailing space.
 fn inner(box_area: Rect, row: u16, indent: u16) -> Rect {
     Rect {
         x: box_area.x + indent,
@@ -776,17 +782,17 @@ mod tests {
     #[test]
     fn a_short_frame_keeps_all_its_rows_for_panes() {
         let mut app = band_state();
-        let (layout, rest) = split_composer(&mut app, Rect::new(0, 0, 80, 5));
+        let (layout, rest) = split_composer(&mut app, Rect::new(0, 0, 80, 3));
         assert_eq!(layout.area, Rect::default());
-        assert_eq!(rest, Rect::new(0, 0, 80, 5));
+        assert_eq!(rest, Rect::new(0, 0, 80, 3));
     }
 
     #[test]
-    fn a_one_line_task_takes_four_rows_off_the_top() {
+    fn a_one_line_task_takes_one_row_and_a_blank_one_off_the_top() {
         let mut app = band_state();
         let (layout, rest) = split_composer(&mut app, Rect::new(0, 0, 100, 24));
-        assert_eq!(layout.area, Rect::new(0, 0, 100, 4));
-        assert_eq!(rest, Rect::new(0, 4, 100, 20));
+        assert_eq!(layout.area, Rect::new(0, 0, 100, 1));
+        assert_eq!(rest, Rect::new(0, 2, 100, 22));
     }
 
     #[test]
@@ -797,7 +803,7 @@ mod tests {
         assert!(layout.area.height > BAND_HEIGHT, "the box grew");
         assert_eq!(
             rest,
-            Rect::new(0, 4, 100, 20),
+            Rect::new(0, 2, 100, 22),
             "and the panes kept their rows"
         );
     }
@@ -820,15 +826,11 @@ mod tests {
         assert!(second.contains("second"), "row two: {second}");
         let third = row_text(&buffer, layout.value_row + 2, 100);
         assert!(third.contains("third"), "row three: {third}");
-        let bottom = row_text(&buffer, layout.value_row + 3, 100);
-        assert!(
-            bottom.contains("╰"),
-            "and the box closed under them: {bottom}"
-        );
+        assert_eq!(layout.task.height, 3, "one row per line of the task");
     }
 
     #[test]
-    fn each_control_is_a_captioned_box() {
+    fn each_control_is_one_captioned_row() {
         let mut app = band_state();
         app.composer.task.set_text("fix the drag preview");
         let (layout, _) = split_composer(&mut app, Rect::new(0, 0, 100, 24));
@@ -844,50 +846,40 @@ mod tests {
 
         let captions = row_text(&buffer, 0, 100);
         let directory_at = captions.find("Directory").expect("Directory caption");
-        let worktree_at = captions.find("Worktree").expect("Worktree caption");
+        let worktree_at = captions.find("Wt").expect("Wt caption");
         let agent_at = captions.find("Agent").expect("Agent caption");
         let task_at = captions.find("Task").expect("Task caption");
         assert!(
             directory_at < worktree_at && worktree_at < agent_at && agent_at < task_at,
             "Worktree sits between Directory and Agent: {captions}"
         );
-        let borders = row_text(&buffer, 1, 100);
-        assert!(borders.contains("╭"), "the boxes open: {borders}");
-        let box_top: String = borders
-            .chars()
-            .skip(layout.worktree.x as usize)
-            .take(WORKTREE_BOX_WIDTH as usize)
-            .collect();
-        assert_eq!(box_top, "╭───╮", "the checkbox: {borders}");
-        let values = row_text(&buffer, 2, 100);
-        assert!(values.contains("herdr"), "the folder is on show: {values}");
+        assert_eq!(layout.area.height, 1, "all on one row");
+        let values = captions;
+        assert!(values.contains("lab"), "the folder is on show: {values}");
         let check: String = values
             .chars()
             .skip(layout.worktree.x as usize)
-            .take(WORKTREE_BOX_WIDTH as usize)
+            .take(layout.worktree.width as usize)
             .collect();
-        assert_eq!(check, "│ ✓ │", "the box starts checked: {values}");
+        assert_eq!(check, " Wt ✓ ", "the box starts checked: {values}");
+        assert_eq!(
+            buffer[(layout.worktree.x, 0)].style().bg,
+            Some(app.palette.surface0),
+            "on the fill"
+        );
         assert!(values.contains("Auto"), "the agent is on show: {values}");
         assert!(
             values.contains("fix the drag preview"),
             "the task: {values}"
         );
         assert!(values.contains(CLOSED), "the lists say they open: {values}");
-        let bottoms = row_text(&buffer, 3, 100);
-        assert!(bottoms.contains("╰"), "and the boxes close: {bottoms}");
-        let box_bottom: String = bottoms
-            .chars()
-            .skip(layout.worktree.x as usize)
-            .take(WORKTREE_BOX_WIDTH as usize)
-            .collect();
-        assert_eq!(box_bottom, "╰───╯", "the checkbox closes: {bottoms}");
     }
 
     #[test]
     fn an_empty_folder_control_offers_to_add_a_directory() {
         let mut app = AppState::test_new();
         app.mode = Mode::Composer;
-        let values = row_text(&draw(&mut app, 100, 24), 2, 100);
+        let values = row_text(&draw(&mut app, 100, 24), 0, 100);
         assert!(values.contains("add a directory…"), "{values}");
     }
 
@@ -896,7 +888,7 @@ mod tests {
         let mut app = band_state();
         app.composer.open_dropdown(Focus::Folder);
         app.composer.edit_path(|path| path.set_text("/tmp"));
-        let row = row_text(&draw(&mut app, 100, 24), 2, 100);
+        let row = row_text(&draw(&mut app, 100, 24), 0, 100);
         assert!(row.contains("/tmp"), "the path is in the field: {row}");
         assert!(!row.contains('❯'), "no prompt glyph: {row}");
     }
@@ -910,7 +902,7 @@ mod tests {
         }
         app.composer.point(1);
         let pointed = app.composer.harnesses()[1].name;
-        let row = row_text(&draw(&mut app, 100, 24), 2, 100);
+        let row = row_text(&draw(&mut app, 100, 24), 0, 100);
         assert!(row.contains(pointed), "trying it on: {row}");
     }
 
@@ -918,7 +910,7 @@ mod tests {
     fn auto_writes_the_command_it_stands_for_in_front_of_the_task() {
         let mut app = band_state();
         app.composer.task.set_text("fix the drag preview");
-        let row = row_text(&draw(&mut app, 100, 24), 2, 100);
+        let row = row_text(&draw(&mut app, 100, 24), 0, 100);
         assert!(
             row.contains("/who fix the drag preview"),
             "the field reads as what will be sent: {row}"
@@ -931,31 +923,26 @@ mod tests {
         let mut app = band_state();
         app.composer.agent = "Claude Code".to_string();
         app.composer.task.set_text("fix the drag preview");
-        let row = row_text(&draw(&mut app, 100, 24), 2, 100);
+        let row = row_text(&draw(&mut app, 100, 24), 0, 100);
         assert!(!row.contains("/who"), "no prefix: {row}");
         assert!(!row.contains('❯'), "no prompt glyph: {row}");
         assert!(row.contains("fix the drag preview"), "{row}");
     }
 
     #[test]
-    fn an_open_dropdown_grows_its_own_box_under_a_rule() {
+    fn an_open_dropdown_grows_under_its_row() {
         let mut app = band_state();
         app.composer.add_folder(std::path::PathBuf::from("/tmp"));
         app.composer.open_dropdown(Focus::Folder);
         let (layout, rest) = split_composer(&mut app, Rect::new(0, 0, 100, 24));
-        assert_eq!(rest.height, 20, "the panes kept their rows");
-        assert_eq!(layout.folder.height, 4 + 2, "the box holds both rows");
-        assert_eq!(layout.dropdown_rows, vec![4, 5]);
+        assert_eq!(rest.height, 22, "the panes kept their rows");
+        assert_eq!(layout.folder.height, 1 + 2, "the value row and both items");
+        assert_eq!(layout.dropdown_rows, vec![1, 2]);
 
         let buffer = draw(&mut app, 100, 24);
-        let rule_row = row_text(&buffer, layout.value_row + 1, layout.folder.width);
-        assert!(
-            rule_row.trim_start().starts_with("├"),
-            "the rule: {rule_row}"
-        );
-        let first = row_text(&buffer, 4, 100);
+        let first = row_text(&buffer, 1, 100);
         assert!(first.contains("tmp"), "the first row: {first}");
-        let second = row_text(&buffer, 5, 100);
+        let second = row_text(&buffer, 2, 100);
         assert!(second.contains("herdr"), "the second row: {second}");
     }
 
@@ -1010,6 +997,39 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_an_agent_was_started_in_is_starred_at_the_head_of_the_list() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-composer-used-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for child in ["plain", "used"] {
+            std::fs::create_dir_all(root.join(child)).unwrap();
+        }
+        let root = root.canonicalize().unwrap();
+
+        let mut app = band_state();
+        app.composer
+            .set_folders(vec![root.join("plain"), root.join("used")]);
+        app.composer.mark_used(root.join("used"));
+        app.composer.open_dropdown(Focus::Folder);
+        let (layout, _) = split_composer(&mut app, Rect::new(0, 0, 160, 24));
+        let buffer = draw(&mut app, 160, 24);
+
+        let first = row_text(&buffer, layout.dropdown_rows[0], 160);
+        let second = row_text(&buffer, layout.dropdown_rows[1], 160);
+        assert!(first.contains("★") && first.contains("used"), "{first}");
+        assert!(
+            !second.contains("★") && second.contains("plain"),
+            "{second}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn a_path_being_typed_lists_what_it_could_mean_under_it() {
         let root = std::env::temp_dir().join(format!(
             "herdr-composer-draw-{}-{}",
@@ -1035,7 +1055,10 @@ mod tests {
         let first = row_text(&buffer, layout.dropdown_rows[0], 160);
         assert!(first.contains("herdr"), "the first offer: {first}");
         assert_ne!(
-            buffer[(layout.dropdown.x + 1, layout.dropdown_rows[0])]
+            buffer[(
+                layout.folder.x + inset(FOLDER_CAPTION),
+                layout.dropdown_rows[0]
+            )]
                 .style()
                 .fg,
             Some(app.palette.accent),
@@ -1045,7 +1068,10 @@ mod tests {
         app.composer.point(1);
         let buffer = draw(&mut app, 160, 24);
         assert_eq!(
-            buffer[(layout.dropdown.x + 1, layout.dropdown_rows[0])]
+            buffer[(
+                layout.folder.x + inset(FOLDER_CAPTION),
+                layout.dropdown_rows[0]
+            )]
                 .style()
                 .fg,
             Some(app.palette.accent)
@@ -1149,11 +1175,16 @@ mod tests {
         let pointed_row = row_text(&buffer, pointed_y, 40);
         assert!(pointed_row.contains("herdr"), "second row: {pointed_row}");
         assert_eq!(
-            buffer[(layout.dropdown.x + 1, pointed_y)].style().fg,
+            buffer[(layout.folder.x + inset(FOLDER_CAPTION), pointed_y)]
+                .style()
+                .fg,
             Some(app.palette.accent)
         );
         assert_ne!(
-            buffer[(layout.dropdown.x + 1, layout.dropdown_rows[0])]
+            buffer[(
+                layout.folder.x + inset(FOLDER_CAPTION),
+                layout.dropdown_rows[0]
+            )]
                 .style()
                 .fg,
             Some(app.palette.accent)
@@ -1169,7 +1200,11 @@ mod tests {
         let (layout, _) = split_composer(&mut app, Rect::new(0, 0, 100, 24));
         let buffer = draw(&mut app, 100, 24);
 
-        let hovered = buffer[(layout.dropdown.x + 1, layout.dropdown_rows[1])].style();
+        let hovered = buffer[(
+            layout.folder.x + inset(FOLDER_CAPTION),
+            layout.dropdown_rows[1],
+        )]
+            .style();
         assert_eq!(hovered.bg, Some(app.palette.accent));
         assert_eq!(hovered.fg, Some(panel_contrast_fg(&app.palette)));
     }
@@ -1188,14 +1223,12 @@ mod tests {
         app.composer.worktree = false;
         let (layout, _) = split_composer(&mut app, Rect::new(0, 0, 100, 24));
         let buffer = draw(&mut app, 100, 24);
-        let captions = row_text(&buffer, 0, 100);
-        assert!(captions.contains("Worktree"), "the label stays: {captions}");
-        let check: String = row_text(&buffer, 2, 100)
+        let check: String = row_text(&buffer, 0, 100)
             .chars()
             .skip(layout.worktree.x as usize)
-            .take(WORKTREE_BOX_WIDTH as usize)
+            .take(layout.worktree.width as usize)
             .collect();
-        assert_eq!(check, "│   │", "cleared: {check}");
+        assert_eq!(check, " Wt   ", "cleared, the label stays: {check}");
     }
 
     #[test]

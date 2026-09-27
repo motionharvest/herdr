@@ -143,7 +143,7 @@ impl App {
                         .composer
                         .edit_path(|path| path.insert_str(&first));
                 }
-                crate::composer::Focus::Agent => {}
+                crate::composer::Focus::Worktree | crate::composer::Focus::Agent => {}
             }
             return;
         }

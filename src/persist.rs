@@ -7,6 +7,7 @@
 mod io;
 mod restore;
 mod snapshot;
+mod used_folders;
 
 pub use self::io::{clear, clear_history, load, load_history, save};
 pub use self::restore::restore;
@@ -16,3 +17,4 @@ pub use self::snapshot::{
     capture, capture_history, DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot,
     SessionSnapshot, TabSnapshot, WorkspaceSnapshot,
 };
+pub use self::used_folders::{load_used_folders, save_used_folders};

@@ -1892,7 +1892,7 @@ impl AppState {
         let layout = &self.view.composer;
         let last_row = layout
             .value_row
-            .saturating_add(layout.task.height.saturating_sub(3));
+            .saturating_add(layout.task.height.saturating_sub(1));
         let text_row = if row <= layout.value_row {
             0
         } else if row > last_row {

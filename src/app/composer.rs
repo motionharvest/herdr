@@ -47,6 +47,8 @@ impl App {
             Ok((pane_id, started_cwd)) => {
                 self.state.composer.task.clear();
                 self.state.composer.add_folder(pending.cwd.clone());
+                self.state.composer.mark_used(pending.cwd.clone());
+                crate::persist::save_used_folders(self.state.composer.used_folders());
                 self.focus_composer_started_agent(pane_id, pending.worktree);
                 let where_it_went = crate::workspace::display_path_with_home(&started_cwd);
                 self.show_composer_toast(

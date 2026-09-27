@@ -45,7 +45,10 @@ pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::
     save_json_to_path(path, snapshot)
 }
 
-fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io::Result<()> {
+pub(super) fn save_json_to_path<T: serde::Serialize>(
+    path: &Path,
+    snapshot: &T,
+) -> std::io::Result<()> {
     let target = resolve_write_target(path)?;
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
