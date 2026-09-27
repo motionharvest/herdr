@@ -118,7 +118,7 @@ The default is relative to the source repository: Herdr creates checkouts under 
 
 `verify` is an optional program-and-arguments array. The land action runs it in the agent worktree after rebasing and before the parent checkout advances. An empty array skips verification. `auto_land` queues the same landing whenever an agent in a linked worktree becomes idle; it defaults to `false`, so landing stays explicit until you have seen the verification command work for that repository.
 
-Worktree actions are available from agent-table rows. `New worktree` creates a branch and checkout and opens it as a new Herdr space. `Open worktree...` lists existing Git worktree checkouts for that repository. Composer-launched editing agents use managed worktrees when the Worktree box between Directory and Agent is checked and their selected directory is a repository, and stay in that checkout when it is already a linked worktree. A worktree start stays hidden and opens in peek over the current layout instead of opening a space of its own. The hidden row still opens the agent menu, including Land and `Delete agent + worktree`. Drag the row, or the peeked pane name, onto the layout behind it to dock. Clear the box to start in the selected directory; that agent is cut in beside the pane that had focus.
+Worktree actions are available from agent-table rows. `New worktree` creates a branch and checkout and opens it as a new Herdr space. `Open worktree...` lists existing Git worktree checkouts for that repository. Composer-launched editing agents use managed worktrees when the Worktree box between Directory and Agent is checked and their selected directory is a repository, and stay in that checkout when it is already a linked worktree. A worktree start stays hidden and opens in peek over the current layout instead of opening a space of its own. Escape or EXIT leaves the peek. The hidden row still opens the agent menu, including Land and `Delete agent + worktree`. Drag the row, or the peeked pane name, onto the layout behind it to dock. Clear the box to start in the selected directory; that agent is cut in beside the pane that had focus.
 
 The land item on a linked worktree row is named for the branch currently checked out in the parent of that agent's folder, such as `Land on main`. Choosing it prompts that agent with `Land this clean branch by running \`herdr agent worktree land\``. The item stays visible but is grayed out when the worktree already shares that parent commit and has nothing left to land, or when the agent is not in a linked worktree directory. `herdr agent worktree land` rebases onto the parent branch, runs `verify`, and fast-forwards the parent checkout. A parent checkout's row still says `Delete agent`, which ends the agent and leaves the directory alone. `Delete agent + worktree` stays at the bottom of the menu on every agent row and is grayed out unless that agent's directory is a linked worktree. Choosing it removes that agent's checkout, even when the space holding the row has no saved worktree membership. The `!` next to a directory means that checkout has uncommitted files; a dirty parent checkout blocks the fast-forward. A conflict stays in the agent worktree. Herdr serializes CLI landings for one repository so agents cannot race to move the same parent branch.
 
@@ -297,6 +297,8 @@ show_agent_labels_on_pane_borders = false
 agent_panel_scope = "all"
 accent = "cyan"
 notify_active_tab = false
+refresh_summary_with_grok = false
+refresh_summary_prompt = "In 5-8 words, name the most recent thing the user asked this AI to do. Reply with only that sentence."
 ```
 
 `sidebar_min_width` and `sidebar_max_width` control the expanded sidebar's resize bounds in columns. The defaults are 18 and 36.
@@ -320,6 +322,22 @@ When your terminal reports focus (xterm focus reporting, mode 1004), Herdr mutes
 Set `mouse_scroll_lines` to change how many pane scrollback lines each mouse wheel notch scrolls. The default is 3. Pane apps that request mouse reporting still receive wheel events directly.
 
 Set `show_agent_labels_on_pane_borders = true` if you want detected agent labels in split pane borders when no manual pane label is set.
+
+Each pane's top edge can write more than the agent name. These default to name-only, matching current titles:
+
+```toml
+[ui.pane_header]
+agent_name = true
+hostname = false
+working_directory = false
+parent_directory = false
+git_branch = false
+git_status = false
+```
+
+`working_directory` is the last folder of the pane's cwd. `parent_directory` is the folder above it. Both together write `parent/current`, the same pair the agent table's Directory column uses. `git_branch` and `git_status` follow in parentheses when the pane is in a repository (`main !`). `hostname` writes the local machine's hostname next to the pane name (`Olivia@myhost`), or alone if `agent_name` is off — useful when you SSH into several machines that each run Herdr, so a pane's title says which one you're on. Settings → pane labels toggles the same keys.
+
+`refresh_summary_with_grok` controls `Refresh Summary` on an agent row. Off (the default), Herdr reads the latest typed prompt from that agent's session log. On, it starts a headless `grok -p` session at `--effort none` that names the most recent user request. The column says `refreshing summary` until that session returns. For a Grok pane it forks that session so the live chat is not written. For other harnesses it passes the latest typed requests as prompt context. If Grok is missing or the one-shot fails, the command falls back to the session-log prompt. Settings → experiments toggles the same key and has a `prompt` field next to it for the text sent to Grok. `refresh_summary_prompt` is that text; empty uses the built-in 5–8 word ask.
 
 ## Notifications
 
