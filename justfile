@@ -34,6 +34,12 @@ install-hooks:
 build:
     cargo build --release --locked
 
+# Attached clients disconnect; run `herdr` again to reattach. Set
+# HERDR_SESSION=<name> or HERDR_SOCKET_PATH=<path> to target another session.
+# Build, then hand the running server's live panes to the new binary
+reload: build
+    ./target/release/herdr server live-handoff --import-exe "{{justfile_directory()}}/target/release/herdr"
+
 # Build the website and documentation
 website-build:
     cd website && bun install --frozen-lockfile && bun run build
