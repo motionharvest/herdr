@@ -846,6 +846,10 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
         );
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
         let action = update_settings_state(
             &mut state,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
@@ -865,11 +869,15 @@ mod tests {
         let mut app = app_for_mouse_test();
         open_settings_at(&mut app.state, SettingsSection::PaneLabels);
 
+        let row = PaneHeaderField::ALL
+            .iter()
+            .position(|&field| field == PaneHeaderField::GitBranch)
+            .expect("git branch is a pane header field") as u16;
         let area = app.state.settings_content_rect();
         let action = app.state.handle_settings_mouse(mouse(
             MouseEventKind::Down(crossterm::event::MouseButton::Left),
             area.x + 2,
-            area.y + 6,
+            area.y + 3 + row,
         ));
 
         assert_eq!(
@@ -879,7 +887,7 @@ mod tests {
                 true
             ))
         );
-        assert_eq!(app.state.settings.list.selected, 3);
+        assert_eq!(app.state.settings.list.selected, row as usize);
     }
 
     #[test]

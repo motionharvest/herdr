@@ -34,6 +34,15 @@ impl Tab {
         })
     }
 
+    pub fn has_unseen_idle_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
+        self.panes.values().any(|pane| {
+            !pane.seen
+                && terminals
+                    .get(&pane.attached_terminal_id)
+                    .is_some_and(|terminal| terminal.state == AgentState::Idle)
+        })
+    }
+
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
         self.layout
             .pane_ids()

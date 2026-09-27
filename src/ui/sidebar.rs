@@ -255,7 +255,12 @@ pub(crate) enum WorkspaceListEntry {
         ws_idx: usize,
         indented: bool,
     },
-    /// Agent pane listed under its space's card.
+    /// Tab listed under its space's card. Agents of the active tab nest under it.
+    Tab {
+        ws_idx: usize,
+        tab_idx: usize,
+    },
+    /// Agent pane listed under its space's active tab.
     Agent {
         ws_idx: usize,
         tab_idx: usize,
@@ -274,6 +279,9 @@ fn entry_row_height(
         WorkspaceListEntry::Workspace { ws_idx, .. } => {
             app.workspaces.get(*ws_idx).map(workspace_row_height)
         }
+        WorkspaceListEntry::Tab { ws_idx, .. } => {
+            Some(1 + space_group_trailing_rows(*ws_idx, next))
+        }
         // A space's last agent reserves two rows below it: the blank row that
         // pads the bottom of the space's outline, and the outline's own floor.
         WorkspaceListEntry::Agent {
@@ -284,12 +292,20 @@ fn entry_row_height(
             agent_leading_gap(prev)
                 + agent_location_header_rows(app, *ws_idx, *tab_idx, *pane_id, prev)
                 + agent_entry_content_rows(app, *ws_idx, *pane_id, body_width)
-                + if matches!(next, Some(WorkspaceListEntry::Agent { .. })) {
-                    0
-                } else {
-                    2
-                },
+                + space_group_trailing_rows(*ws_idx, next),
         ),
+    }
+}
+
+fn space_group_trailing_rows(ws_idx: usize, next: Option<&WorkspaceListEntry>) -> u16 {
+    match next {
+        Some(WorkspaceListEntry::Agent {
+            ws_idx: next_ws, ..
+        })
+        | Some(WorkspaceListEntry::Tab {
+            ws_idx: next_ws, ..
+        }) if *next_ws == ws_idx => 0,
+        _ => 2,
     }
 }
 
@@ -330,13 +346,27 @@ fn push_workspace_with_agents(
     if !workspace_agents_expanded(app, ws_idx) {
         return;
     }
-    for group in workspace_agent_groups(app, ws_idx) {
-        for member in group.agents {
-            entries.push(WorkspaceListEntry::Agent {
-                ws_idx,
-                tab_idx: member.tab_idx,
-                pane_id: member.pane_id,
-            });
+    let Some(ws) = app.workspaces.get(ws_idx) else {
+        return;
+    };
+    let active_tab = ws.active_tab;
+    for tab_idx in 0..ws.tabs.len() {
+        entries.push(WorkspaceListEntry::Tab { ws_idx, tab_idx });
+        if tab_idx != active_tab {
+            continue;
+        }
+        for group in workspace_agent_groups(app, ws_idx) {
+            for member in group
+                .agents
+                .into_iter()
+                .filter(|member| member.tab_idx == tab_idx)
+            {
+                entries.push(WorkspaceListEntry::Agent {
+                    ws_idx,
+                    tab_idx: member.tab_idx,
+                    pane_id: member.pane_id,
+                });
+            }
         }
     }
 }
@@ -543,6 +573,7 @@ pub(crate) fn workspace_list_scrollbar_rect(app: &AppState, area: Rect) -> Optio
 #[derive(Default)]
 pub(crate) struct WorkspaceListLayout {
     pub cards: Vec<crate::app::state::WorkspaceCardArea>,
+    pub tab_rows: Vec<crate::app::state::TabRowArea>,
     pub agent_rows: Vec<crate::app::state::AgentRowArea>,
     pub folder_rows: Vec<crate::app::state::AgentFolderArea>,
     /// `+ new` button, placed right below the last entry in the list.
@@ -571,6 +602,7 @@ fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
     let mut cards = Vec::new();
+    let mut tab_rows = Vec::new();
     let mut agent_rows = Vec::new();
     let mut folder_rows = Vec::new();
 
@@ -590,6 +622,13 @@ fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
                     ws_idx: *ws_idx,
                     rect: Rect::new(body.x, row_y, body.width, row_height),
                     indented: *indented,
+                });
+            }
+            WorkspaceListEntry::Tab { ws_idx, tab_idx } => {
+                tab_rows.push(crate::app::state::TabRowArea {
+                    ws_idx: *ws_idx,
+                    tab_idx: *tab_idx,
+                    rect: Rect::new(body.x, row_y, body.width, 1),
                 });
             }
             WorkspaceListEntry::Agent {
@@ -629,6 +668,7 @@ fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
 
     WorkspaceListLayout {
         cards,
+        tab_rows,
         agent_rows,
         folder_rows,
         new_button: new_workspace_button_rect_below(
@@ -669,11 +709,17 @@ pub(crate) fn compute_workspace_list_areas(
     area: Rect,
 ) -> (
     Vec<crate::app::state::WorkspaceCardArea>,
+    Vec<crate::app::state::TabRowArea>,
     Vec<crate::app::state::AgentRowArea>,
     Vec<crate::app::state::AgentFolderArea>,
 ) {
     let layout = workspace_list_layout(app, area);
-    (layout.cards, layout.agent_rows, layout.folder_rows)
+    (
+        layout.cards,
+        layout.tab_rows,
+        layout.agent_rows,
+        layout.folder_rows,
+    )
 }
 
 /// Hit area and draw target for the sidebar's `+ new` button.
@@ -717,6 +763,7 @@ pub(crate) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<u16>, Rect
 /// off the list.
 pub(crate) fn workspace_drop_indicator_row(
     cards: &[crate::app::state::WorkspaceCardArea],
+    tab_rows: &[crate::app::state::TabRowArea],
     agent_rows: &[crate::app::state::AgentRowArea],
     area: Rect,
     insert_idx: usize,
@@ -734,7 +781,7 @@ pub(crate) fn workspace_drop_indicator_row(
     if let Some(row) = cards
         .last()
         .filter(|card| insert_idx == card.ws_idx.saturating_add(1))
-        .and_then(|_| workspace_list_end_row(cards, agent_rows))
+        .and_then(|_| workspace_list_end_row(cards, tab_rows, agent_rows))
         .filter(|y| *y < list_bottom)
     {
         return Some(row);
@@ -748,21 +795,21 @@ pub(crate) fn workspace_drop_indicator_row(
 }
 
 /// The free row below everything the list drew, which is where a card appended
-/// to the end would start. A space's agents follow its card, and the last of
-/// them reserves a blank row and the group's floor below itself, so the end of
-/// the list is two rows past the last agent rather than one past the last card.
+/// to the end would start. A space's tab rows and agents follow its card, and
+/// the last of them reserves a blank row and the group's floor below itself,
+/// so the end of the list is two rows past the last tab or agent rather than
+/// one past the last card.
 fn workspace_list_end_row(
     cards: &[crate::app::state::WorkspaceCardArea],
+    tab_rows: &[crate::app::state::TabRowArea],
     agent_rows: &[crate::app::state::AgentRowArea],
 ) -> Option<u16> {
+    let below = |rect: Rect| rect.y.saturating_add(rect.height).saturating_add(2);
     cards
         .iter()
         .map(|card| card.rect.y.saturating_add(card.rect.height))
-        .chain(
-            agent_rows
-                .iter()
-                .map(|row| row.rect.y.saturating_add(row.rect.height).saturating_add(2)),
-        )
+        .chain(tab_rows.iter().map(|row| below(row.rect)))
+        .chain(agent_rows.iter().map(|row| below(row.rect)))
         .max()
 }
 
@@ -901,18 +948,25 @@ fn render_workspace_rows(
     area: Rect,
 ) {
     let layout = workspace_list_layout(app, area);
-    let (cards, agent_rows, folder_rows) = if app.view.workspace_card_areas.is_empty() {
-        (layout.cards, layout.agent_rows, layout.folder_rows)
+    let (cards, tab_rows, agent_rows, folder_rows) = if app.view.workspace_card_areas.is_empty() {
+        (
+            layout.cards,
+            layout.tab_rows,
+            layout.agent_rows,
+            layout.folder_rows,
+        )
     } else {
         (
             app.view.workspace_card_areas.clone(),
+            app.view.tab_row_areas.clone(),
             app.view.agent_row_areas.clone(),
             app.view.agent_folder_areas.clone(),
         )
     };
 
-    let outlined = outlined_space_group(app, &cards, &agent_rows);
+    let outlined = outlined_space_group(app, &cards, &tab_rows, &agent_rows);
 
+    render_tab_rows(app, frame, &tab_rows);
     render_agent_rows(app, terminal_runtimes, frame, &agent_rows);
     for folder in &folder_rows {
         render_agent_folder_row(app, frame, folder);
@@ -946,7 +1000,7 @@ fn render_workspace_rows(
     }
 
     render_space_group_outline(app, frame, area, outlined);
-    render_workspace_drop_indicator(app, frame, area, &cards, &agent_rows);
+    render_workspace_drop_indicator(app, frame, area, &cards, &tab_rows, &agent_rows);
 
     if layout.new_button != Rect::default() {
         render_new_workspace_button(frame, layout.new_button, app);
@@ -959,6 +1013,7 @@ fn render_workspace_rows(
 fn outlined_space_group(
     app: &AppState,
     cards: &[crate::app::state::WorkspaceCardArea],
+    tab_rows: &[crate::app::state::TabRowArea],
     agent_rows: &[crate::app::state::AgentRowArea],
 ) -> Option<Rect> {
     let ws_idx = if app.mode == Mode::Navigate {
@@ -970,12 +1025,18 @@ fn outlined_space_group(
     if card.width < 2 || card.height == 0 {
         return None;
     }
-    // The last agent reserves a blank row and then the floor, so the box pads
-    // its bottom the way the card's own floor row pads its top.
+    // The last tab/agent reserves a blank row and then the floor, so the box
+    // pads its bottom the way the card's own floor row pads its top.
     let bottom = agent_rows
         .iter()
         .filter(|row| row.ws_idx == ws_idx)
         .map(|row| row.rect.y + row.rect.height + 1)
+        .chain(
+            tab_rows
+                .iter()
+                .filter(|row| row.ws_idx == ws_idx)
+                .map(|row| row.rect.y + row.rect.height + 1),
+        )
         .max()
         .unwrap_or(card.y + card.height - 1);
     Some(Rect::new(
@@ -984,6 +1045,36 @@ fn outlined_space_group(
         card.width,
         bottom.saturating_sub(card.y).saturating_add(1),
     ))
+}
+
+fn render_tab_rows(app: &AppState, frame: &mut Frame, tab_rows: &[crate::app::state::TabRowArea]) {
+    for row in tab_rows {
+        let Some(ws) = app.workspaces.get(row.ws_idx) else {
+            continue;
+        };
+        let Some(tab) = ws.tabs.get(row.tab_idx) else {
+            continue;
+        };
+        if row.rect.width == 0 || row.rect.height == 0 {
+            continue;
+        }
+        let active = Some(row.ws_idx) == app.active && row.tab_idx == ws.active_tab;
+        let style = if active {
+            Style::default()
+                .fg(focus_accent(app))
+                .add_modifier(Modifier::BOLD)
+        } else if tab.is_auto_named() {
+            Style::default()
+                .fg(app.palette.overlay0)
+                .add_modifier(Modifier::DIM)
+        } else {
+            Style::default().fg(app.palette.overlay1)
+        };
+        let indent = 2usize.min(row.rect.width as usize);
+        let name = truncate_chars(&tab.display_name(), row.rect.width as usize - indent);
+        let label = format!("{:indent$}{name}", "", indent = indent);
+        render_sidebar_line(frame, row.rect, Line::styled(label, style));
+    }
 }
 
 /// Draws the selected space and its agents as one box. This runs after the
@@ -1048,6 +1139,7 @@ fn render_workspace_drop_indicator(
     frame: &mut Frame,
     area: Rect,
     cards: &[crate::app::state::WorkspaceCardArea],
+    tab_rows: &[crate::app::state::TabRowArea],
     agent_rows: &[crate::app::state::AgentRowArea],
 ) {
     let Some(crate::app::state::DragTarget::WorkspaceReorder {
@@ -1061,7 +1153,8 @@ fn render_workspace_drop_indicator(
         return;
     };
     let list = workspace_list_rect(app, area);
-    let Some(row) = workspace_drop_indicator_row(cards, agent_rows, list, *insert_idx) else {
+    let Some(row) = workspace_drop_indicator_row(cards, tab_rows, agent_rows, list, *insert_idx)
+    else {
         return;
     };
     let row = row.max(first.y);
@@ -1995,7 +2088,7 @@ mod tests {
     fn end_of_list_space_drop_marker_clears_the_last_space_agents() {
         let area = Rect::new(0, 0, 28, 26);
         let (app, terminal) = render_workspace_drag(area, 2);
-        let (cards, agent_rows, _) = compute_workspace_list_areas(&app, area);
+        let (cards, _tabs, agent_rows, _) = compute_workspace_list_areas(&app, area);
         let last_agent = agent_rows
             .last()
             .expect("the second space should list its agent")
@@ -2060,7 +2153,7 @@ mod tests {
             .unwrap();
 
         let row = compute_workspace_list_areas(&app, area)
-            .1
+            .2
             .first()
             .expect("the space's agent should have a row")
             .rect;
@@ -2290,7 +2383,7 @@ mod tests {
         let area = Rect::new(0, 0, 28, 24);
         let (app, terminal) = render_sidebar_list(area);
         let card = compute_workspace_card_areas(&app, area)[0].rect;
-        let rows = compute_workspace_list_areas(&app, area).1;
+        let rows = compute_workspace_list_areas(&app, area).2;
         let last = rows
             .last()
             .expect("the space's agent should have a row")
@@ -2329,7 +2422,7 @@ mod tests {
         let area = Rect::new(0, 0, 28, 24);
         let (app, terminal) = render_sidebar_list(area);
         let row = compute_workspace_list_areas(&app, area)
-            .1
+            .2
             .last()
             .expect("the space's agent should have a row")
             .rect;
@@ -2371,7 +2464,7 @@ mod tests {
             app.agent_peek = Some(crate::layout::PaneId::from_raw(99));
         });
         let row = compute_workspace_list_areas(&app, area)
-            .1
+            .2
             .last()
             .expect("the space's agent should have a row")
             .rect;
@@ -2411,7 +2504,7 @@ mod tests {
         let (app, terminal) =
             render_sidebar_list_with(area, |app| app.outer_terminal_focus = Some(false));
         let row = compute_workspace_list_areas(&app, area)
-            .1
+            .2
             .last()
             .expect("the space's agent should have a row")
             .rect;
@@ -2639,7 +2732,7 @@ mod tests {
                 std::path::PathBuf::from("/srv/checkout");
         });
         let row = compute_workspace_list_areas(&app, area)
-            .1
+            .2
             .last()
             .expect("the space's agent should have a row")
             .rect;
@@ -2689,7 +2782,7 @@ mod tests {
         terminal
             .draw(|frame| render_workspace_rows(&app, &runtimes, frame, area))
             .unwrap();
-        let (_, rows, folders) = compute_workspace_list_areas(&app, area);
+        let (_, _tabs, rows, folders) = compute_workspace_list_areas(&app, area);
         (app, terminal, rows, folders)
     }
 
@@ -2757,7 +2850,7 @@ mod tests {
         app.active = Some(0);
         app.selected = 0;
 
-        let rows = compute_workspace_list_areas(&app, area).1;
+        let rows = compute_workspace_list_areas(&app, area).2;
         assert_eq!(rows.len(), 2);
         assert_ne!(rows[0].ws_idx, rows[1].ws_idx);
         assert!(
@@ -3091,14 +3184,20 @@ mod tests {
             workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
         ];
 
-        let (cards, headers, _) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
+        let (cards, tabs, headers, _) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
 
         assert!(headers.is_empty());
         assert_eq!(cards[0].ws_idx, 0);
         assert!(!cards[0].indented);
         assert_eq!(cards[1].ws_idx, 1);
         assert!(cards[1].indented);
-        assert_eq!(cards[1].rect.y, cards[0].rect.y + cards[0].rect.height);
+        // The parent's own tab row sits between its card and the member's.
+        let parent_tab = tabs
+            .iter()
+            .find(|tab| tab.ws_idx == 0)
+            .expect("the parent lists its tab");
+        assert_eq!(parent_tab.rect.y, cards[0].rect.y + cards[0].rect.height);
+        assert!(cards[1].rect.y > parent_tab.rect.y);
     }
 
     #[test]
@@ -3118,15 +3217,24 @@ mod tests {
                     ws_idx: 0,
                     indented: false
                 },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 0,
+                    tab_idx: 0
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false
+                },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 1,
+                    tab_idx: 0
                 },
             ]
         );
     }
 
-    /// Spaces holding `pane_counts[i]` agent panes each.
+    /// Spaces holding `pane_counts[i]` agent panes each, all in the space's
+    /// one tab: only the active tab's agents are listed under a space.
     fn app_with_agents(pane_counts: &[usize]) -> AppState {
         let mut app = AppState::test_new();
         app.workspaces = pane_counts
@@ -3134,19 +3242,21 @@ mod tests {
             .enumerate()
             .map(|(idx, panes)| {
                 let mut ws = Workspace::test_new(&format!("space{idx}"));
-                for tab in 1..*panes {
-                    ws.test_add_tab(Some(&format!("tab{tab}")));
+                for _ in 1..*panes {
+                    ws.test_split(ratatui::layout::Direction::Horizontal);
                 }
                 ws
             })
             .collect();
         app.ensure_test_terminals();
         for ws_idx in 0..app.workspaces.len() {
-            for tab_idx in 0..app.workspaces[ws_idx].tabs.len() {
-                let pane = app.workspaces[ws_idx].tabs[tab_idx].root_pane;
-                let terminal_id = app.workspaces[ws_idx].tabs[tab_idx].panes[&pane]
-                    .attached_terminal_id
-                    .clone();
+            let tab = &app.workspaces[ws_idx].tabs[0];
+            let terminal_ids: Vec<_> = tab
+                .panes
+                .values()
+                .map(|pane| pane.attached_terminal_id.clone())
+                .collect();
+            for terminal_id in terminal_ids {
                 app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
             }
         }
@@ -3180,7 +3290,7 @@ mod tests {
         let area = Rect::new(0, 0, 26, 40);
         let app = app_with_agents(&[1]);
         let floor = area.y + area.height - WORKSPACE_SECTION_FOOTER_ROWS;
-        let rows = compute_workspace_list_areas(&app, area).1;
+        let rows = compute_workspace_list_areas(&app, area).2;
         let last = rows.last().expect("the space lists its agent").rect;
 
         let button = new_workspace_button_rect(&app, area);
@@ -3231,7 +3341,7 @@ mod tests {
             app.workspace_scroll,
             workspace_list_max_scroll(&app, ws_area)
         );
-        let rows = compute_workspace_list_areas(&app, area).1;
+        let rows = compute_workspace_list_areas(&app, area).2;
         assert_eq!(
             rows.last().map(|row| row.pane_id),
             Some(last_pane),
@@ -3250,11 +3360,17 @@ mod tests {
         // Short enough that one card fills the list, so scrolling to the end
         // starts the render inside the group.
         let area = Rect::new(0, 0, 30, 7);
-        app.workspace_scroll = normalized_workspace_scroll(&app, area, 2);
+        // Each card is followed by its space's tab row, so the last card is
+        // found by kind rather than assumed to sit at a fixed index.
+        let last_card = workspace_list_entries(&app)
+            .iter()
+            .rposition(|entry| matches!(entry, WorkspaceListEntry::Workspace { .. }))
+            .expect("the group lists cards");
+        app.workspace_scroll = normalized_workspace_scroll(&app, area, last_card);
 
-        let (cards, headers, _) = compute_workspace_list_areas(&app, area);
+        let (cards, _tabs, headers, _) = compute_workspace_list_areas(&app, area);
 
-        assert_eq!(app.workspace_scroll, 2);
+        assert_eq!(app.workspace_scroll, last_card);
         assert!(headers.is_empty());
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].ws_idx, 2);
@@ -3275,9 +3391,13 @@ mod tests {
         let ws_area = Rect::new(0, 0, 30, 8);
         let metrics = workspace_list_scroll_metrics(&app, ws_area);
 
+        // The collapsed group shows its parent card and the notes card, each
+        // with its tab row: four display entries from three workspaces. Only
+        // the last one fits, so three are scrolled past.
+        assert_eq!(workspace_list_entries(&app).len(), 4);
         assert_eq!(metrics.viewport_rows, 1);
-        assert_eq!(metrics.max_offset_from_bottom, 1);
-        assert_eq!(metrics.offset_from_bottom, 1);
+        assert_eq!(metrics.max_offset_from_bottom, 3);
+        assert_eq!(metrics.offset_from_bottom, 3);
     }
 
     #[test]
@@ -3293,11 +3413,34 @@ mod tests {
         app.mode = Mode::Terminal;
         app.workspace_scroll = 1;
 
-        let (cards, headers, _) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 12));
+        let (cards, _tabs, headers, _) =
+            compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 12));
 
         assert!(headers.is_empty());
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].ws_idx, 2);
+    }
+
+    #[test]
+    fn workspace_list_entries_nest_tabs_under_space() {
+        let mut app = AppState::test_new();
+        let mut ws = crate::workspace::Workspace::test_new("space");
+        let _ = ws.test_add_tab(Some("logs"));
+        app.workspaces.push(ws);
+        app.active = Some(0);
+        let entries = workspace_list_entries(&app);
+        assert!(
+            entries
+                .iter()
+                .any(|e| matches!(e, WorkspaceListEntry::Tab { tab_idx: 0, .. })),
+            "default tab missing: {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| matches!(e, WorkspaceListEntry::Tab { tab_idx: 1, .. })),
+            "second tab missing: {entries:?}"
+        );
     }
 
     #[test]
@@ -3315,9 +3458,17 @@ mod tests {
                     ws_idx: 0,
                     indented: false,
                 },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
+                },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 1,
+                    tab_idx: 0,
                 },
             ]
         );
@@ -3339,13 +3490,25 @@ mod tests {
                     ws_idx: 0,
                     indented: false,
                 },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
                 },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 2,
+                    tab_idx: 0,
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false,
+                },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 1,
+                    tab_idx: 0,
                 },
             ]
         );
@@ -3366,9 +3529,17 @@ mod tests {
                     ws_idx: 0,
                     indented: false,
                 },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false,
+                },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 1,
+                    tab_idx: 0,
                 },
             ]
         );
@@ -3390,13 +3561,25 @@ mod tests {
                     ws_idx: 0,
                     indented: false,
                 },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
                 },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 2,
+                    tab_idx: 0,
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false,
+                },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 1,
+                    tab_idx: 0,
                 },
             ]
         );
@@ -3417,9 +3600,17 @@ mod tests {
                     ws_idx: 0,
                     indented: false,
                 },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false,
+                },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 1,
+                    tab_idx: 0,
                 },
             ]
         );
@@ -3443,9 +3634,17 @@ mod tests {
                     ws_idx: 0,
                     indented: false,
                 },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
+                },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 1,
+                    tab_idx: 0,
                 },
             ]
         );
@@ -3454,10 +3653,16 @@ mod tests {
         app.mode = Mode::Terminal;
         assert_eq!(
             workspace_list_entries(&app),
-            vec![WorkspaceListEntry::Workspace {
-                ws_idx: 0,
-                indented: false,
-            }]
+            vec![
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: false,
+                },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                },
+            ]
         );
     }
 
@@ -3508,7 +3713,7 @@ mod tests {
     fn agent_entry_without_status_text_keeps_its_three_rows() {
         let area = Rect::new(0, 0, 28, 24);
         let (app, _) = render_sidebar_list(area);
-        let row = compute_workspace_list_areas(&app, area).1[0].rect;
+        let row = compute_workspace_list_areas(&app, area).2[0].rect;
 
         assert_eq!(row.height, AGENT_PANEL_ENTRY_CONTENT_ROWS);
     }
@@ -3519,7 +3724,7 @@ mod tests {
         let (app, terminal) = render_sidebar_list_with(area, |app| {
             report_status_metadata(app, Some("Fix the sidebar wrapping"), Some("running tests"));
         });
-        let row = compute_workspace_list_areas(&app, area).1[0].rect;
+        let row = compute_workspace_list_areas(&app, area).2[0].rect;
         let width = agent_row_label_width(row.width) as usize;
         let expected = wrap_chars("Fix the sidebar wrapping · running tests", width);
         assert!(
@@ -3552,7 +3757,7 @@ mod tests {
         let (app, _) = render_sidebar_list_with(area, |app| {
             report_status_metadata(app, Some(long), None);
         });
-        let row = compute_workspace_list_areas(&app, area).1[0].rect;
+        let row = compute_workspace_list_areas(&app, area).2[0].rect;
 
         assert_eq!(
             row.height,
@@ -3586,9 +3791,17 @@ mod tests {
                     ws_idx: 0,
                     indented: false,
                 },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
+                },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 1,
+                    tab_idx: 0,
                 },
             ]
         );

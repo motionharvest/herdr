@@ -395,8 +395,39 @@ impl Workspace {
         }
         true
     }
+
+    pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) -> bool {
+        if source_idx >= self.tabs.len() || insert_idx > self.tabs.len() {
+            return false;
+        }
+
+        let target_idx = if source_idx < insert_idx {
+            insert_idx.saturating_sub(1)
+        } else {
+            insert_idx
+        }
+        .min(self.tabs.len().saturating_sub(1));
+
+        if source_idx == target_idx {
+            return false;
+        }
+
+        let active_root_pane = self.tabs.get(self.active_tab).map(|tab| tab.root_pane);
+        let tab = self.tabs.remove(source_idx);
+        self.tabs.insert(target_idx, tab);
+        self.renumber_tabs();
+        self.active_tab = active_root_pane
+            .and_then(|root_pane| self.tabs.iter().position(|tab| tab.root_pane == root_pane))
+            .unwrap_or(target_idx);
+        true
+    }
+
     pub fn close_active_tab(&mut self) -> bool {
         self.close_tab(self.active_tab)
+    }
+
+    pub fn active_tab_display_name(&self) -> Option<String> {
+        self.active_tab().map(|tab| tab.display_name())
     }
 
     pub fn split_focused_with_placement(

@@ -50,6 +50,8 @@ pub struct SessionSnapshot {
     #[serde(default)]
     pub sidebar_collapsed: bool,
     #[serde(default)]
+    pub agent_table_collapsed: bool,
+    #[serde(default)]
     pub spaces_collapsed: bool,
 }
 
@@ -69,6 +71,7 @@ impl Default for SessionSnapshot {
             collapsed_space_keys: std::collections::HashSet::new(),
             collapsed_agent_space_ids: std::collections::HashSet::new(),
             sidebar_collapsed: false,
+            agent_table_collapsed: false,
             spaces_collapsed: false,
         }
     }
@@ -327,6 +330,8 @@ struct RawSessionSnapshot {
     #[serde(default)]
     sidebar_collapsed: bool,
     #[serde(default)]
+    agent_table_collapsed: bool,
+    #[serde(default)]
     spaces_collapsed: bool,
 }
 
@@ -349,6 +354,7 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
         collapsed_space_keys: raw.collapsed_space_keys,
         collapsed_agent_space_ids: raw.collapsed_agent_space_ids,
         sidebar_collapsed: raw.sidebar_collapsed,
+        agent_table_collapsed: raw.agent_table_collapsed,
         spaces_collapsed: raw.spaces_collapsed,
     })
 }
@@ -426,6 +432,7 @@ pub fn capture(
         collapsed_space_keys: state.collapsed_space_keys.clone(),
         collapsed_agent_space_ids: state.collapsed_agent_space_ids.clone(),
         sidebar_collapsed: state.sidebar_collapsed,
+        agent_table_collapsed: state.agent_table_collapsed,
         spaces_collapsed: state.spaces_collapsed,
         detached_agents: state
             .detached_agents
@@ -1278,6 +1285,17 @@ mod tests {
         let snapshot = capture_from_state(&state);
 
         assert_eq!(snapshot.composer_folder.as_deref(), Some(folder.as_path()));
+    }
+
+    #[test]
+    fn agent_table_collapsed_round_trips_through_json() {
+        let snap = SessionSnapshot {
+            agent_table_collapsed: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        let restored = parse_snapshot(&json).unwrap();
+        assert!(restored.agent_table_collapsed);
     }
 
     #[test]

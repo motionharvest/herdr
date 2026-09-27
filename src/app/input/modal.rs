@@ -311,6 +311,53 @@ pub(super) fn open_rename_workspace(
     state.mode = Mode::RenameWorkspace;
 }
 
+fn next_new_tab_default_name(state: &AppState) -> String {
+    state
+        .active
+        .and_then(|i| state.workspaces.get(i))
+        .map(|ws| (ws.tabs.len() + 1).to_string())
+        .unwrap_or_else(|| "1".to_string())
+}
+
+pub(super) fn open_rename_active_tab(state: &mut AppState, replace_on_type: bool) {
+    state.creating_new_tab = false;
+    state.requested_new_tab_name = None;
+    state.rename_pane_target = None;
+    if let Some(ws) = state.active.and_then(|i| state.workspaces.get(i)) {
+        if let Some(name) = ws.active_tab_display_name() {
+            state.name_input = name;
+            state.name_input_replace_on_type = replace_on_type;
+            state.mode = Mode::RenameTab;
+        }
+    }
+}
+
+pub(super) fn open_rename_tab(state: &mut AppState, ws_idx: usize, tab_idx: usize) {
+    if ws_idx >= state.workspaces.len() {
+        return;
+    }
+    if state
+        .workspaces
+        .get(ws_idx)
+        .is_none_or(|ws| tab_idx >= ws.tabs.len())
+    {
+        return;
+    }
+    state.selected = ws_idx;
+    state.active = Some(ws_idx);
+    state.switch_tab(tab_idx);
+    open_rename_active_tab(state, false);
+}
+
+pub(super) fn open_new_tab_dialog(state: &mut AppState) {
+    state.creating_new_tab = true;
+    state.requested_new_tab_name = None;
+    state.rename_pane_target = None;
+    state.name_input = next_new_tab_default_name(state);
+    state.name_input_replace_on_type = true;
+    state.mode = Mode::RenameTab;
+}
+
 pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::PaneId) {
     let Some(terminal_id) = terminal_id_for_pane(state, pane_id) else {
         return;
@@ -443,6 +490,34 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                     state.workspaces[state.selected].set_custom_name(new_name);
                     crate::logging::workspace_renamed(&workspace_id);
                     state.mark_session_dirty();
+                }
+                Mode::RenameTab if state.creating_new_tab => {
+                    state.request_new_tab = true;
+                    let default_name = next_new_tab_default_name(state);
+                    state.requested_new_tab_name =
+                        if new_name.is_empty() || new_name == default_name {
+                            None
+                        } else {
+                            Some(new_name)
+                        };
+                }
+                Mode::RenameTab => {
+                    if let Some(ws_idx) = state.active {
+                        if let Some(ws) = state.workspaces.get_mut(ws_idx) {
+                            let workspace_id = ws.id.clone();
+                            let active_tab = ws.active_tab;
+                            if let Some(tab) = ws.active_tab_mut() {
+                                let keep_auto_name =
+                                    tab.is_auto_named() && new_name == tab.number.to_string();
+                                if !new_name.is_empty() && !keep_auto_name {
+                                    tab.set_custom_name(new_name);
+                                    let tab_id = format!("{}:{}", workspace_id, active_tab + 1);
+                                    crate::logging::tab_renamed(&workspace_id, &tab_id);
+                                    state.mark_session_dirty();
+                                }
+                            }
+                        }
+                    }
                 }
                 Mode::RenamePane => {
                     if let Some(pane_id) = state.rename_pane_target {
@@ -684,6 +759,23 @@ pub(super) fn apply_context_menu_action(
                 state.mark_session_dirty();
             }
             leave_modal(state);
+        }
+        (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("New tab")) => {
+            state.selected = ws_idx;
+            state.active = Some(ws_idx);
+            state.switch_tab(tab_idx);
+            open_new_tab_dialog(state);
+        }
+        (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Rename")) => {
+            open_rename_tab(state, ws_idx, tab_idx);
+        }
+        (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Close")) => {
+            state.selected = ws_idx;
+            state.active = Some(ws_idx);
+            state.switch_tab(tab_idx);
+            if !state.close_tab() {
+                leave_modal(state);
+            }
         }
         (
             ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },

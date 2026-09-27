@@ -386,6 +386,38 @@ fn pane_hides_instead_of_closing(
         .is_some_and(crate::terminal::TerminalState::is_agent_terminal)
 }
 
+/// The local machine's hostname, so a pane title can say which computer it's
+/// running on. Looked up once per process; a pane's own name never changes
+/// what computer herdr is running on.
+fn local_hostname() -> &'static str {
+    use std::sync::OnceLock;
+    static HOSTNAME: OnceLock<String> = OnceLock::new();
+    HOSTNAME.get_or_init(|| {
+        let mut buf = [0u8; 256];
+        // SAFETY: `buf` outlives the call and its length is passed as `len`.
+        let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+        if !ok {
+            return String::new();
+        }
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        String::from_utf8_lossy(&buf[..len]).into_owned()
+    })
+}
+
+/// Folds the local hostname into a pane name (`Olivia@myhost`), or stands in
+/// for it alone when the name field is off, so the two can be toggled
+/// independently.
+fn with_hostname(name: Option<String>) -> Option<String> {
+    let host = local_hostname();
+    if host.is_empty() {
+        return name;
+    }
+    Some(match name {
+        Some(name) => format!("{name}@{host}"),
+        None => host.to_string(),
+    })
+}
+
 fn pane_chrome_title_for_pane(
     app: &AppState,
     ws: &Workspace,
@@ -396,10 +428,13 @@ fn pane_chrome_title_for_pane(
     let assigned_name = terminal.and_then(|terminal| {
         crate::pane_names::assigned_names(&app.terminals).remove(&terminal.id)
     });
-    let name = header.agent_name.then(|| {
+    let mut name = header.agent_name.then(|| {
         pane_name_label(terminal, assigned_name, ws.public_pane_number(pane_id))
             .unwrap_or_else(|| "Workspace".to_string())
     });
+    if header.hostname {
+        name = with_hostname(name);
+    }
     let git_status = ws.git_status_for_pane(pane_id);
     let path = pane_header_path(app, pane_id, terminal, &git_status);
     let folder = path.as_deref().and_then(|path| {
@@ -1806,6 +1841,34 @@ mod tests {
         assert_eq!(
             pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
             format!("{folder} (main !)")
+        );
+
+        app.pane_header.agent_name = true;
+        app.pane_header.working_directory = false;
+        app.pane_header.parent_directory = false;
+        app.pane_header.git_branch = false;
+        app.pane_header.git_status = false;
+        app.pane_header.hostname = true;
+        let host = local_hostname();
+        let expected = if host.is_empty() {
+            "Olivia".to_string()
+        } else {
+            format!("Olivia@{host}")
+        };
+        assert_eq!(
+            pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
+            expected
+        );
+
+        app.pane_header.agent_name = false;
+        let expected = if host.is_empty() {
+            String::new()
+        } else {
+            host.to_string()
+        };
+        assert_eq!(
+            pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
+            expected
         );
     }
 

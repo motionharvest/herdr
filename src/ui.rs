@@ -19,6 +19,7 @@ mod scrollbar;
 mod settings;
 mod sidebar;
 mod status;
+mod tabs;
 mod widgets;
 
 use self::agent_table::render_global_launcher;
@@ -72,6 +73,7 @@ use self::status::{
     render_config_diagnostic, render_copy_feedback, render_toast_notification,
     toast_notification_rect,
 };
+use self::tabs::{compute_tab_bar_view, render_tab_bar};
 pub(crate) use self::{
     composer::split_composer,
     keybind_help::keybind_help_lines,
@@ -101,17 +103,18 @@ use crate::app::state::ViewLayout;
 use crate::app::{AppState, Mode};
 use crate::terminal::TerminalRuntimeRegistry;
 
-/// The `arc` set from FGRibreau's spinners: an arc segment sweeping around a
-/// circle. Not braille, on purpose — a braille cell is drawn small and faint in
-/// many terminal fonts, which turns a spinner into a character that twitches
-/// rather than a shape that turns. These six frames are quadrant arcs, which
-/// every font draws at full weight.
-const SPINNERS: &[&str] = &["◜", "◠", "◝", "◞", "◡", "◟"];
+/// The `bounce` set from sindresorhus/cli-spinners: one braille dot moving
+/// down the left column of its cell and back up.
+const SPINNERS: &[&str] = &["⠁", "⠂", "⠄", "⠂"];
+/// How long each frame holds, which is the set's own interval.
+const SPINNER_FRAME_MS: u128 = 120;
 
-/// Map spinner_tick, which counts 16ms animation ticks, to a spinner frame. The
-/// set holds one frame per 80ms, so every fifth tick turns it.
+/// Map spinner_tick, which counts animation ticks, to a spinner frame. The
+/// tick is turned back into elapsed time first, because the set's interval is
+/// not a whole number of ticks.
 pub(super) fn spinner_frame(tick: u32) -> &'static str {
-    SPINNERS[(tick / crate::app::ANIMATION_TICKS_PER_FRAME) as usize % SPINNERS.len()]
+    let elapsed = tick as u128 * crate::app::ANIMATION_INTERVAL.as_millis();
+    SPINNERS[(elapsed / SPINNER_FRAME_MS) as usize % SPINNERS.len()]
 }
 
 /// Compute view geometry and reconcile pane sizes.
@@ -224,7 +227,31 @@ fn compute_view_internal(
     app.workspace_scroll = normalized_workspace_scroll(app, sidebar_rect, app.workspace_scroll);
 
     let (composer, main_area) = split_composer(app, main_area);
-    let (agent_table, terminal_area) = split_agent_table(app, main_area);
+    let (agent_table, main_area) = split_agent_table(app, main_area);
+
+    let has_tabs = app.active.and_then(|i| app.workspaces.get(i)).is_some();
+    let (tab_bar_rect, terminal_area) = if has_tabs && main_area.height > 1 {
+        let [tab_bar_rect, terminal_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(main_area);
+        (tab_bar_rect, terminal_area)
+    } else {
+        (Rect::default(), main_area)
+    };
+
+    let tab_bar_view = app
+        .active
+        .and_then(|i| app.workspaces.get(i))
+        .map(|ws| {
+            compute_tab_bar_view(
+                ws,
+                tab_bar_rect,
+                app.tab_scroll,
+                app.tab_scroll_follow_active,
+                app.mouse_capture,
+            )
+        })
+        .unwrap_or_default();
+    app.tab_scroll = tab_bar_view.scroll;
 
     let split_borders = if app.agent_peek.is_some() {
         Vec::new()
@@ -257,21 +284,28 @@ fn compute_view_internal(
         .map(|toast| toast_notification_rect(terminal_area, toast, app.config_diagnostic.is_some()))
         .unwrap_or_default();
 
-    let (workspace_card_areas, agent_row_areas, agent_folder_areas) = if app.sidebar_collapsed {
-        (Vec::new(), Vec::new(), Vec::new())
-    } else {
-        compute_workspace_list_areas(app, sidebar_rect)
-    };
+    let (workspace_card_areas, tab_row_areas, agent_row_areas, agent_folder_areas) =
+        if app.sidebar_collapsed {
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        } else {
+            compute_workspace_list_areas(app, sidebar_rect)
+        };
     let agent_locations = std::mem::take(&mut app.view.agent_locations);
     app.view = crate::app::ViewState {
         layout: ViewLayout::Desktop,
         composer,
         sidebar_rect,
         workspace_card_areas,
+        tab_row_areas,
         agent_row_areas,
         agent_folder_areas,
         agent_table,
         agent_locations,
+        tab_bar_rect,
+        tab_hit_areas: tab_bar_view.tab_hit_areas,
+        tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
+        tab_scroll_right_hit_area: tab_bar_view.scroll_right_hit_area,
+        new_tab_hit_area: tab_bar_view.new_tab_hit_area,
         terminal_area,
         mobile_header_rect: Rect::default(),
         mobile_menu_hit_area: Rect::default(),
@@ -368,10 +402,16 @@ fn compute_mobile_view(
         composer,
         sidebar_rect: Rect::default(),
         workspace_card_areas: Vec::new(),
+        tab_row_areas: Vec::new(),
         agent_row_areas: Vec::new(),
         agent_folder_areas: Vec::new(),
         agent_table: crate::ui::AgentTableLayout::default(),
         agent_locations: std::collections::HashMap::new(),
+        tab_bar_rect: Rect::default(),
+        tab_hit_areas: Vec::new(),
+        tab_scroll_left_hit_area: Rect::default(),
+        tab_scroll_right_hit_area: Rect::default(),
+        new_tab_hit_area: Rect::default(),
         terminal_area,
         mobile_header_rect: header_rect,
         mobile_menu_hit_area: header_hits.menu,
@@ -409,6 +449,7 @@ pub fn render_with_runtime_registry(
         let entries = agent_panel_entries_from(app, terminal_runtimes);
         render_agent_table(app, frame, &app.view.agent_table, &entries);
         render_global_launcher(app, frame);
+        render_tab_bar(app, frame, app.view.tab_bar_rect);
     }
     render_panes(app, terminal_runtimes, frame, terminal_area);
 
@@ -432,7 +473,9 @@ pub fn render_with_runtime_registry(
             render_context_menu(app, frame);
         }
         Mode::Settings => render_settings_overlay(app, frame, frame.area()),
-        Mode::RenameWorkspace | Mode::RenamePane => render_rename_overlay(app, frame, frame.area()),
+        Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
+            render_rename_overlay(app, frame, frame.area())
+        }
         Mode::NewLinkedWorktree => render_new_linked_worktree_overlay(app, frame, frame.area()),
         Mode::OpenExistingWorktree => {
             render_open_existing_worktree_overlay(app, frame, frame.area())

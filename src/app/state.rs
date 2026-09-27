@@ -812,6 +812,14 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
+/// Clickable region for a tab row nested under its space card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabRowArea {
+    pub ws_idx: usize,
+    pub tab_idx: usize,
+    pub rect: Rect,
+}
+
 /// Clickable region for an agent row nested under its space card. The rect
 /// covers only the entry's content rows, not the leading gap row and not the
 /// folder header row above it.
@@ -864,6 +872,7 @@ pub struct ViewState {
     /// Left column of space cards and the agents under them.
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
+    pub tab_row_areas: Vec<TabRowArea>,
     pub agent_row_areas: Vec<AgentRowArea>,
     pub agent_folder_areas: Vec<AgentFolderArea>,
     /// The agent table between the composer and the panes: where its rows and
@@ -874,6 +883,12 @@ pub struct ViewState {
     /// pane's current folder comes from, so it reads that folder from here —
     /// and so does the paint that writes the row.
     pub agent_locations: std::collections::HashMap<PaneId, crate::ui::AgentLocation>,
+    /// Tab strip under the agent table: hit areas for tabs, scroll, and +.
+    pub tab_bar_rect: Rect,
+    pub tab_hit_areas: Vec<Rect>,
+    pub tab_scroll_left_hit_area: Rect,
+    pub tab_scroll_right_hit_area: Rect,
+    pub new_tab_hit_area: Rect,
     pub terminal_area: Rect,
     pub mobile_header_rect: Rect,
     pub mobile_menu_hit_area: Rect,
@@ -891,10 +906,16 @@ impl Default for ViewState {
             composer: crate::ui::ComposerLayout::default(),
             sidebar_rect: Rect::default(),
             workspace_card_areas: Vec::new(),
+            tab_row_areas: Vec::new(),
             agent_row_areas: Vec::new(),
             agent_folder_areas: Vec::new(),
             agent_table: crate::ui::AgentTableLayout::default(),
             agent_locations: std::collections::HashMap::new(),
+            tab_bar_rect: Rect::default(),
+            tab_hit_areas: Vec::new(),
+            tab_scroll_left_hit_area: Rect::default(),
+            tab_scroll_right_hit_area: Rect::default(),
+            new_tab_hit_area: Rect::default(),
             terminal_area: Rect::default(),
             mobile_header_rect: Rect::default(),
             mobile_menu_hit_area: Rect::default(),
@@ -918,6 +939,7 @@ pub enum Mode {
     Terminal,
     Composer,
     RenameWorkspace,
+    RenameTab,
     RenamePane,
     NewLinkedWorktree,
     OpenExistingWorktree,
@@ -1190,6 +1212,11 @@ pub(crate) enum DragTarget {
         source_ws_idx: usize,
         insert_idx: Option<usize>,
     },
+    TabReorder {
+        ws_idx: usize,
+        source_tab_idx: usize,
+        insert_idx: Option<usize>,
+    },
     /// Reordering an agent row among the agents it shares a folder with in
     /// the sidebar. Display order only — the pane layout is untouched.
     /// Hovering `+ new` instead flies the pane out into its own space.
@@ -1302,6 +1329,13 @@ pub(crate) struct WorkspacePressState {
     pub start_row: u16,
 }
 
+pub(crate) struct TabPressState {
+    pub ws_idx: usize,
+    pub tab_idx: usize,
+    pub start_col: u16,
+    pub start_row: u16,
+}
+
 pub(crate) struct PanePressState {
     pub pane_id: PaneId,
     pub start_col: u16,
@@ -1361,6 +1395,10 @@ pub enum ContextMenuKind {
         is_linked_worktree: bool,
         has_worktree_children: bool,
         collapsed: bool,
+    },
+    Tab {
+        ws_idx: usize,
+        tab_idx: usize,
     },
     /// A row of the agent table. The row is the only handle on the space the
     /// agent works in as well as on the agent itself, so this menu carries
@@ -1435,6 +1473,9 @@ impl ContextMenuState {
     pub fn items(&self) -> Vec<String> {
         match &self.kind {
             ContextMenuKind::Workspace { .. } => vec!["Rename".into(), "Close".into()],
+            ContextMenuKind::Tab { .. } => {
+                vec!["New tab".into(), "Rename".into(), "Close".into()]
+            }
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
                 has_worktree_children: false,
@@ -1700,6 +1741,9 @@ pub struct AppState {
     #[allow(dead_code)]
     pub sidebar_width_auto: bool,
     pub sidebar_collapsed: bool,
+    /// When true, the agent table band is a one-row expand chrome instead of the
+    /// full table, freeing height for tabs and panes.
+    pub agent_table_collapsed: bool,
     pub spaces_collapsed: bool,
     /// Legacy ratio of sidebar height once allocated to the workspaces
     /// section. Kept so older sessions still restore.
@@ -1709,11 +1753,16 @@ pub struct AppState {
     /// How far down the agent list the table's first drawn row sits. It follows
     /// the focused agent, and a wheel notch over the table moves it directly.
     pub agent_table_scroll: usize,
+    /// Horizontal scroll offset for the active space's tab strip.
+    pub tab_scroll: usize,
+    /// When true, layout recenters the strip on the active tab.
+    pub tab_scroll_follow_active: bool,
     pub mobile_switcher_scroll: usize,
     // View geometry (computed before render, consumed by render + mouse)
     pub view: ViewState,
     pub(crate) drag: Option<DragState>,
     pub(crate) workspace_press: Option<WorkspacePressState>,
+    pub(crate) tab_press: Option<TabPressState>,
     pub(crate) pane_press: Option<PanePressState>,
     pub(crate) agent_press: Option<AgentPressState>,
     pub(crate) sidebar_agent_press: Option<SidebarAgentPressState>,
@@ -1755,6 +1804,7 @@ pub struct AppState {
     pub hide_cursor_when_unfocused: bool,
     pub mouse_scroll_lines: usize,
     pub confirm_close: bool,
+    pub prompt_new_tab_name: bool,
     pub nerd_font: bool,
     pub show_agent_labels_on_pane_borders: bool,
     pub pane_header: PaneHeaderConfig,
@@ -2143,31 +2193,18 @@ impl AppState {
             sidebar_width_source: SidebarWidthSource::ConfigDefault,
             sidebar_width_auto: false,
             sidebar_collapsed: false,
+            agent_table_collapsed: false,
             spaces_collapsed: false,
             sidebar_section_split: 0.5,
             agent_panel_scope: AgentPanelScope::AllWorkspaces,
             agent_table_scroll: 0,
+            tab_scroll: 0,
+            tab_scroll_follow_active: true,
             mobile_switcher_scroll: 0,
-            view: ViewState {
-                layout: ViewLayout::Desktop,
-                composer: crate::ui::ComposerLayout::default(),
-                sidebar_rect: Rect::default(),
-                workspace_card_areas: Vec::new(),
-                agent_row_areas: Vec::new(),
-                agent_folder_areas: Vec::new(),
-                agent_table: crate::ui::AgentTableLayout::default(),
-                agent_locations: std::collections::HashMap::new(),
-                terminal_area: Rect::default(),
-                mobile_header_rect: Rect::default(),
-                mobile_menu_hit_area: Rect::default(),
-                toast_hit_area: Rect::default(),
-                pane_infos: Vec::new(),
-                pane_chrome_controls: Vec::new(),
-                pane_title_hit_areas: Vec::new(),
-                split_borders: Vec::new(),
-            },
+            view: ViewState::default(),
             drag: None,
             workspace_press: None,
+            tab_press: None,
             pane_press: None,
             agent_press: None,
             sidebar_agent_press: None,
@@ -2196,6 +2233,7 @@ impl AppState {
             hide_cursor_when_unfocused: true,
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             confirm_close: true,
+            prompt_new_tab_name: true,
             nerd_font: false,
             show_agent_labels_on_pane_borders: true,
             pane_header: PaneHeaderConfig::default(),

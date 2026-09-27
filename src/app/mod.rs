@@ -52,7 +52,6 @@ use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute, terminal,
 };
-use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 use tokio::sync::{mpsc, Notify};
 use tracing::info;
@@ -106,6 +105,25 @@ impl AgentNameClickState {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TabClickState {
+    ws_idx: usize,
+    tab_idx: usize,
+    row: u16,
+    col: u16,
+    at: Instant,
+}
+
+impl TabClickState {
+    fn is_double_click_for(self, next: Self) -> bool {
+        self.ws_idx == next.ws_idx
+            && self.tab_idx == next.tab_idx
+            && next.at.duration_since(self.at) <= PANE_DOUBLE_CLICK_WINDOW
+            && self.row.abs_diff(next.row) <= 1
+            && self.col.abs_diff(next.col) <= 1
+    }
+}
+
 pub struct App {
     pub state: AppState,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
@@ -131,6 +149,7 @@ pub struct App {
         HashMap<crate::terminal::TerminalId, crate::agent_model::AgentModelCacheEntry>,
     pub(crate) last_pane_click: Option<PaneClickState>,
     pub(crate) last_agent_name_click: Option<AgentNameClickState>,
+    pub(crate) last_tab_click: Option<TabClickState>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_animation_tick: Option<Instant>,
     pub(crate) next_auto_update_check: Option<Instant>,
@@ -291,6 +310,7 @@ impl App {
         let mut restored_collapsed_space_keys = std::collections::HashSet::new();
         let mut restored_collapsed_agent_space_ids = std::collections::HashSet::new();
         let mut restored_sidebar_collapsed = false;
+        let mut restored_agent_table_collapsed = false;
         let mut restored_spaces_collapsed = false;
         let (workspaces, active, selected) = if no_session {
             (Vec::new(), None, 0)
@@ -303,6 +323,7 @@ impl App {
             restored_collapsed_space_keys = snap.collapsed_space_keys.clone();
             restored_collapsed_agent_space_ids = snap.collapsed_agent_space_ids.clone();
             restored_sidebar_collapsed = snap.sidebar_collapsed;
+            restored_agent_table_collapsed = snap.agent_table_collapsed;
             restored_spaces_collapsed = snap.spaces_collapsed;
             let history = config
                 .experimental
@@ -458,31 +479,18 @@ impl App {
             },
             sidebar_width_auto: false,
             sidebar_collapsed: restored_sidebar_collapsed,
+            agent_table_collapsed: restored_agent_table_collapsed,
             spaces_collapsed: restored_spaces_collapsed,
             sidebar_section_split: restored_sidebar_section_split.unwrap_or(0.5),
             agent_panel_scope: state::AgentPanelScope::AllWorkspaces,
             agent_table_scroll: 0,
+            tab_scroll: 0,
+            tab_scroll_follow_active: true,
             mobile_switcher_scroll: 0,
-            view: state::ViewState {
-                layout: state::ViewLayout::Desktop,
-                composer: crate::ui::ComposerLayout::default(),
-                sidebar_rect: ratatui::layout::Rect::default(),
-                workspace_card_areas: Vec::new(),
-                agent_row_areas: Vec::new(),
-                agent_folder_areas: Vec::new(),
-                agent_table: crate::ui::AgentTableLayout::default(),
-                agent_locations: std::collections::HashMap::new(),
-                terminal_area: Rect::default(),
-                mobile_header_rect: Rect::default(),
-                mobile_menu_hit_area: Rect::default(),
-                toast_hit_area: Rect::default(),
-                pane_infos: Vec::new(),
-                pane_chrome_controls: Vec::new(),
-                pane_title_hit_areas: Vec::new(),
-                split_borders: Vec::new(),
-            },
+            view: state::ViewState::default(),
             drag: None,
             workspace_press: None,
+            tab_press: None,
             pane_press: None,
             agent_press: None,
             sidebar_agent_press: None,
@@ -511,6 +519,7 @@ impl App {
             hide_cursor_when_unfocused: config.ui.hide_cursor_when_unfocused,
             mouse_scroll_lines: config.ui.mouse_scroll_lines(),
             confirm_close: config.ui.confirm_close,
+            prompt_new_tab_name: config.ui.prompt_new_tab_name,
             nerd_font: config.ui.nerd_font,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             pane_header: config.ui.pane_header,
@@ -601,6 +610,7 @@ impl App {
             agent_model_cache: HashMap::new(),
             last_pane_click: None,
             last_agent_name_click: None,
+            last_tab_click: None,
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
             next_animation_tick: None,
             next_auto_update_check: auto_updates_enabled(no_session)
@@ -687,6 +697,7 @@ impl App {
         app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
         app.state.collapsed_agent_space_ids = snapshot.collapsed_agent_space_ids.clone();
         app.state.sidebar_collapsed = snapshot.sidebar_collapsed;
+        app.state.agent_table_collapsed = snapshot.agent_table_collapsed;
         app.state.spaces_collapsed = snapshot.spaces_collapsed;
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
@@ -1232,6 +1243,7 @@ impl App {
             self.state.right_click_passthrough_modifiers =
                 config.ui.right_click_passthrough_modifiers();
             self.state.confirm_close = config.ui.confirm_close;
+            self.state.prompt_new_tab_name = config.ui.prompt_new_tab_name;
             self.state.nerd_font = config.ui.nerd_font;
             self.state.show_agent_labels_on_pane_borders =
                 config.ui.show_agent_labels_on_pane_borders;
@@ -1455,7 +1467,7 @@ impl App {
                     input::ComposerKeyOutcome::Edited => {}
                 }
             }
-            Mode::RenameWorkspace | Mode::RenamePane => {
+            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
                 input::handle_rename_key(&mut self.state, key_event);
             }
             Mode::NewLinkedWorktree => {

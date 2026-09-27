@@ -855,6 +855,114 @@ impl AppState {
         true
     }
 
+    pub fn switch_tab(&mut self, idx: usize) {
+        if let Some(ws_idx) = self.active {
+            if self.switch_workspace_tab(ws_idx, idx) {
+                let workspace_id = self.workspaces[ws_idx].id.clone();
+                let tab_id = format!("{}:{}", workspace_id, idx + 1);
+                crate::logging::tab_focused(&workspace_id, &tab_id);
+            }
+            self.tab_scroll_follow_active = true;
+        }
+    }
+
+    pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) {
+        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
+            if ws.move_tab(source_idx, insert_idx) {
+                self.mark_session_dirty();
+                self.tab_scroll_follow_active = true;
+            }
+        }
+    }
+
+    pub fn next_tab(&mut self) {
+        if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
+            if !ws.tabs.is_empty() {
+                let next = (ws.active_tab + 1) % ws.tabs.len();
+                self.switch_tab(next);
+            }
+        }
+    }
+
+    pub fn previous_tab(&mut self) {
+        if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
+            if !ws.tabs.is_empty() {
+                let prev = if ws.active_tab == 0 {
+                    ws.tabs.len() - 1
+                } else {
+                    ws.active_tab - 1
+                };
+                self.switch_tab(prev);
+            }
+        }
+    }
+
+    pub fn scroll_tabs_left(&mut self) {
+        if self.tab_scroll > 0 {
+            self.tab_scroll -= 1;
+            self.tab_scroll_follow_active = false;
+        }
+    }
+
+    pub fn scroll_tabs_right(&mut self) {
+        let max = self
+            .active
+            .and_then(|i| self.workspaces.get(i))
+            .map(|ws| ws.tabs.len().saturating_sub(1))
+            .unwrap_or(0);
+        if self.tab_scroll < max {
+            self.tab_scroll += 1;
+            self.tab_scroll_follow_active = false;
+        }
+    }
+
+    pub fn close_tab(&mut self) -> bool {
+        if self.active.is_some_and(|ws_idx| {
+            self.workspaces
+                .get(ws_idx)
+                .is_some_and(|ws| ws.tabs.len() <= 1)
+                && self.workspace_close_would_close_worktree_group(ws_idx)
+        }) {
+            if let Some(ws_idx) = self.active {
+                if self.confirm_implicit_worktree_group_close(ws_idx) {
+                    return true;
+                }
+            }
+        }
+
+        self.selection = None;
+        self.selection_autoscroll = None;
+        self.mark_session_dirty();
+        let should_close_workspace = self
+            .active
+            .and_then(|i| self.workspaces.get(i))
+            .is_some_and(|ws| ws.tabs.len() <= 1);
+        if should_close_workspace {
+            if let Some(active) = self.active {
+                self.selected = active;
+            }
+            self.close_selected_workspace();
+            return false;
+        }
+        if let Some(ws_idx) = self.active {
+            let terminal_ids = self
+                .workspaces
+                .get(ws_idx)
+                .map(|ws| self.terminal_ids_for_tab(ws_idx, ws.active_tab))
+                .unwrap_or_default();
+            let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+                return false;
+            };
+            let workspace_id = ws.id.clone();
+            let closing_tab_id = format!("{}:{}", workspace_id, ws.active_tab + 1);
+            ws.close_active_tab();
+            self.remove_unattached_terminal_ids(terminal_ids);
+            crate::logging::tab_closed(&workspace_id, &closing_tab_id);
+            self.tab_scroll_follow_active = true;
+        }
+        false
+    }
+
     /// Keep the space's agents on screen in the agent table. On mobile the
     /// switcher scrolls instead; on the desktop the table follows the focused
     /// agent on its own, in `split_agent_table`.
@@ -936,7 +1044,8 @@ impl AppState {
             .into_iter()
             .filter_map(|entry| match entry {
                 crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
-                crate::ui::WorkspaceListEntry::Agent { .. } => None,
+                crate::ui::WorkspaceListEntry::Tab { .. }
+                | crate::ui::WorkspaceListEntry::Agent { .. } => None,
             })
             .collect::<Vec<_>>();
         if order.is_empty() {
@@ -4205,7 +4314,7 @@ mod tests {
             },
         );
 
-        state.sort_agent_table_by_column(2);
+        state.sort_agent_table_by_column(1);
 
         assert_eq!(pane_table_order(&state), vec![apple, mango, zebra]);
     }
@@ -4229,7 +4338,7 @@ mod tests {
         terminal_for(&mut state, first).session_title = Some("Add docs".into());
         terminal_for(&mut state, middle).session_title = Some("Fix parser".into());
 
-        state.sort_agent_table_by_column(1);
+        state.sort_agent_table_by_column(2);
 
         assert_eq!(pane_table_order(&state), vec![first, middle, later]);
     }

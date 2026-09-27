@@ -249,6 +249,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # current name-only titles. Turn them on from Settings → pane labels, or here.
 # [ui.pane_header]
 # agent_name = true
+# hostname = false
 # working_directory = false
 # parent_directory = false
 # git_branch = false

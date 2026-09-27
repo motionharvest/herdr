@@ -198,6 +198,7 @@ impl AppState {
             self.mode,
             Mode::Navigate
                 | Mode::RenameWorkspace
+                | Mode::RenameTab
                 | Mode::Resize
                 | Mode::ConfirmClose
                 | Mode::ContextMenu
@@ -253,13 +254,14 @@ impl AppState {
             return None;
         }
 
-        let (cards, agent_rows) = if self.view.workspace_card_areas.is_empty() {
-            let (cards, agent_rows, _) =
+        let (cards, tab_rows, agent_rows) = if self.view.workspace_card_areas.is_empty() {
+            let (cards, tab_rows, agent_rows, _) =
                 crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect);
-            (cards, agent_rows)
+            (cards, tab_rows, agent_rows)
         } else {
             (
                 self.view.workspace_card_areas.clone(),
+                self.view.tab_row_areas.clone(),
                 self.view.agent_row_areas.clone(),
             )
         };
@@ -289,9 +291,13 @@ impl AppState {
 
         let mut best: Option<(usize, u16)> = None;
         for insert_idx in insert_indices {
-            let Some(slot_row) =
-                crate::ui::workspace_drop_indicator_row(&cards, &agent_rows, area, insert_idx)
-            else {
+            let Some(slot_row) = crate::ui::workspace_drop_indicator_row(
+                &cards,
+                &tab_rows,
+                &agent_rows,
+                area,
+                insert_idx,
+            ) else {
                 continue;
             };
             let distance = row.abs_diff(slot_row);
@@ -335,7 +341,7 @@ impl AppState {
 
     fn drawn_agent_rows(&self) -> Vec<crate::app::state::AgentRowArea> {
         if self.view.workspace_card_areas.is_empty() {
-            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).1
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).2
         } else {
             self.view.agent_row_areas.clone()
         }
@@ -347,7 +353,7 @@ impl AppState {
         ws_idx: usize,
     ) -> Vec<crate::app::state::AgentFolderArea> {
         let folder_rows = if self.view.workspace_card_areas.is_empty() {
-            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).2
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).3
         } else {
             self.view.agent_folder_areas.clone()
         };
@@ -462,6 +468,22 @@ impl AppState {
             .map(|area| (area.ws_idx, area.tab_idx, area.pane_id))
     }
 
+    /// Tab row under `row` in the spaces list.
+    pub(super) fn tab_row_target_at(&self, row: u16) -> Option<(usize, usize)> {
+        if self.sidebar_collapsed {
+            return None;
+        }
+        let tab_rows = if self.view.tab_row_areas.is_empty() {
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).1
+        } else {
+            self.view.tab_row_areas.clone()
+        };
+        tab_rows
+            .into_iter()
+            .find(|area| row >= area.rect.y && row < area.rect.y + area.rect.height)
+            .map(|area| (area.ws_idx, area.tab_idx))
+    }
+
     /// The folder row under `row`, which a press can pick up and drag.
     pub(super) fn agent_folder_target_at(&self, row: u16) -> Option<(usize, String)> {
         if self.sidebar_collapsed {
@@ -469,7 +491,7 @@ impl AppState {
         }
 
         let folder_rows = if self.view.workspace_card_areas.is_empty() {
-            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).2
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).3
         } else {
             self.view.agent_folder_areas.clone()
         };
@@ -687,7 +709,7 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 30);
-        let (cards, agent_rows, folder_rows) =
+        let (cards, _tabs, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
@@ -857,7 +879,7 @@ mod tests {
         app.state.mode = Mode::Terminal;
         app.state.agent_panel_scope = AgentPanelScope::AllWorkspaces;
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 40);
-        let (cards, agent_rows, folder_rows) =
+        let (cards, _tabs, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
@@ -931,18 +953,22 @@ mod tests {
     }
 
     #[test]
-    fn clicking_scrolled_agent_detail_row_switches_to_correct_tab_and_pane() {
+    fn clicking_scrolled_agent_detail_row_focuses_that_pane_in_the_active_tab() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");
         let first_pane = ws.tabs[0].root_pane;
+        // Only the active tab's agents are listed, so the rows under test all
+        // live in the second tab, which is made active; the split that is
+        // made last holds the focus until the click moves it.
         let second_tab = ws.test_add_tab(Some("logs"));
+        ws.active_tab = second_tab;
         let second_pane = ws.tabs[second_tab].root_pane;
         let mut extra_tabs = Vec::new();
-        for (tab_name, agent) in [("review", Agent::Codex), ("ops", Agent::Gemini)] {
-            let tab_idx = ws.test_add_tab(Some(tab_name));
-            let pane_id = ws.tabs[tab_idx].root_pane;
-            extra_tabs.push((tab_idx, pane_id, agent));
+        for agent in [Agent::Codex, Agent::Gemini] {
+            let pane_id = ws.test_split(ratatui::layout::Direction::Horizontal);
+            extra_tabs.push((second_tab, pane_id, agent));
         }
+        assert_ne!(ws.focused_pane_id(), Some(second_pane));
 
         app.state.workspaces = vec![ws];
         app.state.ensure_test_terminals();
@@ -978,7 +1004,7 @@ mod tests {
         // Scroll the merged list past the workspace card so agent rows shift up.
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 20);
         app.state.workspace_scroll = 1;
-        let (cards, agent_rows, folder_rows) =
+        let (cards, _tabs, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
@@ -1269,7 +1295,7 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 30);
-        let (cards, agent_rows, folder_rows) =
+        let (cards, _tabs, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
@@ -1307,7 +1333,7 @@ mod tests {
         let area = Rect::new(0, 0, 106, 30);
         crate::ui::compute_view(&mut app.state, area);
         let row = crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect)
-            .1
+            .2
             .first()
             .expect("the list should show agent rows")
             .rect;
@@ -1401,6 +1427,7 @@ mod tests {
         let source_row = app.state.view.workspace_card_areas[1].rect.y;
         let target_row = crate::ui::workspace_drop_indicator_row(
             &app.state.view.workspace_card_areas,
+            &app.state.view.tab_row_areas,
             &app.state.view.agent_row_areas,
             app.state.workspace_list_rect(),
             0,
@@ -1446,16 +1473,16 @@ mod tests {
         assert_eq!(captured_names, vec!["b", "a", "c"]);
     }
 
-    /// A space with `agents.len()` agent rows, one pane per tab, laid out in
-    /// the sidebar and ready for mouse events.
+    /// A space with `agents.len()` agent rows, all panes of its one tab (only
+    /// the active tab's agents are listed), laid out in the sidebar and ready
+    /// for mouse events. The names are not used; each agent is a split.
     fn app_with_agent_rows(agents: &[(&str, Agent)]) -> crate::app::App {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("space");
         let mut panes = vec![(0_usize, ws.tabs[0].root_pane, agents[0].1)];
-        for (name, agent) in &agents[1..] {
-            let tab_idx = ws.test_add_tab(Some(name));
-            let pane_id = ws.tabs[tab_idx].root_pane;
-            panes.push((tab_idx, pane_id, *agent));
+        for (_name, agent) in &agents[1..] {
+            let pane_id = ws.test_split(ratatui::layout::Direction::Horizontal);
+            panes.push((0, pane_id, *agent));
         }
 
         app.state.workspaces = vec![ws];
@@ -1474,7 +1501,7 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 40);
-        let (cards, agent_rows, folder_rows) =
+        let (cards, _tabs, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
@@ -1490,15 +1517,15 @@ mod tests {
             .collect()
     }
 
-    /// One space whose agents work in the folders given, one agent per entry.
+    /// One space whose agents work in the folders given, one agent per entry,
+    /// all panes of the space's one tab. The names are not used.
     fn app_with_agent_folders(agents: &[(&str, &str)]) -> crate::app::App {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("space");
         let mut panes = vec![(0_usize, ws.tabs[0].root_pane, agents[0].1)];
-        for (name, cwd) in &agents[1..] {
-            let tab_idx = ws.test_add_tab(Some(name));
-            let pane_id = ws.tabs[tab_idx].root_pane;
-            panes.push((tab_idx, pane_id, *cwd));
+        for (_name, cwd) in &agents[1..] {
+            let pane_id = ws.test_split(ratatui::layout::Direction::Horizontal);
+            panes.push((0, pane_id, *cwd));
         }
 
         app.state.workspaces = vec![ws];
@@ -1515,7 +1542,7 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app.state.view.sidebar_rect = Rect::new(0, 0, 26, 40);
-        let (cards, agent_rows, folder_rows) =
+        let (cards, _tabs, agent_rows, folder_rows) =
             crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
         app.state.view.workspace_card_areas = cards;
         app.state.view.agent_row_areas = agent_rows;
@@ -1534,7 +1561,7 @@ mod tests {
     }
 
     #[test]
-    fn agents_in_one_folder_are_listed_together_however_their_tabs_are_ordered() {
+    fn agents_in_one_folder_are_listed_together_however_their_panes_are_ordered() {
         let app =
             app_with_agent_folders(&[("one", "/srv/a"), ("two", "/srv/b"), ("three", "/srv/a")]);
         let natural = app.state.workspaces[0].natural_pane_order();
@@ -1583,7 +1610,10 @@ mod tests {
         let natural = app.state.workspaces[0].natural_pane_order();
         let rows = app.state.view.agent_row_areas.clone();
         let source = rows[0].rect;
-        let below_everything = rows[2].rect.y + rows[2].rect.height + 4;
+        // Just past the last row, which is the end of the space's list. Further
+        // down sits `+ new`, where a pane that shares its tab flies out to a
+        // space of its own instead.
+        let below_everything = rows[2].rect.y + rows[2].rect.height;
 
         drag_sidebar(
             &mut app,
@@ -1662,9 +1692,13 @@ mod tests {
     fn right_clicking_an_agent_row_renames_that_row_s_pane() {
         let mut app = app_with_agent_rows(&[("one", Agent::Pi), ("two", Agent::Claude)]);
         let rows = app.state.view.agent_row_areas.clone();
-        // The second row lives in another tab, so the menu has to carry the
-        // pane rather than lean on whatever was focused before.
-        let target = &rows[1];
+        // Right-click the row whose pane is not focused, so the menu has to
+        // carry the pane rather than lean on whatever was focused before.
+        let focused = app.state.workspaces[0].focused_pane_id();
+        let target = rows
+            .iter()
+            .find(|row| Some(row.pane_id) != focused)
+            .expect("one row is not the focused pane");
 
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Right),
@@ -1778,9 +1812,9 @@ mod tests {
         let natural = agent_row_pane_ids(&app);
         assert!(app.state.move_agent_in_folder(0, natural[2], 0));
 
-        // Closing the tab that owns the moved pane takes it out of the space.
-        app.state.workspaces[0].active_tab = 2;
-        app.state.workspaces[0].close_active_tab();
+        // Closing the moved pane takes it out of the space.
+        let space_closes = app.state.workspaces[0].close_pane(natural[2]);
+        assert!(!space_closes, "two panes are left in the space");
 
         assert!(!app.state.workspaces[0]
             .ordered_pane_ids()
@@ -1850,11 +1884,27 @@ mod tests {
         app.state.view.workspace_card_areas =
             crate::ui::compute_workspace_card_areas(&app.state, app.state.view.sidebar_rect);
 
-        assert_eq!(app.state.workspace_drop_index_at_row(0), Some(0));
-        assert_eq!(app.state.workspace_drop_index_at_row(1), Some(0));
-        assert_eq!(app.state.workspace_drop_index_at_row(2), Some(1));
-        assert_eq!(app.state.workspace_drop_index_at_row(3), Some(1));
-        assert_eq!(app.state.workspace_drop_index_at_row(4), Some(1));
+        // Each card is followed by its space's tab row, so the slot before the
+        // second space is the free row above its card, below the first
+        // space's tab row: measure from the cards rather than fixed rows.
+        let cards = app.state.view.workspace_card_areas.clone();
+        let top_slot = cards[0].rect.y - 1;
+        let second_slot = cards[1].rect.y - 1;
+        assert!(second_slot > cards[0].rect.y + cards[0].rect.height);
+        assert_eq!(app.state.workspace_drop_index_at_row(top_slot), Some(0));
+        assert_eq!(
+            app.state.workspace_drop_index_at_row(cards[0].rect.y),
+            Some(0)
+        );
+        assert_eq!(
+            app.state.workspace_drop_index_at_row(second_slot - 1),
+            Some(1)
+        );
+        assert_eq!(app.state.workspace_drop_index_at_row(second_slot), Some(1));
+        assert_eq!(
+            app.state.workspace_drop_index_at_row(cards[1].rect.y),
+            Some(1)
+        );
 
         let _ = fs::remove_dir_all(first_repo);
         let _ = fs::remove_dir_all(second_repo);
@@ -1873,21 +1923,24 @@ mod tests {
         app.state.view.workspace_card_areas =
             crate::ui::compute_workspace_card_areas(&app.state, app.state.view.sidebar_rect);
 
-        // These spaces have no attached terminals, so the list is cards only and
-        // the end of it is the row below the last card.
+        // These spaces have no attached terminals, so each card is followed
+        // only by its tab row, and the end of the list is below the last one:
+        // that row, then its blank row and the group's floor.
         let cards = &app.state.view.workspace_card_areas;
         let agent_rows = &app.state.view.agent_row_areas;
         assert!(agent_rows.is_empty());
         let bottom_slot = crate::ui::workspace_drop_indicator_row(
             cards,
+            &app.state.view.tab_row_areas,
             agent_rows,
             app.state.workspace_list_rect(),
             cards.len(),
         )
         .unwrap();
 
-        let last = cards.last().unwrap().rect;
-        assert_eq!(bottom_slot, last.y + last.height);
+        let last_tab = app.state.view.tab_row_areas.last().unwrap().rect;
+        assert!(last_tab.y > cards.last().unwrap().rect.y);
+        assert_eq!(bottom_slot, last_tab.y + last_tab.height + 2);
         assert!(bottom_slot < app.state.sidebar_footer_rect().y);
     }
 
@@ -1919,6 +1972,7 @@ mod tests {
         let agent_rows = &app.state.view.agent_row_areas;
         let end_slot = crate::ui::workspace_drop_indicator_row(
             cards,
+            &app.state.view.tab_row_areas,
             agent_rows,
             app.state.workspace_list_rect(),
             2,
@@ -1955,6 +2009,7 @@ mod tests {
             .rect;
         let target_row = crate::ui::workspace_drop_indicator_row(
             &app.state.view.workspace_card_areas,
+            &app.state.view.tab_row_areas,
             &app.state.view.agent_row_areas,
             app.state.workspace_list_rect(),
             0,

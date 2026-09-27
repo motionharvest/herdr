@@ -2,8 +2,8 @@
 //!
 //! One row per agent, every agent herdr is running, whichever space it belongs
 //! to. The row is what the sidebar's card used to be, written across instead of
-//! down: what the agent is called, what it says it is doing, the folder it is
-//! in, which harness is behind it, how long it has been running or idle, and
+//! down: what the agent is called, the folder it is in, what it says it is
+//! doing, which harness is behind it, how long it has been running or idle, and
 //! the branch it is on. How it is getting on is the margin beside the row
 //! rather than a column of its own.
 //!
@@ -39,19 +39,11 @@ use crate::terminal::TerminalRuntimeRegistry;
 /// State is not a column. The margin beside a row already says whether the
 /// agent is working, waiting on an answer, or finished, in one cell and in
 /// color, and a word repeating it would only take room from the summary.
-const HEADINGS: [&str; 7] = [
-    "Agent Name",
-    "Summary",
-    "Directory",
-    "Agent",
-    "Run",
-    "Idle",
-    "Git Status",
-];
+const HEADINGS: [&str; 7] = ["Name", "Dir", "Task", "Agent", "Run", "Idle", "Git Status"];
 const COLUMNS: usize = HEADINGS.len();
 const COL_NAME: usize = 0;
-const COL_SUMMARY: usize = 1;
-const COL_DIRECTORY: usize = 2;
+const COL_DIRECTORY: usize = 1;
+const COL_SUMMARY: usize = 2;
 const COL_AGENT: usize = 3;
 const COL_RUN: usize = 4;
 const COL_IDLE: usize = 5;
@@ -282,6 +274,11 @@ pub struct AgentTableLayout {
     pub rows: Vec<AgentTableRow>,
     /// How far down the agent list the first drawn row sits.
     pub scroll: usize,
+    /// One-row expand chrome instead of the full table.
+    pub collapsed: bool,
+    /// Hit target that toggles collapse (gutter chevron when expanded, whole
+    /// row when collapsed).
+    pub collapse_hit_area: Rect,
 }
 
 impl AgentTableLayout {
@@ -322,7 +319,7 @@ impl AgentTableLayout {
 pub(crate) fn split_agent_table(app: &mut AppState, area: Rect) -> (AgentTableLayout, Rect) {
     let entries = agent_panel_entries(app);
     let least_below = TABLE_FOOTER_ROWS + 3;
-    if area.width <= GUTTER || area.height < 2 + least_below {
+    if area.width <= GUTTER || area.height < 1 + least_below {
         app.agent_table_scroll = 0;
         return (AgentTableLayout::default(), area);
     }
@@ -333,6 +330,27 @@ pub(crate) fn split_agent_table(app: &mut AppState, area: Rect) -> (AgentTableLa
         width: area.width.saturating_sub(2),
         height: area.height,
     };
+
+    if app.agent_table_collapsed {
+        let table = Rect { height: 1, ..inset };
+        let below = Rect {
+            x: area.x,
+            y: table.y + table.height + TABLE_FOOTER_ROWS,
+            width: area.width,
+            height: area.height.saturating_sub(table.height + TABLE_FOOTER_ROWS),
+        };
+        return (
+            AgentTableLayout {
+                area: table,
+                groups: Vec::new(),
+                rows: Vec::new(),
+                scroll: 0,
+                collapsed: true,
+                collapse_hit_area: table,
+            },
+            below,
+        );
+    }
     // A group is as tall as the table is allowed to be, and the table is as tall
     // as its agents need up to that. Agents past what one group holds do not make
     // it taller; they make another group.
@@ -426,12 +444,20 @@ pub(crate) fn split_agent_table(app: &mut AppState, area: Rect) -> (AgentTableLa
         width: area.width,
         height: area.height.saturating_sub(table.height + TABLE_FOOTER_ROWS),
     };
+    let collapse_hit_area = Rect {
+        x: table.x,
+        y: table.y,
+        width: GUTTER.min(table.width),
+        height: 1,
+    };
     (
         AgentTableLayout {
             area: table,
             groups,
             rows,
             scroll: app.agent_table_scroll,
+            collapsed: false,
+            collapse_hit_area,
         },
         below,
     )
@@ -477,7 +503,7 @@ fn position_of(entries: &[AgentPanelEntry], ws_idx: usize, pane_id: PaneId) -> O
 }
 
 /// Every column is as wide as the widest cell in that group, heading included.
-/// Leftover room is not given to any column, so Directory sits next to Summary
+/// Leftover room is not given to any column, so Dir sits next to Task
 /// instead of at the far side of the group. A group is measured against its
 /// own agents only, so one group's long title does not stretch the same
 /// column in the group beside it.
@@ -507,6 +533,11 @@ fn column_widths(app: &AppState, held: &[AgentPanelEntry], group_width: u16) -> 
 fn cell_texts(app: &AppState, entry: &AgentPanelEntry) -> [String; COLUMNS] {
     [
         entry.name.clone(),
+        entry
+            .location
+            .as_ref()
+            .map(|location| location.folder())
+            .unwrap_or_default(),
         if entry.landing {
             "landing".to_string()
         } else if entry.land_failed {
@@ -514,11 +545,6 @@ fn cell_texts(app: &AppState, entry: &AgentPanelEntry) -> [String; COLUMNS] {
         } else {
             agent_status_detail_text(app, &entry.terminal_id).unwrap_or_default()
         },
-        entry
-            .location
-            .as_ref()
-            .map(|location| location.folder())
-            .unwrap_or_default(),
         entry
             .agent_label
             .as_deref()
@@ -895,7 +921,33 @@ pub(crate) fn render_agent_table(
         return;
     }
 
+    if layout.collapsed {
+        let count = entries.len();
+        let label = if count == 0 {
+            "▸ Agents".to_string()
+        } else {
+            format!("▸ Agents ({count})")
+        };
+        render_line(
+            frame,
+            layout.area,
+            Line::styled(
+                pad(&label, layout.area.width as usize),
+                Style::default().fg(app.palette.overlay0),
+            ),
+        );
+        return;
+    }
+
     render_group_dividers(app, frame, layout);
+
+    if layout.collapse_hit_area.width > 0 {
+        render_line(
+            frame,
+            layout.collapse_hit_area,
+            Line::styled("▾", Style::default().fg(app.palette.overlay0)),
+        );
+    }
 
     let heading = Style::default().fg(app.palette.overlay0);
     for group in &layout.groups {
@@ -1114,7 +1166,7 @@ fn cell_line<'a>(
 ) -> Line<'a> {
     match column {
         COL_NAME => {
-            // The name matches Summary until the row is selected. Then a
+            // The name matches Task until the row is selected. Then a
             // docked name is the focus color and a hidden name is the
             // accent.
             let style = if selected {
@@ -1441,6 +1493,19 @@ mod tests {
             }
         }
         state
+    }
+
+    #[test]
+    fn collapsed_agent_table_is_one_row_with_expand_chrome() {
+        let mut state = state_with_agents(3);
+        state.agent_table_collapsed = true;
+        let area = Rect::new(0, 0, 120, 40);
+        let (layout, below) = split_agent_table(&mut state, area);
+        assert!(layout.collapsed);
+        assert_eq!(layout.area.height, 1);
+        assert!(layout.rows.is_empty());
+        assert!(below.height > layout.area.height);
+        assert_eq!(layout.collapse_hit_area, layout.area);
     }
 
     #[test]

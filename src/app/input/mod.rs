@@ -88,7 +88,7 @@ impl App {
                     Mode::ReleaseNotes => self.handle_release_notes_key(key_event),
                     Mode::ProductAnnouncement => self.handle_product_announcement_key(key_event),
                     Mode::Prefix | Mode::Navigate | Mode::Copy | Mode::Composer => unreachable!(),
-                    Mode::RenameWorkspace | Mode::RenamePane => {
+                    Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
                         handle_rename_key(&mut self.state, key_event)
                     }
                     Mode::NewLinkedWorktree => self.handle_worktree_create_key(key_event),
@@ -324,6 +324,10 @@ impl App {
             return;
         }
 
+        if self.handle_tab_double_click(mouse) {
+            return;
+        }
+
         if self.handle_modified_url_click(mouse) {
             return;
         }
@@ -438,6 +442,69 @@ impl App {
         self.state.drag = None;
         modal::open_rename_pane(&mut self.state, hit.pane_id);
         self.state.mode == Mode::RenamePane
+    }
+
+    fn handle_tab_double_click(&mut self, mouse: MouseEvent) -> bool {
+        if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) {
+            self.last_tab_click = None;
+            return false;
+        }
+
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+
+        if !mouse.modifiers.is_empty()
+            || !matches!(
+                self.state.mode,
+                Mode::Terminal | Mode::Navigate | Mode::Prefix
+            )
+        {
+            self.last_tab_click = None;
+            return false;
+        }
+
+        let target = self
+            .state
+            .active
+            .zip(self.state.tab_at(mouse.column, mouse.row))
+            .or_else(|| {
+                // Sidebar tab rows are found by row alone, so the click has
+                // to be inside the sidebar first; otherwise any row lined up
+                // with one, in the agent table or a pane, would count.
+                let sidebar = self.state.view.sidebar_rect;
+                let in_sidebar = mouse.column >= sidebar.x
+                    && mouse.column < sidebar.x + sidebar.width
+                    && mouse.row >= sidebar.y
+                    && mouse.row < sidebar.y + sidebar.height;
+                in_sidebar
+                    .then(|| self.state.tab_row_target_at(mouse.row))
+                    .flatten()
+            });
+        let Some((ws_idx, tab_idx)) = target else {
+            self.last_tab_click = None;
+            return false;
+        };
+        let click = super::TabClickState {
+            ws_idx,
+            tab_idx,
+            row: mouse.row,
+            col: mouse.column,
+            at: std::time::Instant::now(),
+        };
+        if !self
+            .last_tab_click
+            .is_some_and(|last| last.is_double_click_for(click))
+        {
+            self.last_tab_click = Some(click);
+            return false;
+        }
+
+        self.last_tab_click = None;
+        self.state.tab_press = None;
+        self.state.drag = None;
+        modal::open_rename_tab(&mut self.state, ws_idx, tab_idx);
+        self.state.mode == Mode::RenameTab
     }
 
     fn handle_modified_url_click(&mut self, mouse: MouseEvent) -> bool {

@@ -246,6 +246,8 @@ pub struct KeysConfig {
     pub composer: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
     pub toggle_sidebar: BindingConfig,
+    /// Toggle agent table collapse. Default: "prefix+shift+b"
+    pub toggle_agent_table: BindingConfig,
     /// Move workspace selection up in navigate mode. Default: "up".
     pub navigate_workspace_up: BindingConfig,
     /// Move workspace selection down in navigate mode. Default: "down".
@@ -274,8 +276,20 @@ pub struct KeysConfig {
     pub next_agent: BindingConfig,
     /// Focus an agent by index 1-9. Unset by default.
     pub focus_agent: BindingConfig,
+    /// Create a new tab in the active workspace. Default: "prefix+c"
+    pub new_tab: BindingConfig,
+    /// Rename the active tab. Default: "prefix+shift+t".
+    pub rename_tab: BindingConfig,
+    /// Select the previous tab. Default: "prefix+p".
+    pub previous_tab: BindingConfig,
+    /// Select the next tab. Default: "prefix+n".
+    pub next_tab: BindingConfig,
+    /// Switch to tab 1-9. Default: "prefix+1..9".
+    pub switch_tab: BindingConfig,
     /// Switch to workspace 1-9 from prefix mode. Unset by default.
     pub switch_workspace: BindingConfig,
+    /// Close the active tab. Default: "prefix+shift+x".
+    pub close_tab: BindingConfig,
     /// Rename the focused pane. Default: "prefix+shift+p".
     pub rename_pane: BindingConfig,
     /// Open the focused pane scrollback in $EDITOR. Default: "prefix+e".
@@ -325,6 +339,8 @@ pub struct KeysConfig {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct IndexedKeysConfig {
+    /// Modifier combo for tab shortcuts 1-9. Unset by default.
+    pub tabs: String,
     /// Modifier combo for workspace shortcuts 1-9. Unset by default.
     pub workspaces: String,
     /// Modifier combo for agent shortcuts 1-9. Unset by default.
@@ -367,6 +383,8 @@ pub struct UiConfig {
     pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
+    /// Ask for a tab name before creating a new tab. Default: true.
+    pub prompt_new_tab_name: bool,
     /// Use Nerd Font glyphs in optional UI chrome. Default: false.
     pub nerd_font: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
@@ -503,6 +521,7 @@ impl Default for KeysConfig {
             goto: BindingConfig::one("prefix+g"),
             composer: BindingConfig::one("prefix+/"),
             toggle_sidebar: BindingConfig::one("prefix+b"),
+            toggle_agent_table: BindingConfig::one("prefix+shift+b"),
             navigate_workspace_up: BindingConfig::one("up"),
             navigate_workspace_down: BindingConfig::one("down"),
             navigate_pane_left: BindingConfig::one("h"),
@@ -517,7 +536,13 @@ impl Default for KeysConfig {
             previous_agent: BindingConfig::empty(),
             next_agent: BindingConfig::empty(),
             focus_agent: BindingConfig::empty(),
+            new_tab: BindingConfig::one("prefix+c"),
+            rename_tab: BindingConfig::one("prefix+shift+t"),
+            previous_tab: BindingConfig::one("prefix+p"),
+            next_tab: BindingConfig::one("prefix+n"),
+            switch_tab: BindingConfig::one("prefix+1..9"),
             switch_workspace: BindingConfig::empty(),
+            close_tab: BindingConfig::one("prefix+shift+x"),
             rename_pane: BindingConfig::one("prefix+shift+p"),
             edit_scrollback: BindingConfig::one("prefix+e"),
             copy_mode: BindingConfig::one("prefix+["),
@@ -566,6 +591,7 @@ impl Default for UiConfig {
             hide_cursor_when_unfocused: true,
             mouse_scroll_lines: None,
             confirm_close: true,
+            prompt_new_tab_name: true,
             nerd_font: false,
             show_agent_labels_on_pane_borders: true,
             pane_header: PaneHeaderConfig::default(),
@@ -585,6 +611,7 @@ impl Default for UiConfig {
 #[serde(default)]
 pub struct PaneHeaderConfig {
     pub agent_name: bool,
+    pub hostname: bool,
     pub working_directory: bool,
     pub parent_directory: bool,
     pub git_branch: bool,
@@ -595,6 +622,7 @@ impl Default for PaneHeaderConfig {
     fn default() -> Self {
         Self {
             agent_name: true,
+            hostname: false,
             working_directory: false,
             parent_directory: false,
             git_branch: false,
@@ -606,6 +634,7 @@ impl Default for PaneHeaderConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaneHeaderField {
     AgentName,
+    Hostname,
     WorkingDirectory,
     ParentDirectory,
     GitBranch,
@@ -613,8 +642,9 @@ pub(crate) enum PaneHeaderField {
 }
 
 impl PaneHeaderField {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::AgentName,
+        Self::Hostname,
         Self::WorkingDirectory,
         Self::ParentDirectory,
         Self::GitBranch,
@@ -624,6 +654,7 @@ impl PaneHeaderField {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::AgentName => "agent name",
+            Self::Hostname => "hostname",
             Self::WorkingDirectory => "working directory",
             Self::ParentDirectory => "parent directory",
             Self::GitBranch => "git branch",
@@ -634,6 +665,7 @@ impl PaneHeaderField {
     pub(crate) fn config_key(self) -> &'static str {
         match self {
             Self::AgentName => "agent_name",
+            Self::Hostname => "hostname",
             Self::WorkingDirectory => "working_directory",
             Self::ParentDirectory => "parent_directory",
             Self::GitBranch => "git_branch",
@@ -644,6 +676,7 @@ impl PaneHeaderField {
     pub(crate) fn enabled(self, header: PaneHeaderConfig) -> bool {
         match self {
             Self::AgentName => header.agent_name,
+            Self::Hostname => header.hostname,
             Self::WorkingDirectory => header.working_directory,
             Self::ParentDirectory => header.parent_directory,
             Self::GitBranch => header.git_branch,
@@ -828,6 +861,19 @@ directory = "~/Projects/herdr-worktrees"
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.worktrees.directory, "~/Projects/herdr-worktrees");
     }
+    #[test]
+    fn prompt_new_tab_name_defaults_on_and_parses() {
+        let default_config = Config::default();
+        assert!(default_config.ui.prompt_new_tab_name);
+
+        let toml = r#"
+[ui]
+prompt_new_tab_name = false
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.ui.prompt_new_tab_name);
+    }
+
     #[test]
     fn nerd_font_default_off_and_parses() {
         let default_config = Config::default();
