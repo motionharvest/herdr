@@ -323,10 +323,11 @@ Set `mouse_scroll_lines` to change how many pane scrollback lines each mouse whe
 
 Set `show_agent_labels_on_pane_borders = true` if you want detected agent labels in split pane borders when no manual pane label is set.
 
-Each pane's top edge can write more than the agent name. These default to name-only, matching current titles:
+Each pane's top edge can write more than the agent name. These default to the status mark and the name:
 
 ```toml
 [ui.pane_header]
+status = true
 agent_name = true
 hostname = false
 working_directory = false
@@ -335,7 +336,7 @@ git_branch = false
 git_status = false
 ```
 
-`working_directory` is the last folder of the pane's cwd. `parent_directory` is the folder above it. Both together write `parent/current`, the same pair the agent table's Directory column uses. `git_branch` and `git_status` follow in parentheses when the pane is in a repository (`main !`). `hostname` writes the local machine's hostname next to the pane name (`Olivia@myhost`), or alone if `agent_name` is off — useful when you SSH into several machines that each run Herdr, so a pane's title says which one you're on. Settings → pane labels toggles the same keys.
+`status` draws the agent's status mark before everything else, the same mark the agent table shows: a spinner while it works, a diamond while it waits on an answer, and a dot once it finishes, which a click turns into a check and back. A pane with no agent has no mark. `working_directory` is the last folder of the pane's cwd. `parent_directory` is the folder above it. Both together write `parent/current`, the same pair the agent table's Directory column uses. `git_branch` and `git_status` follow in parentheses when the pane is in a repository (`main !`). `hostname` writes the local machine's hostname next to the pane name (`Olivia@myhost`), or alone if `agent_name` is off — useful when you SSH into several machines that each run Herdr, so a pane's title says which one you're on. Settings → pane labels toggles the same keys.
 
 `refresh_summary_with_grok` controls `Refresh Summary` on an agent row. Off (the default), Herdr reads the latest typed prompt from that agent's session log. On, it starts a headless `grok -p` session at `--effort none` that names the most recent user request. The column says `refreshing summary` until that session returns. For a Grok pane it forks that session so the live chat is not written. For other harnesses it passes the latest typed requests as prompt context. If Grok is missing or the one-shot fails, the command falls back to the session-log prompt. Settings → experiments toggles the same key and has a `prompt` field next to it for the text sent to Grok. `refresh_summary_prompt` is that text; empty uses the built-in 5–8 word ask.
 

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+- Making a space opens a small dialog that asks what the space is for and which directory it starts in. The purpose is a text area; `Shift+Enter` breaks a line and `Enter` creates the space. The directory is picked the way the composer's Directory is: type to search, `Tab` to complete, `★` marks folders you started agents in. It starts on the folder the space would have used before. Resting the pointer on a space's card in the sidebar shows its purpose in a fly-out beside it, and right-clicking the card offers `Edit purpose`. The purpose is saved in the session snapshot as `purpose`; blank means none. `+ new`, the new-space key, and the mobile switcher all open the dialog; the CLI and API still make spaces directly.
+- Making a tab opens the same dialog, asking for a goal and an optional name. With no name the tab keeps its number. Resting the pointer on a tab in the tab strip shows its goal in a fly-out under it, and the tab's right-click menu offers `Edit goal`. The goal is saved in the session snapshot as the tab's `goal`. This replaces the name-only prompt `+` and `prefix+c` used to open.
+- Each tab in the spaces sidebar shows a small map of its panes under its name, drawn in a dark surface color from your theme. It spans the sidebar's width and keeps the shape of the pane area, so dragging the sidebar wider makes it larger. The pane you are typing into takes the accent color. Clicking a pane in the map switches to that tab and focuses the pane. The `▾` at the end of the tab's name row folds the map to `▸`, and that choice is saved per tab in the session snapshot as `layout_preview_hidden`.
+- A pane's title starts with its agent's status mark, the same one the agent table draws: a spinner while it works, a diamond while it waits on an answer, a dot once it finished unwatched, and a check once that dot was clicked. Clicking the dot or check on the title turns one into the other without focusing the pane. Settings → pane labels has a `status` toggle, on by default; the same key lives under `[ui.pane_header]`.
+- The spaces sidebar lists panes that hold no agent — a server, a build, a shell — under their tab after its agents, each on one line: its name, then the command it is running in a dimmer tone, or the shell's name when nothing is running. They sit under the same folder headers as the agents. Clicking one focuses it. Those panes used to be missing from the sidebar, so the only way to reach them was through the layout.
+
+### Changed
+- The spaces sidebar lists the agents of every tab, each under its own tab row. It used to list only the active tab's agents, so an agent working in another tab dropped out of the sidebar. Clicking one still switches to its tab and focuses it.
+- An agent entry in the spaces sidebar is bracketed down its left edge with `╭`, `│`, and `╰`, in its status color, so each entry reads as one block. It used to be a flat `▎` bar.
+
+### Fixed
+- A Claude pane no longer flashes to done while it is still working. Off macOS, Claude's spinner draws a plain `*` in one frame of each sweep, and the detector read that frame as a finished turn. Panes handed to a fresh build with `herdr server live-handoff` also skipped the smoothing that holds a working state across one odd frame, so that single frame reached the status mark.
+- Clicking a composer control whose list is already open closes the list, the way Escape does. The click used to leave it open.
+
 ## [0.12.0] - 2026-09-27
 
 ### Added
