@@ -245,9 +245,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Show detected/reported agent labels in split pane borders when no manual pane name is set.
 # show_agent_labels_on_pane_borders = false
 
-# Fields on each pane's top edge. Name is on; the rest are off, matching the
-# current name-only titles. Turn them on from Settings → pane labels, or here.
+# Fields on each pane's top edge. Status and name are on; the rest are off,
+# matching the current name-only titles. Turn them on from Settings → pane
+# labels, or here. Status is the agent's mark before its name: a spinner while
+# it works, a dot once it finishes, which a click turns into a check.
 # [ui.pane_header]
+# status = true
 # agent_name = true
 # hostname = false
 # working_directory = false

@@ -827,7 +827,7 @@ mod tests {
     fn settings_pane_header_enter_toggles_the_highlighted_field() {
         let mut state = state_with_workspaces(&["test"]);
         open_settings_at(&mut state, SettingsSection::PaneLabels);
-        assert!(state.pane_header.agent_name);
+        assert!(state.pane_header.status);
 
         let action = update_settings_state(
             &mut state,
@@ -837,19 +837,17 @@ mod tests {
         assert_eq!(
             action,
             Some(SettingsAction::SavePaneHeaderField(
-                PaneHeaderField::AgentName,
+                PaneHeaderField::Status,
                 false
             ))
         );
 
-        update_settings_state(
-            &mut state,
-            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
-        );
-        update_settings_state(
-            &mut state,
-            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
-        );
+        for _ in 0..3 {
+            update_settings_state(
+                &mut state,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+            );
+        }
         let action = update_settings_state(
             &mut state,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
@@ -867,6 +865,9 @@ mod tests {
     #[test]
     fn settings_mouse_click_toggles_pane_header_git_branch() {
         let mut app = app_for_mouse_test();
+        // Tall enough that the whole settings popup, every pane label row
+        // included, fits on screen.
+        app.state.view.terminal_area = Rect::new(0, 1, 106, 29);
         open_settings_at(&mut app.state, SettingsSection::PaneLabels);
 
         let row = PaneHeaderField::ALL

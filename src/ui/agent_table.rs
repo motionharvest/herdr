@@ -842,7 +842,7 @@ fn detached_agent_location(
     })
 }
 
-/// Where every listed pane is working, computed once per frame from the live
+/// Where every pane is working, computed once per frame from the live
 /// runtimes and kept on [`crate::app::state::ViewState`].
 ///
 /// The table measures and places itself from `AppState` alone — mouse handling
@@ -854,12 +854,15 @@ pub(crate) fn compute_agent_locations(
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> std::collections::HashMap<PaneId, AgentLocation> {
     let mut locations = std::collections::HashMap::new();
+    // Every pane, not only agents: the sidebar lists plain panes under the
+    // folder they work in too.
     for ws in &app.workspaces {
-        for detail in ws.pane_details(&app.terminals) {
-            if let Some(location) =
-                agent_location(app, ws, detail.tab_idx, detail.pane_id, terminal_runtimes)
-            {
-                locations.insert(detail.pane_id, location);
+        for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+            for pane_id in tab.layout.pane_ids() {
+                if let Some(location) = agent_location(app, ws, tab_idx, pane_id, terminal_runtimes)
+                {
+                    locations.insert(pane_id, location);
+                }
             }
         }
     }
@@ -1098,6 +1101,51 @@ pub(super) fn render_global_launcher(app: &AppState, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(line).style(style), rect);
 }
 
+/// What an agent's status mark is read from. The agent table's margin and a
+/// pane's title both draw from this, so the two always agree.
+#[derive(Clone, Copy)]
+pub(super) struct AgentStatusMarks {
+    pub state: AgentState,
+    pub seen: bool,
+    pub completed: bool,
+    pub landing: bool,
+    pub land_failed: bool,
+}
+
+/// The one-column mark for an agent's status, and its color: a spinner while
+/// it works or lands, a diamond while it waits on an answer, a dot once it
+/// finished unwatched, and a check once that dot was clicked. `None` means the
+/// agent has nothing to say.
+pub(super) fn agent_status_marker(
+    app: &AppState,
+    marks: AgentStatusMarks,
+) -> Option<(&'static str, ratatui::style::Color)> {
+    if marks.landing {
+        return Some((
+            super::spinner_frame(app.spinner_tick),
+            mute_when_host_unfocused(app, app.palette.yellow),
+        ));
+    }
+    if marks.land_failed {
+        return Some((LAND_FAILED, mute_when_host_unfocused(app, app.palette.red)));
+    }
+    match (marks.state, marks.seen) {
+        (AgentState::Working, _) => Some((
+            super::spinner_frame(app.spinner_tick),
+            mute_when_host_unfocused(app, app.palette.yellow),
+        )),
+        (AgentState::Blocked, _) => Some((BLOCKED, mute_when_host_unfocused(app, app.palette.red))),
+        (AgentState::Idle, false) => {
+            Some((FINISHED, mute_when_host_unfocused(app, app.palette.green)))
+        }
+        (AgentState::Idle, true) if marks.completed => Some((
+            ACKNOWLEDGED,
+            mute_when_host_unfocused(app, app.palette.green),
+        )),
+        _ => None,
+    }
+}
+
 /// The margin says what wants you: something turning is working, a dot is
 /// something that finished while you were not looking, and a diamond is an agent
 /// stopped on a question. Clicking a dot turns it into a check, and clicking
@@ -1105,32 +1153,16 @@ pub(super) fn render_global_launcher(app: &AppState, frame: &mut Frame) {
 /// dot back on, so an agent that finished never becomes indistinguishable
 /// from one that never ran.
 fn render_margin(app: &AppState, frame: &mut Frame, entry: &AgentPanelEntry, row: Rect) {
-    let marker = if entry.landing {
-        Some((
-            super::spinner_frame(app.spinner_tick),
-            mute_when_host_unfocused(app, app.palette.yellow),
-        ))
-    } else if entry.land_failed {
-        Some((LAND_FAILED, mute_when_host_unfocused(app, app.palette.red)))
-    } else {
-        match (entry.state, entry.seen) {
-            (AgentState::Working, _) => Some((
-                super::spinner_frame(app.spinner_tick),
-                mute_when_host_unfocused(app, app.palette.yellow),
-            )),
-            (AgentState::Blocked, _) => {
-                Some((BLOCKED, mute_when_host_unfocused(app, app.palette.red)))
-            }
-            (AgentState::Idle, false) => {
-                Some((FINISHED, mute_when_host_unfocused(app, app.palette.green)))
-            }
-            (AgentState::Idle, true) if entry.completed => Some((
-                ACKNOWLEDGED,
-                mute_when_host_unfocused(app, app.palette.green),
-            )),
-            _ => None,
-        }
-    };
+    let marker = agent_status_marker(
+        app,
+        AgentStatusMarks {
+            state: entry.state,
+            seen: entry.seen,
+            completed: entry.completed,
+            landing: entry.landing,
+            land_failed: entry.land_failed,
+        },
+    );
     let Some((glyph, color)) = marker else {
         return;
     };

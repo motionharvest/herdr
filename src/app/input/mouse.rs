@@ -622,11 +622,24 @@ impl AppState {
                         self.mode = Mode::Terminal;
                         return None;
                     }
+
+                    if let Some((ws_idx, pane_id)) = self.pane_row_target_at(mouse.row) {
+                        self.focus_pane_in_workspace(ws_idx, pane_id);
+                        self.mode = Mode::Terminal;
+                        return None;
+                    }
                     return None;
                 }
 
                 if !in_table {
                     if let Some(control) = self.pane_chrome_control_at(mouse.column, mouse.row) {
+                        // The status mark toggles the check and nothing else,
+                        // as it does in the agent table: acknowledging an
+                        // agent is not also focusing it.
+                        if control.action == crate::app::state::PaneChromeAction::Acknowledge {
+                            self.toggle_agent_completion_acknowledgement(control.pane_id);
+                            return None;
+                        }
                         if self.agent_peek.is_some() {
                             self.clear_agent_peek();
                             return None;
@@ -637,6 +650,7 @@ impl AppState {
                             crate::app::state::PaneChromeAction::Close => {
                                 self.close_pane();
                             }
+                            crate::app::state::PaneChromeAction::Acknowledge => {}
                         }
                         return None;
                     }
@@ -4685,6 +4699,72 @@ mod tests {
 
         assert_eq!(app.state.mode, Mode::Terminal);
         assert_eq!(app.state.rename_pane_target, None);
+    }
+
+    #[test]
+    fn clicking_the_pane_title_status_mark_toggles_the_check() {
+        let mut app = app_for_mouse_test();
+        let mut workspace = Workspace::test_new("space");
+        let focused = workspace.tabs[0].root_pane;
+        let finished = workspace.test_split(Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        for pane_id in [focused, finished] {
+            let terminal_id = app.state.workspaces[0]
+                .pane_state(pane_id)
+                .expect("agent pane")
+                .attached_terminal_id
+                .clone();
+            let terminal = app
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("agent terminal");
+            terminal.set_agent_name("codex".into());
+            terminal.state = crate::detect::AgentState::Idle;
+        }
+        app.state.workspaces[0].tabs[0].layout.focus_pane(focused);
+        let pane = app.state.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&finished)
+            .expect("finished pane");
+        pane.seen = false;
+        pane.completed = true;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
+
+        let mark = app
+            .state
+            .view
+            .pane_chrome_controls
+            .iter()
+            .find(|control| {
+                control.pane_id == finished
+                    && control.action == crate::app::state::PaneChromeAction::Acknowledge
+            })
+            .expect("the finished pane's title carries a clickable status mark")
+            .rect;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            mark.x,
+            mark.y,
+        ));
+        assert!(app.state.workspaces[0].tabs[0].panes[&finished].seen);
+        assert_eq!(
+            app.state.workspaces[0].focused_pane_id(),
+            Some(focused),
+            "acknowledging a finish should not also focus that pane"
+        );
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            mark.x,
+            mark.y,
+        ));
+        assert!(!app.state.workspaces[0].tabs[0].panes[&finished].seen);
+        assert!(app.state.workspaces[0].tabs[0].panes[&finished].completed);
     }
 
     #[test]

@@ -31,11 +31,22 @@ const AGENT_LOCATION_HEADER_ROWS: u16 = 1;
 /// still, so the folder reads as the level above them rather than as another
 /// row in the list.
 const AGENT_LOCATION_HEADER_X: u16 = 2;
+/// Rows per plain pane entry: one, holding the pane's name and then the command
+/// it is running.
+const PANE_ENTRY_ROWS: u16 = 1;
+/// Glyph drawn down the left edge of a plain pane entry, where an agent entry
+/// has its status bar. It is dotted so it reads as the same column without
+/// claiming a state the pane does not report.
+const PANE_ENTRY_BAR_GLYPH: &str = "┆";
 /// Most rows the wrapped status text may take below an entry's fixed rows,
 /// so one long-winded agent cannot push the rest of the list off screen.
 const AGENT_STATUS_TEXT_MAX_ROWS: u16 = 3;
-/// Status glyph drawn down the left edge of an agent entry.
-const AGENT_STATUS_BAR_GLYPH: &str = "▎";
+/// Status line drawn down the left edge of an agent entry: a rounded corner on
+/// its first and last rows, and a straight rule between them, so each entry
+/// reads as one bracketed block.
+const AGENT_STATUS_BAR_TOP_GLYPH: &str = "╭";
+const AGENT_STATUS_BAR_MIDDLE_GLYPH: &str = "│";
+const AGENT_STATUS_BAR_BOTTOM_GLYPH: &str = "╰";
 /// Where an agent row's status bar sits, measured from the row's left edge. It
 /// clears the space outline with a column to spare and sits inside the folder
 /// header's own column, which is what indents an agent under its folder.
@@ -172,9 +183,9 @@ pub(crate) fn agent_folder_position(
         })
 }
 
-/// Rows the folder header above an agent takes: one, unless the agent listed
-/// directly above it in the same space works in the same folder, in which case
-/// the two share the header already drawn above that one.
+/// Rows the folder header above an agent or a plain pane takes: one, unless
+/// the entry listed directly above it in the same space works in the same
+/// folder, in which case the two share the header already drawn above that one.
 ///
 /// Only the folder decides this, not the branch beside it: git status is
 /// refreshed a tab at a time, so two panes plainly sitting in the same folder
@@ -186,11 +197,18 @@ fn agent_location_header_rows(
     pane_id: crate::layout::PaneId,
     prev: Option<&WorkspaceListEntry>,
 ) -> u16 {
-    let Some(WorkspaceListEntry::Agent {
-        ws_idx: prev_ws_idx,
-        tab_idx: prev_tab_idx,
-        pane_id: prev_pane_id,
-    }) = prev
+    let Some(
+        WorkspaceListEntry::Agent {
+            ws_idx: prev_ws_idx,
+            tab_idx: prev_tab_idx,
+            pane_id: prev_pane_id,
+        }
+        | WorkspaceListEntry::Pane {
+            ws_idx: prev_ws_idx,
+            tab_idx: prev_tab_idx,
+            pane_id: prev_pane_id,
+        },
+    ) = prev
     else {
         return AGENT_LOCATION_HEADER_ROWS;
     };
@@ -266,6 +284,12 @@ pub(crate) enum WorkspaceListEntry {
         tab_idx: usize,
         pane_id: crate::layout::PaneId,
     },
+    /// Pane with no agent in it, listed under its tab after that tab's agents.
+    Pane {
+        ws_idx: usize,
+        tab_idx: usize,
+        pane_id: crate::layout::PaneId,
+    },
 }
 
 fn entry_row_height(
@@ -294,12 +318,28 @@ fn entry_row_height(
                 + agent_entry_content_rows(app, *ws_idx, *pane_id, body_width)
                 + space_group_trailing_rows(*ws_idx, next),
         ),
+        WorkspaceListEntry::Pane {
+            ws_idx,
+            tab_idx,
+            pane_id,
+        } => {
+            let header_rows = agent_location_header_rows(app, *ws_idx, *tab_idx, *pane_id, prev);
+            Some(
+                pane_leading_gap(prev, header_rows)
+                    + header_rows
+                    + PANE_ENTRY_ROWS
+                    + space_group_trailing_rows(*ws_idx, next),
+            )
+        }
     }
 }
 
 fn space_group_trailing_rows(ws_idx: usize, next: Option<&WorkspaceListEntry>) -> u16 {
     match next {
         Some(WorkspaceListEntry::Agent {
+            ws_idx: next_ws, ..
+        })
+        | Some(WorkspaceListEntry::Pane {
             ws_idx: next_ws, ..
         })
         | Some(WorkspaceListEntry::Tab {
@@ -321,11 +361,26 @@ fn agent_entry_content_rows(
         + agent_status_detail_lines(app, ws_idx, pane_id, body_width).len() as u16
 }
 
-/// Blank rows above an agent's content. Agents are separated from each other
-/// by one, but the first agent under a space needs none: the space card's own
-/// floor row already sits above it.
+/// Blank rows above an agent's content. Agents are separated from whatever
+/// entry sits above them by one, but the first entry under a tab needs none:
+/// the tab row already sits above it.
 fn agent_leading_gap(prev: Option<&WorkspaceListEntry>) -> u16 {
-    u16::from(matches!(prev, Some(WorkspaceListEntry::Agent { .. })))
+    u16::from(matches!(
+        prev,
+        Some(WorkspaceListEntry::Agent { .. } | WorkspaceListEntry::Pane { .. })
+    ))
+}
+
+/// Blank rows above a plain pane's line. Plain panes in one folder stack with
+/// no gap between them, since each is a single line. One blank row sets them
+/// off from an agent entry above, and from the pane above when a new folder
+/// header starts here.
+fn pane_leading_gap(prev: Option<&WorkspaceListEntry>, header_rows: u16) -> u16 {
+    match prev {
+        Some(WorkspaceListEntry::Agent { .. }) => 1,
+        Some(WorkspaceListEntry::Pane { .. }) => u16::from(header_rows > 0),
+        _ => 0,
+    }
 }
 
 /// Whether a space's agents are listed under its card. Spaces start expanded
@@ -353,20 +408,94 @@ fn push_workspace_with_agents(
     // working in a tab you are not looking at is still on show.
     for tab_idx in 0..ws.tabs.len() {
         entries.push(WorkspaceListEntry::Tab { ws_idx, tab_idx });
+        // Plain panes join the folder their agents are listed under, after
+        // those agents. Panes in a folder no agent in this tab works in follow
+        // as folders of their own, in the order they first appear.
+        let mut plain: Vec<(String, crate::layout::PaneId)> =
+            tab_plain_pane_ids(app, ws_idx, tab_idx)
+                .into_iter()
+                .map(|pane_id| {
+                    let key = listed_agent_location(app, ws_idx, tab_idx, pane_id)
+                        .map(|location| location.path)
+                        .unwrap_or_default();
+                    (key, pane_id)
+                })
+                .collect();
+        let push_plain = |entries: &mut Vec<WorkspaceListEntry>, pane_id| {
+            entries.push(WorkspaceListEntry::Pane {
+                ws_idx,
+                tab_idx,
+                pane_id,
+            });
+        };
         for group in workspace_agent_groups(app, ws_idx) {
+            let mut listed_any = false;
             for member in group
                 .agents
                 .into_iter()
                 .filter(|member| member.tab_idx == tab_idx)
             {
+                listed_any = true;
                 entries.push(WorkspaceListEntry::Agent {
                     ws_idx,
                     tab_idx: member.tab_idx,
                     pane_id: member.pane_id,
                 });
             }
+            if !listed_any || group.key.is_empty() {
+                continue;
+            }
+            plain.retain(|(key, pane_id)| {
+                let joins = *key == group.key;
+                if joins {
+                    push_plain(entries, *pane_id);
+                }
+                !joins
+            });
+        }
+        while !plain.is_empty() {
+            let (key, pane_id) = plain.remove(0);
+            push_plain(entries, pane_id);
+            if key.is_empty() {
+                continue;
+            }
+            plain.retain(|(other, pane_id)| {
+                let joins = *other == key;
+                if joins {
+                    push_plain(entries, *pane_id);
+                }
+                !joins
+            });
         }
     }
+}
+
+/// A tab's panes that hold no agent, in layout order. These are the panes the
+/// agent groups leave out: a server, a build, a shell. A pane with no terminal
+/// attached is left out too, since it has nothing to show.
+fn tab_plain_pane_ids(app: &AppState, ws_idx: usize, tab_idx: usize) -> Vec<crate::layout::PaneId> {
+    let Some(tab) = app
+        .workspaces
+        .get(ws_idx)
+        .and_then(|ws| ws.tabs.get(tab_idx))
+    else {
+        return Vec::new();
+    };
+    let agents: std::collections::HashSet<_> = tab
+        .pane_details(&app.terminals)
+        .into_iter()
+        .map(|detail| detail.pane_id)
+        .collect();
+    tab.layout
+        .pane_ids()
+        .into_iter()
+        .filter(|pane_id| {
+            !agents.contains(pane_id)
+                && tab
+                    .terminal_id(*pane_id)
+                    .is_some_and(|id| app.terminals.contains_key(id))
+        })
+        .collect()
 }
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
@@ -574,6 +703,11 @@ pub(crate) struct WorkspaceListLayout {
     pub tab_rows: Vec<crate::app::state::TabRowArea>,
     pub agent_rows: Vec<crate::app::state::AgentRowArea>,
     pub folder_rows: Vec<crate::app::state::AgentFolderArea>,
+    pub pane_rows: Vec<crate::app::state::PaneRowArea>,
+    /// Folder headers above plain panes in a folder no agent is listed under.
+    /// They draw like the agents' folder rows, but are kept apart from those
+    /// because dragging a folder reorders agents, and these hold none.
+    pub pane_folder_rows: Vec<crate::app::state::AgentFolderArea>,
     /// `+ new` button, placed right below the last entry in the list.
     pub new_button: Rect,
 }
@@ -603,6 +737,8 @@ fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
     let mut tab_rows = Vec::new();
     let mut agent_rows = Vec::new();
     let mut folder_rows = Vec::new();
+    let mut pane_rows = Vec::new();
+    let mut pane_folder_rows = Vec::new();
 
     let entries = workspace_list_entries(app);
     for (idx, entry) in entries.iter().enumerate().skip(scroll) {
@@ -660,6 +796,38 @@ fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
                     ),
                 });
             }
+            WorkspaceListEntry::Pane {
+                ws_idx,
+                tab_idx,
+                pane_id,
+            } => {
+                let header_rows =
+                    agent_location_header_rows(app, *ws_idx, *tab_idx, *pane_id, prev);
+                let gap = pane_leading_gap(prev, header_rows);
+                if header_rows > 0 {
+                    let area = crate::app::state::AgentFolderArea {
+                        ws_idx: *ws_idx,
+                        key: listed_agent_location(app, *ws_idx, *tab_idx, *pane_id)
+                            .map(|location| location.path)
+                            .unwrap_or_default(),
+                        tab_idx: *tab_idx,
+                        pane_id: *pane_id,
+                        rect: Rect::new(body.x, row_y + gap, body.width, 1),
+                    };
+                    pane_folder_rows.push(area);
+                }
+                pane_rows.push(crate::app::state::PaneRowArea {
+                    ws_idx: *ws_idx,
+                    tab_idx: *tab_idx,
+                    pane_id: *pane_id,
+                    rect: Rect::new(
+                        body.x,
+                        row_y + gap + header_rows,
+                        body.width,
+                        PANE_ENTRY_ROWS,
+                    ),
+                });
+            }
         }
         row_y = row_y.saturating_add(row_height);
     }
@@ -669,6 +837,8 @@ fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
         tab_rows,
         agent_rows,
         folder_rows,
+        pane_rows,
+        pane_folder_rows,
         new_button: new_workspace_button_rect_below(
             app,
             ws_area,
@@ -720,6 +890,14 @@ pub(crate) fn compute_workspace_list_areas(
     )
 }
 
+/// Where each plain pane row sits in the spaces list.
+pub(crate) fn compute_pane_row_areas(
+    app: &AppState,
+    area: Rect,
+) -> Vec<crate::app::state::PaneRowArea> {
+    workspace_list_layout(app, area).pane_rows
+}
+
 /// Hit area and draw target for the sidebar's `+ new` button.
 pub(crate) fn new_workspace_button_rect(app: &AppState, area: Rect) -> Rect {
     workspace_list_layout(app, area).new_button
@@ -763,6 +941,7 @@ pub(crate) fn workspace_drop_indicator_row(
     cards: &[crate::app::state::WorkspaceCardArea],
     tab_rows: &[crate::app::state::TabRowArea],
     agent_rows: &[crate::app::state::AgentRowArea],
+    pane_rows: &[crate::app::state::PaneRowArea],
     area: Rect,
     insert_idx: usize,
 ) -> Option<u16> {
@@ -779,7 +958,7 @@ pub(crate) fn workspace_drop_indicator_row(
     if let Some(row) = cards
         .last()
         .filter(|card| insert_idx == card.ws_idx.saturating_add(1))
-        .and_then(|_| workspace_list_end_row(cards, tab_rows, agent_rows))
+        .and_then(|_| workspace_list_end_row(cards, tab_rows, agent_rows, pane_rows))
         .filter(|y| *y < list_bottom)
     {
         return Some(row);
@@ -801,6 +980,7 @@ fn workspace_list_end_row(
     cards: &[crate::app::state::WorkspaceCardArea],
     tab_rows: &[crate::app::state::TabRowArea],
     agent_rows: &[crate::app::state::AgentRowArea],
+    pane_rows: &[crate::app::state::PaneRowArea],
 ) -> Option<u16> {
     let below = |rect: Rect| rect.y.saturating_add(rect.height).saturating_add(2);
     cards
@@ -808,6 +988,7 @@ fn workspace_list_end_row(
         .map(|card| card.rect.y.saturating_add(card.rect.height))
         .chain(tab_rows.iter().map(|row| below(row.rect)))
         .chain(agent_rows.iter().map(|row| below(row.rect)))
+        .chain(pane_rows.iter().map(|row| below(row.rect)))
         .max()
 }
 
@@ -946,27 +1127,31 @@ fn render_workspace_rows(
     area: Rect,
 ) {
     let layout = workspace_list_layout(app, area);
-    let (cards, tab_rows, agent_rows, folder_rows) = if app.view.workspace_card_areas.is_empty() {
-        (
-            layout.cards,
-            layout.tab_rows,
-            layout.agent_rows,
-            layout.folder_rows,
-        )
-    } else {
-        (
-            app.view.workspace_card_areas.clone(),
-            app.view.tab_row_areas.clone(),
-            app.view.agent_row_areas.clone(),
-            app.view.agent_folder_areas.clone(),
-        )
-    };
+    let (cards, tab_rows, agent_rows, folder_rows, pane_rows) =
+        if app.view.workspace_card_areas.is_empty() {
+            (
+                layout.cards,
+                layout.tab_rows,
+                layout.agent_rows,
+                layout.folder_rows,
+                layout.pane_rows,
+            )
+        } else {
+            (
+                app.view.workspace_card_areas.clone(),
+                app.view.tab_row_areas.clone(),
+                app.view.agent_row_areas.clone(),
+                app.view.agent_folder_areas.clone(),
+                app.view.pane_row_areas.clone(),
+            )
+        };
 
-    let outlined = outlined_space_group(app, &cards, &tab_rows, &agent_rows);
+    let outlined = outlined_space_group(app, &cards, &tab_rows, &agent_rows, &pane_rows);
 
     render_tab_rows(app, frame, &tab_rows);
     render_agent_rows(app, terminal_runtimes, frame, &agent_rows);
-    for folder in &folder_rows {
+    render_pane_rows(app, terminal_runtimes, frame, &pane_rows);
+    for folder in folder_rows.iter().chain(&layout.pane_folder_rows) {
         render_agent_folder_row(app, frame, folder);
     }
     render_agent_drop_indicator(app, frame, &agent_rows, &folder_rows);
@@ -998,7 +1183,7 @@ fn render_workspace_rows(
     }
 
     render_space_group_outline(app, frame, area, outlined);
-    render_workspace_drop_indicator(app, frame, area, &cards, &tab_rows, &agent_rows);
+    render_workspace_drop_indicator(app, frame, area, &cards, &tab_rows, &agent_rows, &pane_rows);
 
     if layout.new_button != Rect::default() {
         render_new_workspace_button(frame, layout.new_button, app);
@@ -1013,6 +1198,7 @@ fn outlined_space_group(
     cards: &[crate::app::state::WorkspaceCardArea],
     tab_rows: &[crate::app::state::TabRowArea],
     agent_rows: &[crate::app::state::AgentRowArea],
+    pane_rows: &[crate::app::state::PaneRowArea],
 ) -> Option<Rect> {
     let ws_idx = if app.mode == Mode::Navigate {
         Some(app.selected)
@@ -1031,6 +1217,12 @@ fn outlined_space_group(
         .map(|row| row.rect.y + row.rect.height + 1)
         .chain(
             tab_rows
+                .iter()
+                .filter(|row| row.ws_idx == ws_idx)
+                .map(|row| row.rect.y + row.rect.height + 1),
+        )
+        .chain(
+            pane_rows
                 .iter()
                 .filter(|row| row.ws_idx == ws_idx)
                 .map(|row| row.rect.y + row.rect.height + 1),
@@ -1139,6 +1331,7 @@ fn render_workspace_drop_indicator(
     cards: &[crate::app::state::WorkspaceCardArea],
     tab_rows: &[crate::app::state::TabRowArea],
     agent_rows: &[crate::app::state::AgentRowArea],
+    pane_rows: &[crate::app::state::PaneRowArea],
 ) {
     let Some(crate::app::state::DragTarget::WorkspaceReorder {
         insert_idx: Some(insert_idx),
@@ -1151,7 +1344,8 @@ fn render_workspace_drop_indicator(
         return;
     };
     let list = workspace_list_rect(app, area);
-    let Some(row) = workspace_drop_indicator_row(cards, tab_rows, agent_rows, list, *insert_idx)
+    let Some(row) =
+        workspace_drop_indicator_row(cards, tab_rows, agent_rows, pane_rows, list, *insert_idx)
     else {
         return;
     };
@@ -1562,9 +1756,14 @@ fn render_agent_folder_row(
     if width == 0 {
         return;
     }
-    let holds_focus = focused_agent_row(app).is_some_and(|(ws_idx, _, pane_id)| {
+    // The focused pane is under this header when it heads it, or when it works
+    // in the same folder. A pane with no folder yet only claims its own header.
+    let holds_focus = focused_agent_row(app).is_some_and(|(ws_idx, tab_idx, pane_id)| {
         ws_idx == folder.ws_idx
-            && agent_folder_position(app, ws_idx, pane_id).is_some_and(|(key, _)| key == folder.key)
+            && (pane_id == folder.pane_id
+                || (!folder.key.is_empty()
+                    && listed_agent_location(app, ws_idx, tab_idx, pane_id)
+                        .is_some_and(|location| location.path == folder.key)))
     });
     let label_style = if holds_focus {
         Style::default().fg(focus_accent(app))
@@ -1653,9 +1852,10 @@ fn render_agent_rows(
         let bar_rows =
             agent_status_bar_styles(entry.state, entry.seen, color, app, rect.height as usize);
         let bar_inset = " ".repeat(AGENT_STATUS_BAR_X as usize);
+        let bar_height = rect.height as usize;
         let bar = |row: usize| {
             Span::styled(
-                format!("{bar_inset}{AGENT_STATUS_BAR_GLYPH} "),
+                format!("{bar_inset}{} ", agent_status_bar_glyph(row, bar_height)),
                 Style::default().fg(bar_rows.get(row).copied().unwrap_or(color)),
             )
         };
@@ -1708,6 +1908,100 @@ fn render_agent_rows(
                 ]),
             );
         }
+    }
+}
+
+/// Draws each pane that holds no agent as one line: its name, then what it is
+/// running in a dimmer tone. The name is kept whole where it fits and the
+/// command takes what is left. A pane at its shell prompt shows the shell's
+/// name, dimmed further, since nothing is running. The pane you are typing into takes the
+/// focus accent, the same as an agent row.
+fn render_pane_rows(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    frame: &mut Frame,
+    pane_rows: &[crate::app::state::PaneRowArea],
+) {
+    if pane_rows.is_empty() {
+        return;
+    }
+    let focused = focused_agent_row(app);
+    let names = crate::pane_names::assigned_names(&app.terminals);
+    for row in pane_rows {
+        let rect = row.rect;
+        if rect.width < 4 || rect.height < PANE_ENTRY_ROWS {
+            continue;
+        }
+        let Some(ws) = app.workspaces.get(row.ws_idx) else {
+            continue;
+        };
+        let Some(tab) = ws.tabs.get(row.tab_idx) else {
+            continue;
+        };
+        let terminal_id = tab.terminal_id(row.pane_id);
+        let terminal = terminal_id.and_then(|id| app.terminals.get(id));
+        let runtime = terminal_id.and_then(|id| terminal_runtimes.get(id));
+        let name = super::panes::pane_name_label(
+            terminal,
+            terminal_id.and_then(|id| names.get(id).cloned()),
+            ws.public_pane_number(row.pane_id),
+        )
+        .unwrap_or_default();
+        let running = runtime.and_then(|runtime| runtime.foreground_command());
+        let is_focused = focused.is_some_and(|(ws_idx, tab_idx, pane_id)| {
+            row.ws_idx == ws_idx && row.tab_idx == tab_idx && row.pane_id == pane_id
+        });
+        let accent = focus_accent(app);
+        let (name_style, command_style) = match (is_focused, running.is_some()) {
+            (true, _) => (Style::default().fg(accent), Style::default().fg(accent)),
+            (false, true) => (
+                Style::default().fg(app.palette.overlay1),
+                Style::default().fg(app.palette.overlay0),
+            ),
+            (false, false) => (
+                Style::default().fg(app.palette.overlay1),
+                Style::default()
+                    .fg(app.palette.overlay0)
+                    .add_modifier(Modifier::DIM),
+            ),
+        };
+        let command = running
+            .or_else(|| runtime.and_then(|runtime| runtime.shell_name()))
+            .unwrap_or_default();
+        let text_width = agent_row_label_width(rect.width) as usize;
+        let bar = Span::styled(
+            format!(
+                "{}{PANE_ENTRY_BAR_GLYPH} ",
+                " ".repeat(AGENT_STATUS_BAR_X as usize)
+            ),
+            Style::default().fg(app.palette.overlay0),
+        );
+        let name = truncate_chars(&name, text_width);
+        let command_width = text_width.saturating_sub(name.chars().count() + 1);
+        let mut spans = vec![bar, Span::styled(name, name_style)];
+        if command_width > 0 && !command.is_empty() {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                truncate_chars(&command, command_width),
+                command_style,
+            ));
+        }
+        render_sidebar_line(
+            frame,
+            Rect::new(rect.x, rect.y, rect.width, 1),
+            Line::from(spans),
+        );
+    }
+}
+
+/// The status line's glyph on one row of an entry `rows` tall.
+fn agent_status_bar_glyph(row: usize, rows: usize) -> &'static str {
+    if row == 0 {
+        AGENT_STATUS_BAR_TOP_GLYPH
+    } else if row + 1 >= rows {
+        AGENT_STATUS_BAR_BOTTOM_GLYPH
+    } else {
+        AGENT_STATUS_BAR_MIDDLE_GLYPH
     }
 }
 
@@ -2062,6 +2356,160 @@ mod tests {
     }
 
     #[test]
+    fn pane_without_agent_is_listed_by_name_under_its_tab() {
+        let area = Rect::new(0, 0, 28, 20);
+        let (app, terminal) = render_sidebar_list_with(area, |app| {
+            for terminal in app.terminals.values_mut() {
+                terminal.detected_agent = None;
+            }
+        });
+        let pane_id = app.workspaces[0].tabs[0].root_pane;
+
+        assert_eq!(
+            workspace_list_entries(&app),
+            vec![
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: false,
+                },
+                WorkspaceListEntry::Tab {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                },
+                WorkspaceListEntry::Pane {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                    pane_id,
+                },
+            ]
+        );
+
+        let rows = compute_pane_row_areas(&app, area);
+        assert_eq!(rows.len(), 1);
+        let row = rows[0].rect;
+        assert_eq!(row.height, PANE_ENTRY_ROWS);
+        let terminal_id = app.workspaces[0].tabs[0].terminal_id(pane_id).unwrap();
+        let name = crate::pane_names::assigned_names(&app.terminals)
+            .remove(terminal_id)
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let line: String = (row.x..row.x + row.width)
+            .map(|x| buf[(x, row.y)].symbol().to_string())
+            .collect();
+        assert!(line.contains(&name), "name row: {line:?}");
+        assert!(line.contains(PANE_ENTRY_BAR_GLYPH), "name row: {line:?}");
+    }
+
+    /// One tab holding an agent pane and two plain panes, each pane placed in
+    /// the folder given for it.
+    fn space_with_agent_and_two_plain_panes(
+        folders: [&str; 3],
+    ) -> (crate::app::state::AppState, [crate::layout::PaneId; 3]) {
+        let mut app = crate::app::state::AppState::test_new();
+        let mut workspace = Workspace::test_new("herdr");
+        let agent = workspace.tabs[0].root_pane;
+        let first = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let second = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let agent_terminal = app.workspaces[0].tabs[0]
+            .terminal_id(agent)
+            .unwrap()
+            .clone();
+        app.terminals
+            .get_mut(&agent_terminal)
+            .unwrap()
+            .detected_agent = Some(Agent::Claude);
+        for (pane_id, folder) in [agent, first, second].into_iter().zip(folders) {
+            app.view.agent_locations.insert(
+                pane_id,
+                AgentLocation {
+                    path: folder.into(),
+                    git: None,
+                    worktree_state: crate::workspace::GitWorktreeState::Clean,
+                    landed: false,
+                },
+            );
+        }
+        app.active = Some(0);
+        (app, [agent, first, second])
+    }
+
+    #[test]
+    fn plain_pane_shares_the_folder_header_of_agents_in_its_folder() {
+        let (app, [_, plain, _]) =
+            space_with_agent_and_two_plain_panes(["~/lab/herdr", "~/lab/herdr", "~/lab"]);
+        let area = Rect::new(0, 0, 28, 30);
+        let layout = workspace_list_layout(&app, area);
+
+        // The agent heads ~/lab/herdr; the plain pane there sits under it with
+        // no header of its own, and the pane in ~/lab gets a new one.
+        assert_eq!(layout.folder_rows.len(), 1);
+        assert_eq!(layout.folder_rows[0].key, "~/lab/herdr");
+        assert_eq!(layout.pane_folder_rows.len(), 1);
+        assert_eq!(layout.pane_folder_rows[0].key, "~/lab");
+        let joined = layout
+            .pane_rows
+            .iter()
+            .find(|row| row.pane_id == plain)
+            .unwrap();
+        assert!(joined.rect.y < layout.pane_folder_rows[0].rect.y);
+    }
+
+    #[test]
+    fn plain_panes_in_one_folder_are_listed_together_under_one_header() {
+        let (app, [_, first, second]) =
+            space_with_agent_and_two_plain_panes(["~/lab/herdr", "~/lab", "~/lab"]);
+        let area = Rect::new(0, 0, 28, 30);
+        let layout = workspace_list_layout(&app, area);
+
+        assert_eq!(layout.pane_folder_rows.len(), 1);
+        let header = layout.pane_folder_rows[0].rect;
+        let rows: Vec<_> = layout
+            .pane_rows
+            .iter()
+            .map(|row| (row.pane_id, row.rect.y))
+            .collect();
+        assert_eq!(rows, vec![(first, header.y + 1), (second, header.y + 2)]);
+    }
+
+    #[test]
+    fn pane_without_agent_is_listed_after_the_agents_in_its_tab() {
+        let mut app = crate::app::state::AppState::test_new();
+        let mut workspace = Workspace::test_new("herdr");
+        let agent_pane = workspace.tabs[0].root_pane;
+        let plain_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let agent_terminal = app.workspaces[0].tabs[0]
+            .terminal_id(agent_pane)
+            .unwrap()
+            .clone();
+        app.terminals
+            .get_mut(&agent_terminal)
+            .unwrap()
+            .detected_agent = Some(Agent::Claude);
+        app.active = Some(0);
+
+        let entries = workspace_list_entries(&app);
+        assert_eq!(
+            &entries[2..],
+            &[
+                WorkspaceListEntry::Agent {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                    pane_id: agent_pane,
+                },
+                WorkspaceListEntry::Pane {
+                    ws_idx: 0,
+                    tab_idx: 0,
+                    pane_id: plain_pane,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn space_drop_marker_draws_between_the_two_cards() {
         let area = Rect::new(0, 0, 28, 26);
         let (app, terminal) = render_workspace_drag(area, 1);
@@ -2159,15 +2607,26 @@ mod tests {
         (0..row.height)
             .map(|offset| {
                 let y = row.y + offset;
-                let x = (row.x..row.x + row.width)
-                    .find(|x| buf[(*x, y)].symbol() == AGENT_STATUS_BAR_GLYPH)
-                    .unwrap_or_else(|| panic!("row {y} should draw the status bar glyph"));
+                let x = row.x + AGENT_STATUS_BAR_X;
+                assert_eq!(
+                    buf[(x, y)].symbol(),
+                    agent_status_bar_glyph(offset as usize, row.height as usize),
+                    "row {y} should draw the status bar glyph"
+                );
                 buf[(x, y)]
                     .style()
                     .fg
                     .expect("the bar cell should be styled")
             })
             .collect()
+    }
+
+    #[test]
+    fn status_bar_rounds_its_first_and_last_rows() {
+        let glyphs: Vec<_> = (0..4).map(|row| agent_status_bar_glyph(row, 4)).collect();
+        assert_eq!(glyphs, vec!["╭", "│", "│", "╰"]);
+        let glyphs: Vec<_> = (0..2).map(|row| agent_status_bar_glyph(row, 2)).collect();
+        assert_eq!(glyphs, vec!["╭", "╰"]);
     }
 
     #[test]

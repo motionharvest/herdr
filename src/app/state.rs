@@ -889,6 +889,8 @@ pub struct PaneTitleHitArea {
 pub enum PaneChromeAction {
     Focus,
     Close,
+    /// The finished agent's dot or check on the title: turns one into the other.
+    Acknowledge,
 }
 
 #[derive(Clone, Copy)]
@@ -926,6 +928,16 @@ pub struct AgentRowArea {
     /// heads. Agents listed under it in the same folder share that one header,
     /// so only the first of them carries it.
     pub location_header: bool,
+}
+
+/// Clickable region for a pane with no agent in it, listed under its tab after
+/// that tab's agents. It covers the one line holding its name and command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneRowArea {
+    pub ws_idx: usize,
+    pub tab_idx: usize,
+    pub pane_id: PaneId,
+    pub rect: Rect,
 }
 
 /// The folder row a space's agents are listed under. It is a label rather than
@@ -968,6 +980,7 @@ pub struct ViewState {
     pub tab_row_areas: Vec<TabRowArea>,
     pub agent_row_areas: Vec<AgentRowArea>,
     pub agent_folder_areas: Vec<AgentFolderArea>,
+    pub pane_row_areas: Vec<PaneRowArea>,
     /// The agent table between the composer and the panes: where its rows and
     /// columns sit, and which agent each row is.
     pub agent_table: crate::ui::AgentTableLayout,
@@ -1002,6 +1015,7 @@ impl Default for ViewState {
             tab_row_areas: Vec::new(),
             agent_row_areas: Vec::new(),
             agent_folder_areas: Vec::new(),
+            pane_row_areas: Vec::new(),
             agent_table: crate::ui::AgentTableLayout::default(),
             agent_locations: std::collections::HashMap::new(),
             tab_bar_rect: Rect::default(),

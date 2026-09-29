@@ -605,11 +605,14 @@ impl Default for UiConfig {
     }
 }
 
-/// Fields drawn on a pane's top edge. Name is on by default; the rest match
-/// the current name-only titles until someone turns them on.
+/// Fields drawn on a pane's top edge. Status and name are on by default; the
+/// rest match the current name-only titles until someone turns them on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct PaneHeaderConfig {
+    /// The agent's status mark before its name: the spinner while it works,
+    /// and the dot, clickable into a check, once it finishes.
+    pub status: bool,
     pub agent_name: bool,
     pub hostname: bool,
     pub working_directory: bool,
@@ -621,6 +624,7 @@ pub struct PaneHeaderConfig {
 impl Default for PaneHeaderConfig {
     fn default() -> Self {
         Self {
+            status: true,
             agent_name: true,
             hostname: false,
             working_directory: false,
@@ -633,6 +637,7 @@ impl Default for PaneHeaderConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaneHeaderField {
+    Status,
     AgentName,
     Hostname,
     WorkingDirectory,
@@ -642,7 +647,8 @@ pub(crate) enum PaneHeaderField {
 }
 
 impl PaneHeaderField {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Status,
         Self::AgentName,
         Self::Hostname,
         Self::WorkingDirectory,
@@ -653,6 +659,7 @@ impl PaneHeaderField {
 
     pub(crate) fn label(self) -> &'static str {
         match self {
+            Self::Status => "status",
             Self::AgentName => "agent name",
             Self::Hostname => "hostname",
             Self::WorkingDirectory => "working directory",
@@ -664,6 +671,7 @@ impl PaneHeaderField {
 
     pub(crate) fn config_key(self) -> &'static str {
         match self {
+            Self::Status => "status",
             Self::AgentName => "agent_name",
             Self::Hostname => "hostname",
             Self::WorkingDirectory => "working_directory",
@@ -675,6 +683,7 @@ impl PaneHeaderField {
 
     pub(crate) fn enabled(self, header: PaneHeaderConfig) -> bool {
         match self {
+            Self::Status => header.status,
             Self::AgentName => header.agent_name,
             Self::Hostname => header.hostname,
             Self::WorkingDirectory => header.working_directory,
@@ -825,8 +834,9 @@ show_agent_labels_on_pane_borders = false
     }
 
     #[test]
-    fn pane_header_defaults_to_name_only_and_parses() {
+    fn pane_header_defaults_to_status_and_name_and_parses() {
         let default_config = Config::default();
+        assert!(default_config.ui.pane_header.status);
         assert!(default_config.ui.pane_header.agent_name);
         assert!(!default_config.ui.pane_header.working_directory);
         assert!(!default_config.ui.pane_header.parent_directory);
@@ -835,6 +845,7 @@ show_agent_labels_on_pane_borders = false
 
         let toml = r#"
 [ui.pane_header]
+status = false
 agent_name = false
 working_directory = true
 parent_directory = true
@@ -842,6 +853,7 @@ git_branch = true
 git_status = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.ui.pane_header.status);
         assert!(!config.ui.pane_header.agent_name);
         assert!(config.ui.pane_header.working_directory);
         assert!(config.ui.pane_header.parent_directory);

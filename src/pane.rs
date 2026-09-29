@@ -184,6 +184,28 @@ fn should_clear_agent_for_foreground_shell(
     previous_agent.is_some() && new_agent.is_none() && foreground_is_pane_shell
 }
 
+/// A process's command line as a person typed it: `python3 app.py` rather than
+/// `/usr/bin/python3 app.py`. The program keeps only its file name. A process
+/// whose arguments cannot be read falls back to its name.
+fn display_command(process: &crate::platform::ForegroundProcess) -> String {
+    let Some((program, args)) = process
+        .argv
+        .as_deref()
+        .and_then(|argv| argv.split_first())
+        .filter(|(program, _)| !program.is_empty())
+    else {
+        return process.name.clone();
+    };
+    let program = std::path::Path::new(program)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| program.clone());
+    std::iter::once(program)
+        .chain(args.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
     crate::platform::process_cwd(pid).filter(|cwd| cwd.is_absolute() && cwd.is_dir())
 }
@@ -2257,6 +2279,29 @@ impl PaneRuntime {
         })
     }
 
+    /// What the pane is running: the command line of the process group that
+    /// holds the terminal, with the program shortened to its file name. `None`
+    /// means the pane's own shell holds it, so nothing is running.
+    pub fn foreground_command(&self) -> Option<String> {
+        let pid = self.child_pid.load(Ordering::Acquire);
+        let pgid = self.foreground_pgid(pid)?;
+        if pgid == pid {
+            return None;
+        }
+        let job = crate::detect::foreground_group_leader_job(pgid)?;
+        let leader = job.processes.into_iter().next()?;
+        Some(display_command(&leader))
+    }
+
+    /// The file name of the pane's own shell, which is what the pane shows
+    /// while nothing else holds the terminal.
+    pub fn shell_name(&self) -> Option<String> {
+        let pid = self.child_pid.load(Ordering::Acquire);
+        let job = crate::detect::foreground_group_leader_job(pid)?;
+        let shell = job.processes.into_iter().next()?;
+        Some(shell.name.trim_start_matches('-').to_string())
+    }
+
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
         #[cfg(unix)]
@@ -2893,6 +2938,31 @@ mod tests {
             false,
             refresh_due
         ));
+    }
+
+    #[test]
+    fn display_command_keeps_arguments_and_shortens_the_program() {
+        let process = |argv: Option<&[&str]>| crate::platform::ForegroundProcess {
+            pid: 1,
+            name: "python3".into(),
+            argv0: None,
+            argv: argv.map(|argv| argv.iter().map(|arg| arg.to_string()).collect()),
+            cmdline: None,
+        };
+        assert_eq!(
+            display_command(&process(Some(&[
+                "/usr/bin/python3",
+                "app.py",
+                "--port",
+                "8000"
+            ]))),
+            "python3 app.py --port 8000"
+        );
+        assert_eq!(
+            display_command(&process(Some(&["npm", "run", "dev"]))),
+            "npm run dev"
+        );
+        assert_eq!(display_command(&process(None)), "python3");
     }
 
     #[test]

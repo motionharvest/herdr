@@ -1045,7 +1045,8 @@ impl AppState {
             .filter_map(|entry| match entry {
                 crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
                 crate::ui::WorkspaceListEntry::Tab { .. }
-                | crate::ui::WorkspaceListEntry::Agent { .. } => None,
+                | crate::ui::WorkspaceListEntry::Agent { .. }
+                | crate::ui::WorkspaceListEntry::Pane { .. } => None,
             })
             .collect::<Vec<_>>();
         if order.is_empty() {

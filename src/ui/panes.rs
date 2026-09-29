@@ -43,7 +43,7 @@ fn pane_title_chrome_layout(
     hide: bool,
 ) -> PaneTitleChromeLayout {
     let (_, controls_width) = pane_controls_text(title_width, mode, hide);
-    let title_prefix_width = "╭─ ".chars().count();
+    let title_prefix_width = "╭─ ".chars().count() + title.status_width() as usize;
     let text_available = title_width
         .saturating_sub(title_prefix_width as u16)
         .saturating_sub(controls_width)
@@ -452,10 +452,48 @@ fn pane_chrome_title_for_pane(
     let status = (header.git_status && in_repo)
         .then(|| worktree_state_marker(git_status.worktree_state).to_string());
     PaneChromeTitle {
+        status: header
+            .status
+            .then(|| pane_status_mark(app, ws, pane_id, terminal))
+            .flatten(),
         name,
         folder,
         git: git_suffix(branch.as_deref(), status.as_deref()),
     }
+}
+
+/// The status mark for the agent in a pane, read from the same state the agent
+/// table reads. A pane with no agent in it has no mark.
+fn pane_status_mark(
+    app: &AppState,
+    ws: &Workspace,
+    pane_id: crate::layout::PaneId,
+    terminal: Option<&crate::terminal::TerminalState>,
+) -> Option<PaneStatusMark> {
+    let terminal = terminal.filter(|terminal| terminal.is_agent_terminal())?;
+    let pane = ws.pane_state(pane_id).or_else(|| {
+        app.detached_agents
+            .iter()
+            .find(|detached| detached.pane_id == pane_id)
+            .map(|detached| &detached.pane)
+    })?;
+    let docked = ws.pane_state(pane_id).is_some();
+    let (glyph, color) = super::agent_table::agent_status_marker(
+        app,
+        super::agent_table::AgentStatusMarks {
+            state: terminal.state,
+            seen: pane.seen,
+            completed: pane.completed,
+            landing: docked && app.landing_worktrees.contains(&ws.id),
+            land_failed: docked && app.landing_failures.contains_key(&ws.id),
+        },
+    )?;
+    Some(PaneStatusMark {
+        glyph,
+        color,
+        clickable: terminal.state == crate::detect::AgentState::Idle
+            && (!pane.seen || pane.completed),
+    })
 }
 
 fn pane_header_path(
@@ -641,18 +679,40 @@ fn truncate_to_width(text: &str, width: usize) -> String {
 }
 
 struct PaneChromeTitle {
+    /// The agent's status mark, drawn before everything else on the title.
+    status: Option<PaneStatusMark>,
     name: Option<String>,
     folder: Option<String>,
     git: Option<String>,
+}
+
+/// The same mark the agent table draws in its margin, carried onto a pane's
+/// title. A finished agent's dot and its check are a button: clicking one
+/// turns it into the other, as it does in the table.
+#[derive(Clone, Copy)]
+struct PaneStatusMark {
+    glyph: &'static str,
+    color: Color,
+    clickable: bool,
 }
 
 impl PaneChromeTitle {
     #[cfg(test)]
     fn name_only(name: impl Into<String>) -> Self {
         Self {
+            status: None,
             name: Some(name.into()),
             folder: None,
             git: None,
+        }
+    }
+
+    /// Columns the status mark takes: the glyph and the space after it.
+    fn status_width(&self) -> u16 {
+        if self.status.is_some() {
+            2
+        } else {
+            0
         }
     }
 
@@ -780,6 +840,7 @@ fn render_code_ui_pane_chrome(
     };
     let text_available = title_width
         .saturating_sub("╭─ ".chars().count() as u16)
+        .saturating_sub(title.status_width())
         .saturating_sub(controls_width)
         .saturating_sub(3) as usize;
     let title_text = truncate_to_width(&title.formatted_title(), text_available);
@@ -795,6 +856,13 @@ fn render_code_ui_pane_chrome(
     };
 
     let mut spans = vec![Span::styled("╭─ ".to_string(), edge_style)];
+    if let Some(mark) = title.status {
+        spans.push(Span::styled(
+            mark.glyph,
+            Style::default().fg(mark.color).bg(Color::Reset),
+        ));
+        spans.push(Span::styled(" ".to_string(), edge_style));
+    }
     spans.extend(pane_title_spans(
         &title,
         &title_text,
@@ -817,6 +885,24 @@ fn render_code_ui_pane_chrome(
     pane_chrome_controls(area, pane_id, controls_text, controls_width)
 }
 
+/// The click target over a finished agent's dot or check, which sits right
+/// after the title's opening corner. `None` when the pane has no mark a click
+/// can move.
+fn pane_status_control(
+    area: Rect,
+    pane_id: crate::layout::PaneId,
+    title: &PaneChromeTitle,
+) -> Option<PaneChromeControl> {
+    if area.width < 4 || area.height == 0 || !title.status.is_some_and(|mark| mark.clickable) {
+        return None;
+    }
+    Some(PaneChromeControl {
+        pane_id,
+        action: PaneChromeAction::Acknowledge,
+        rect: Rect::new(area.x + "╭─ ".chars().count() as u16, area.y, 1, 1),
+    })
+}
+
 fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
     if pane_inner.width <= 4 {
         return pane_inner;
@@ -830,7 +916,7 @@ fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
     )
 }
 
-fn pane_name_label(
+pub(super) fn pane_name_label(
     terminal: Option<&crate::terminal::TerminalState>,
     assigned_name: Option<String>,
     pane_number: Option<usize>,
@@ -1246,12 +1332,17 @@ pub(super) fn compute_pane_chrome_controls(app: &AppState) -> Vec<PaneChromeCont
         .pane_infos
         .iter()
         .flat_map(|info| {
+            let title = pane_chrome_title_for_pane(app, ws, info.id);
+            let status = pane_status_control(info.rect, info.id, &title);
             let hide = pane_hides_instead_of_closing(app, ws, info.id);
             let (controls_text, controls_width) = pane_controls_text(info.rect.width, mode, hide);
-            if controls_width == 0 || info.rect.height == 0 {
-                return Vec::new();
-            }
-            pane_chrome_controls(info.rect, info.id, controls_text, controls_width)
+            let mut controls = if controls_width == 0 || info.rect.height == 0 {
+                Vec::new()
+            } else {
+                pane_chrome_controls(info.rect, info.id, controls_text, controls_width)
+            };
+            controls.extend(status);
+            controls
         })
         .collect()
 }
@@ -1758,6 +1849,7 @@ mod tests {
     #[test]
     fn pane_chrome_title_joins_enabled_fields() {
         let title = PaneChromeTitle {
+            status: None,
             name: Some("Olivia".into()),
             folder: Some("lab/herdr".into()),
             git: git_suffix(Some("main"), Some("✓")),
@@ -1765,6 +1857,7 @@ mod tests {
         assert_eq!(title.formatted_title(), "Olivia lab/herdr (main ✓)");
         assert_eq!(
             PaneChromeTitle {
+                status: None,
                 name: None,
                 folder: Some("herdr".into()),
                 git: git_suffix(Some("main"), None),
@@ -1777,6 +1870,7 @@ mod tests {
             "Olivia"
         );
         assert!(PaneChromeTitle {
+            status: None,
             name: None,
             folder: None,
             git: None,

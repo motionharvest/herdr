@@ -71,9 +71,15 @@ pub(crate) fn cancel_describe_dialog(state: &mut AppState) {
 /// Finish the dialog. Edits are applied here. A new tab or space needs a
 /// pane, which only the event loop can start, so it is asked for.
 pub(crate) fn submit_describe_dialog(state: &mut AppState) {
-    let Some(dialog) = state.describe_dialog.as_ref() else {
+    let Some(dialog) = state.describe_dialog.as_mut() else {
         return;
     };
+    // A folder typed but not yet settled is what the space should start in,
+    // so finishing settles it the way Enter in the list would. A path that is
+    // not a folder keeps the dialog open on the error.
+    if !settle_typed_directory(dialog) {
+        return;
+    }
     let text = dialog.text.text();
     match dialog.target.clone() {
         DescribeTarget::NewSpace => {
@@ -110,6 +116,30 @@ pub(crate) fn submit_describe_dialog(state: &mut AppState) {
         }
     }
     cancel_describe_dialog(state);
+}
+
+/// Settle the directory from the open folder list when something was typed
+/// into it. Reports whether the dialog can go on: false means the typed path
+/// is not a folder, and the dialog now says so.
+fn settle_typed_directory(dialog: &mut DescribeDialogState) -> bool {
+    let Some(folders) = dialog
+        .folders
+        .as_mut()
+        .filter(|folders| folders.open == Some(Focus::Folder) && !folders.path().is_empty())
+    else {
+        return true;
+    };
+    match folders.take_typed_folder() {
+        Ok(()) => {
+            dialog.error = None;
+            true
+        }
+        Err(err) => {
+            dialog.error = Some(err.message());
+            dialog.field = DescribeField::Directory;
+            false
+        }
+    }
 }
 
 pub(crate) fn handle_describe_dialog_key(state: &mut AppState, key: KeyEvent) {
@@ -286,6 +316,12 @@ pub(crate) fn handle_describe_dialog_mouse(state: &mut AppState, mouse: MouseEve
                 }
                 return;
             }
+            // Create finishes with whatever was typed into an open list, so it
+            // goes before the list is closed and that text thrown away.
+            if contains(layout.create, col, row) {
+                submit_describe_dialog(state);
+                return;
+            }
             // Anything else closes an open list before it does its own thing.
             if let Some(folders) = dialog.folders.as_mut() {
                 folders.close_dropdown();
@@ -300,8 +336,6 @@ pub(crate) fn handle_describe_dialog_mouse(state: &mut AppState, mouse: MouseEve
                 dialog.text.clear_selection();
             } else if layout.name.is_some_and(|rect| contains(rect, col, row)) {
                 dialog.field = DescribeField::Name;
-            } else if contains(layout.create, col, row) {
-                submit_describe_dialog(state);
             } else if contains(layout.cancel, col, row) {
                 cancel_describe_dialog(state);
             }
@@ -382,6 +416,32 @@ mod tests {
         handle_describe_dialog_key(&mut state, key(KeyCode::Tab));
         type_text(&mut state, "/definitely/not/here");
         handle_describe_dialog_key(&mut state, key(KeyCode::Enter));
+        let dialog = state.describe_dialog.as_ref().unwrap();
+        assert_eq!(dialog.field, DescribeField::Directory);
+        assert!(dialog.error.as_deref().unwrap().contains("is not a folder"));
+    }
+
+    #[test]
+    fn finishing_takes_a_directory_typed_but_not_settled() {
+        let mut state = new_space_state();
+        handle_describe_dialog_key(&mut state, key(KeyCode::Tab));
+        type_text(&mut state, "/");
+        submit_describe_dialog(&mut state);
+        assert!(state.request_submit_describe_dialog);
+        let dialog = state.describe_dialog.as_ref().unwrap();
+        assert_eq!(
+            dialog.folders.as_ref().unwrap().folder_path(),
+            Some(std::path::Path::new("/"))
+        );
+    }
+
+    #[test]
+    fn finishing_with_a_typed_path_that_is_not_a_folder_stays_open() {
+        let mut state = new_space_state();
+        handle_describe_dialog_key(&mut state, key(KeyCode::Tab));
+        type_text(&mut state, "/definitely/not/here");
+        submit_describe_dialog(&mut state);
+        assert!(!state.request_submit_describe_dialog);
         let dialog = state.describe_dialog.as_ref().unwrap();
         assert_eq!(dialog.field, DescribeField::Directory);
         assert!(dialog.error.as_deref().unwrap().contains("is not a folder"));

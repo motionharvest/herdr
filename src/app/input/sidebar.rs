@@ -254,15 +254,18 @@ impl AppState {
             return None;
         }
 
-        let (cards, tab_rows, agent_rows) = if self.view.workspace_card_areas.is_empty() {
+        let (cards, tab_rows, agent_rows, pane_rows) = if self.view.workspace_card_areas.is_empty()
+        {
             let (cards, tab_rows, agent_rows, _) =
                 crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect);
-            (cards, tab_rows, agent_rows)
+            let pane_rows = crate::ui::compute_pane_row_areas(self, self.view.sidebar_rect);
+            (cards, tab_rows, agent_rows, pane_rows)
         } else {
             (
                 self.view.workspace_card_areas.clone(),
                 self.view.tab_row_areas.clone(),
                 self.view.agent_row_areas.clone(),
+                self.view.pane_row_areas.clone(),
             )
         };
         if cards.is_empty() {
@@ -295,6 +298,7 @@ impl AppState {
                 &cards,
                 &tab_rows,
                 &agent_rows,
+                &pane_rows,
                 area,
                 insert_idx,
             ) else {
@@ -466,6 +470,22 @@ impl AppState {
             .iter()
             .find(|area| row >= area.rect.y && row < area.rect.y + area.rect.height)
             .map(|area| (area.ws_idx, area.tab_idx, area.pane_id))
+    }
+
+    /// Plain pane row under `row` in the spaces list.
+    pub(super) fn pane_row_target_at(&self, row: u16) -> Option<(usize, crate::layout::PaneId)> {
+        if self.sidebar_collapsed {
+            return None;
+        }
+        let pane_rows = if self.view.workspace_card_areas.is_empty() {
+            crate::ui::compute_pane_row_areas(self, self.view.sidebar_rect)
+        } else {
+            self.view.pane_row_areas.clone()
+        };
+        pane_rows
+            .into_iter()
+            .find(|area| row >= area.rect.y && row < area.rect.y + area.rect.height)
+            .map(|area| (area.ws_idx, area.pane_id))
     }
 
     /// Tab row under `row` in the spaces list.
@@ -1484,6 +1504,7 @@ mod tests {
             &app.state.view.workspace_card_areas,
             &app.state.view.tab_row_areas,
             &app.state.view.agent_row_areas,
+            &app.state.view.pane_row_areas,
             app.state.workspace_list_rect(),
             0,
         )
@@ -1988,6 +2009,7 @@ mod tests {
             cards,
             &app.state.view.tab_row_areas,
             agent_rows,
+            &app.state.view.pane_row_areas,
             app.state.workspace_list_rect(),
             cards.len(),
         )
@@ -2029,6 +2051,7 @@ mod tests {
             cards,
             &app.state.view.tab_row_areas,
             agent_rows,
+            &app.state.view.pane_row_areas,
             app.state.workspace_list_rect(),
             2,
         )
@@ -2066,6 +2089,7 @@ mod tests {
             &app.state.view.workspace_card_areas,
             &app.state.view.tab_row_areas,
             &app.state.view.agent_row_areas,
+            &app.state.view.pane_row_areas,
             app.state.workspace_list_rect(),
             0,
         )
