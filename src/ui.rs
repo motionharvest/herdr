@@ -210,6 +210,8 @@ fn compute_view_internal(
         dialog.text.set_width(width);
     }
 
+    app.view.ssh_hosts = self::panes::compute_ssh_hosts(app, terminal_runtimes);
+
     if is_mobile_width(area, app.mobile_width_threshold) {
         // Mobile has no sidebar, so the composer still spans the frame.
         let (composer, area) = split_composer(app, area);
@@ -313,6 +315,7 @@ fn compute_view_internal(
         compute_pane_row_areas(app, sidebar_rect)
     };
     let agent_locations = std::mem::take(&mut app.view.agent_locations);
+    let ssh_hosts = std::mem::take(&mut app.view.ssh_hosts);
     app.view = crate::app::ViewState {
         layout: ViewLayout::Desktop,
         composer,
@@ -324,6 +327,7 @@ fn compute_view_internal(
         pane_row_areas,
         agent_table,
         agent_locations,
+        ssh_hosts,
         tab_bar_rect,
         tab_hit_areas: tab_bar_view.tab_hit_areas,
         tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
@@ -420,6 +424,7 @@ fn compute_mobile_view(
         .map(|_| mobile_toast_banner_rect(area, app.config_diagnostic.is_some()))
         .unwrap_or_default();
 
+    let ssh_hosts = std::mem::take(&mut app.view.ssh_hosts);
     app.view = crate::app::ViewState {
         layout: ViewLayout::Mobile,
         composer,
@@ -431,6 +436,7 @@ fn compute_mobile_view(
         pane_row_areas: Vec::new(),
         agent_table: crate::ui::AgentTableLayout::default(),
         agent_locations: std::collections::HashMap::new(),
+        ssh_hosts,
         tab_bar_rect: Rect::default(),
         tab_hit_areas: Vec::new(),
         tab_scroll_left_hit_area: Rect::default(),

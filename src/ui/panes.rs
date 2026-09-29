@@ -404,11 +404,37 @@ fn local_hostname() -> &'static str {
     })
 }
 
-/// Folds the local hostname into a pane name (`Olivia@myhost`), or stands in
-/// for it alone when the name field is off, so the two can be toggled
-/// independently.
-fn with_hostname(name: Option<String>) -> Option<String> {
-    let host = local_hostname();
+/// The machines the shown panes are logged into over ssh, computed once per
+/// frame from the live runtimes. Only the active tab's panes and a peeked agent
+/// get a title, so only they are looked up, and nothing is when the hostname
+/// field is off.
+pub(super) fn compute_ssh_hosts(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+) -> std::collections::HashMap<crate::layout::PaneId, String> {
+    let mut hosts = std::collections::HashMap::new();
+    if !app.pane_header().hostname {
+        return hosts;
+    }
+    let shown = app
+        .active
+        .and_then(|ws_idx| app.workspaces.get(ws_idx))
+        .map(|ws| ws.layout.pane_ids())
+        .unwrap_or_default();
+    for pane_id in shown.into_iter().chain(app.agent_peek) {
+        if let Some(host) = app
+            .runtime_for_agent_pane(terminal_runtimes, pane_id)
+            .and_then(|rt| rt.ssh_host())
+        {
+            hosts.insert(pane_id, host);
+        }
+    }
+    hosts
+}
+
+/// Folds a hostname into a pane name (`Olivia@myhost`), or stands in for it
+/// alone when the name field is off, so the two can be toggled independently.
+fn with_hostname(name: Option<String>, host: &str) -> Option<String> {
     if host.is_empty() {
         return name;
     }
@@ -433,7 +459,12 @@ fn pane_chrome_title_for_pane(
             .unwrap_or_else(|| "Workspace".to_string())
     });
     if header.hostname {
-        name = with_hostname(name);
+        // The machine the pane's shell is on: the one ssh reached, or this one.
+        let host = match app.view.ssh_hosts.get(&pane_id) {
+            Some(host) => host.as_str(),
+            None => local_hostname(),
+        };
+        name = with_hostname(name, host);
     }
     let git_status = ws.git_status_for_pane(pane_id);
     let path = pane_header_path(app, pane_id, terminal, &git_status);
@@ -1963,6 +1994,18 @@ mod tests {
         assert_eq!(
             pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
             expected
+        );
+
+        // A pane logged into another machine names that machine instead.
+        app.view.ssh_hosts.insert(pane_id, "king".into());
+        assert_eq!(
+            pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
+            "king"
+        );
+        app.pane_header.agent_name = true;
+        assert_eq!(
+            pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
+            "Olivia@king"
         );
     }
 

@@ -989,6 +989,11 @@ pub struct ViewState {
     /// pane's current folder comes from, so it reads that folder from here —
     /// and so does the paint that writes the row.
     pub agent_locations: std::collections::HashMap<PaneId, crate::ui::AgentLocation>,
+    /// The machine each shown pane is logged into over ssh, as of the last
+    /// frame, for the hostname in its title. A pane on this machine has no
+    /// entry. Kept here for the same reason as `agent_locations`: the title is
+    /// laid out from `AppState` alone.
+    pub ssh_hosts: std::collections::HashMap<PaneId, String>,
     /// Tab strip under the agent table: hit areas for tabs, scroll, and +.
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
@@ -1018,6 +1023,7 @@ impl Default for ViewState {
             pane_row_areas: Vec::new(),
             agent_table: crate::ui::AgentTableLayout::default(),
             agent_locations: std::collections::HashMap::new(),
+            ssh_hosts: std::collections::HashMap::new(),
             tab_bar_rect: Rect::default(),
             tab_hit_areas: Vec::new(),
             tab_scroll_left_hit_area: Rect::default(),

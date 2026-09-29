@@ -378,6 +378,10 @@ impl TerminalRuntime {
         self.0.foreground_command()
     }
 
+    pub(crate) fn ssh_host(&self) -> Option<String> {
+        self.0.ssh_host()
+    }
+
     pub(crate) fn shell_name(&self) -> Option<String> {
         self.0.shell_name()
     }

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+- A space's card in the spaces sidebar shows only its name. The agent count on the right of the name row, such as `2 agents` or `no agents`, is gone; the rows listed under the card already show which agents the space holds.
+
+### Fixed
+- A pane title's `hostname` names the machine an `ssh` in the pane is connected to, so `ssh aaron@king` or `tailscale ssh king` shows `Olivia@king`. It used to name the local machine no matter where the pane's shell was, so every pane said the same host. The name comes from ssh's command line; a Tailscale name keeps only its machine part, and the title returns to the local hostname when ssh exits.
+
 ## [0.13.0] - 2026-09-29
 
 ### Added

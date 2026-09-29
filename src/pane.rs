@@ -206,6 +206,56 @@ fn display_command(process: &crate::platform::ForegroundProcess) -> String {
         .join(" ")
 }
 
+/// ssh options that take a value, from OpenSSH's own option string. The value
+/// is either the rest of the same argument (`-p22`) or the next one (`-p 22`).
+const SSH_OPTIONS_WITH_VALUE: &str = "BbcDEeFIiJLlmOoPpQRSWw";
+
+/// The machine an `ssh` command line connects to, as a pane title should name
+/// it: `king` from `ssh aaron@king`. `tailscale ssh king` runs ssh with the
+/// full MagicDNS name, `king.<tailnet>.ts.net.`, so a Tailscale name keeps only
+/// its machine part. Any other name is kept as typed, including an ssh config
+/// alias. `None` means the program is not ssh or names no destination.
+fn ssh_destination_host(argv: &[String]) -> Option<String> {
+    let (program, args) = argv.split_first()?;
+    if std::path::Path::new(program).file_name()? != "ssh" {
+        return None;
+    }
+    let mut args = args.iter();
+    let destination = loop {
+        let arg = args.next()?;
+        if arg == "--" {
+            break args.next()?;
+        }
+        let Some(flags) = arg.strip_prefix('-').filter(|flags| !flags.is_empty()) else {
+            break arg;
+        };
+        // Flags can share one argument (`-vp22`); the first that takes a value
+        // takes the rest of it, or the next argument when nothing is left.
+        if let Some(at) = flags.find(|flag| SSH_OPTIONS_WITH_VALUE.contains(flag)) {
+            if at + 1 == flags.len() {
+                args.next()?;
+            }
+        }
+    };
+
+    let (host, has_port) = match destination.strip_prefix("ssh://") {
+        Some(uri) => (uri.split('/').next().unwrap_or(uri), true),
+        None => (destination.as_str(), false),
+    };
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+    let host = match host.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(bracketed),
+        None if has_port => host.split(':').next().unwrap_or(host),
+        None => host,
+    };
+    let host = host.trim_end_matches('.');
+    let host = match host.strip_suffix(".ts.net") {
+        Some(tailnet_name) => tailnet_name.split('.').next().unwrap_or(tailnet_name),
+        None => host,
+    };
+    (!host.is_empty()).then(|| host.to_string())
+}
+
 fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
     crate::platform::process_cwd(pid).filter(|cwd| cwd.is_absolute() && cwd.is_dir())
 }
@@ -2293,6 +2343,19 @@ impl PaneRuntime {
         Some(display_command(&leader))
     }
 
+    /// The machine the pane is logged into when `ssh` holds the terminal,
+    /// read from ssh's command line. `None` means the pane is on this machine.
+    pub fn ssh_host(&self) -> Option<String> {
+        let pid = self.child_pid.load(Ordering::Acquire);
+        let pgid = self.foreground_pgid(pid)?;
+        if pgid == pid {
+            return None;
+        }
+        let job = crate::detect::foreground_group_leader_job(pgid)?;
+        let leader = job.processes.into_iter().next()?;
+        ssh_destination_host(leader.argv.as_deref()?)
+    }
+
     /// The file name of the pane's own shell, which is what the pane shows
     /// while nothing else holds the terminal.
     pub fn shell_name(&self) -> Option<String> {
@@ -2963,6 +3026,49 @@ mod tests {
             "npm run dev"
         );
         assert_eq!(display_command(&process(None)), "python3");
+    }
+
+    #[test]
+    fn ssh_destination_host_names_the_machine_ssh_reaches() {
+        let host = |argv: &[&str]| {
+            ssh_destination_host(&argv.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
+        };
+        assert_eq!(host(&["ssh", "king"]).as_deref(), Some("king"));
+        assert_eq!(
+            host(&["/usr/bin/ssh", "aaron@king"]).as_deref(),
+            Some("king")
+        );
+        // What `tailscale ssh aaron@oberon ls` runs.
+        assert_eq!(
+            host(&[
+                "ssh",
+                "-o",
+                "UserKnownHostsFile \"/home/aaron/.config/tailscale/ssh_known_hosts\"",
+                "-o",
+                "ProxyCommand \"tailscale\"  nc %h %p",
+                "aaron@oberon.tail949dcf.ts.net.",
+                "ls",
+            ])
+            .as_deref(),
+            Some("oberon")
+        );
+        assert_eq!(
+            host(&["ssh", "-vp", "2222", "-A", "-J", "jump", "box.example.com"]).as_deref(),
+            Some("box.example.com")
+        );
+        assert_eq!(
+            host(&["ssh", "-p2222", "-l", "me", "box"]).as_deref(),
+            Some("box")
+        );
+        assert_eq!(host(&["ssh", "--", "box"]).as_deref(), Some("box"));
+        assert_eq!(
+            host(&["ssh", "ssh://me@box.example.com:2222"]).as_deref(),
+            Some("box.example.com")
+        );
+        assert_eq!(host(&["ssh", "me@[fd7a::1]"]).as_deref(), Some("fd7a::1"));
+        assert_eq!(host(&["ssh", "-p", "22"]), None);
+        assert_eq!(host(&["sshd", "king"]), None);
+        assert_eq!(host(&["mosh", "king"]), None);
     }
 
     #[test]

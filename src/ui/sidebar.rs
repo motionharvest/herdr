@@ -1246,13 +1246,12 @@ fn render_workspace_rows(
             seen,
             workspace_agents_expanded(app, card.ws_idx),
         );
-        let agents = workspace_agent_count_label(ws, &app.terminals);
         // A card inside the group outline stops at its name: the outline
         // supplies the enclosing box, so its own floor would only cut the
         // group in half.
         let open_bottom =
             outlined.is_some_and(|group| group.y == card.rect.y && group.height > card.rect.height);
-        render_workspace_card(frame, card.rect, &name, &agents, selected, open_bottom, app);
+        render_workspace_card(frame, card.rect, &name, selected, open_bottom, app);
     }
 
     render_space_group_outline(app, frame, area, outlined);
@@ -1658,28 +1657,10 @@ fn workspace_card_label(
     format!("{indent}{dot} {name}")
 }
 
-/// How many agents the space holds, as the card's right-aligned tally. It
-/// counts exactly the rows the card lists when expanded, so the tally also
-/// answers whether there is anything under the card worth opening.
-pub(crate) fn workspace_agent_count_label(
-    ws: &crate::workspace::Workspace,
-    terminals: &std::collections::HashMap<
-        crate::terminal::TerminalId,
-        crate::terminal::TerminalState,
-    >,
-) -> String {
-    match ws.pane_details(terminals).len() {
-        0 => "no agents".to_string(),
-        1 => "1 agent".to_string(),
-        count => format!("{count} agents"),
-    }
-}
-
 fn render_workspace_card(
     frame: &mut Frame,
     rect: Rect,
     name: &str,
-    agents: &str,
     selected: bool,
     open_bottom: bool,
     app: &AppState,
@@ -1698,18 +1679,8 @@ fn render_workspace_card(
     };
     let border_style = Style::default().fg(border_color);
     let name_style = Style::default().fg(name_color).add_modifier(Modifier::BOLD);
-    let count_style = Style::default().fg(app.palette.accent);
     let inner_width = rect.width.saturating_sub(2) as usize;
-    // The tally is right-aligned against the card's inner edge, so the name
-    // gives up the columns it needs — plus a space between them.
-    let agents = if agents.chars().count() + 2 <= inner_width {
-        agents
-    } else {
-        ""
-    };
-    let name_width = inner_width.saturating_sub(agents.chars().count());
-    let name_chars = name_width.saturating_sub(usize::from(!agents.is_empty()));
-    let name = pad_to_width(&truncate_chars(name, name_chars), name_width);
+    let name = pad_to_width(&truncate_chars(name, inner_width), inner_width);
 
     let buf = frame.buffer_mut();
     let right = rect.x + rect.width.saturating_sub(1);
@@ -1738,7 +1709,6 @@ fn render_workspace_card(
         border_style,
         name_style,
     );
-    render_workspace_card_agent_count(buf, right, rect.y + 1, agents, count_style);
 
     if open_bottom {
         return;
@@ -1774,27 +1744,6 @@ fn render_workspace_card_compact(
             .set_style(name_style);
     }
     buf[(right, rect.y)].set_symbol("╮").set_style(border_style);
-}
-
-/// Writes the agent tally against the card's right inner edge, over the padding
-/// the name row already laid down.
-fn render_workspace_card_agent_count(
-    buf: &mut ratatui::buffer::Buffer,
-    right: u16,
-    y: u16,
-    agents: &str,
-    style: Style,
-) {
-    let width = agents.chars().count() as u16;
-    if width == 0 || right < width {
-        return;
-    }
-    let start_x = right - width;
-    for (idx, ch) in agents.chars().enumerate() {
-        buf[(start_x + idx as u16, y)]
-            .set_symbol(&ch.to_string())
-            .set_style(style);
-    }
 }
 
 fn render_workspace_card_text_row(
@@ -3092,29 +3041,6 @@ mod tests {
     }
 
     #[test]
-    fn space_card_tallies_its_agents_right_aligned_in_the_accent_color() {
-        let area = Rect::new(0, 0, 28, 24);
-        let (app, terminal) = render_sidebar_list(area);
-        let card = compute_workspace_card_areas(&app, area)[0].rect;
-        let right = card.x + card.width - 1;
-        let label = "1 agent";
-        let buf = terminal.backend().buffer();
-        let row = card.y + 1;
-
-        let start_x = right - label.chars().count() as u16;
-        let rendered = (start_x..right)
-            .map(|x| buf[(x, row)].symbol())
-            .collect::<String>();
-        assert_eq!(rendered, label);
-        for x in start_x..right {
-            assert_eq!(buf[(x, row)].style().fg, Some(app.palette.accent));
-        }
-        // The space's own name still leads the row, with a gap before the tally.
-        assert_eq!(buf[(card.x + 1, row)].symbol(), "●");
-        assert_eq!(buf[(start_x - 1, row)].symbol(), " ");
-    }
-
-    #[test]
     fn collapsed_space_card_hollows_its_dot() {
         let area = Rect::new(0, 0, 28, 24);
         let (app, terminal) = render_sidebar_list_with(area, |app| {
@@ -3125,36 +3051,6 @@ mod tests {
         let buf = terminal.backend().buffer();
 
         assert_eq!(buf[(card.x + 1, card.y + 1)].symbol(), COLLAPSED_SPACE_DOT);
-    }
-
-    /// The tally has to match the rows the card lists when expanded, and those
-    /// are agents — a shell pane sitting beside an agent adds a pane but no row.
-    #[test]
-    fn space_card_tally_counts_agents_not_panes() {
-        let mut app = crate::app::state::AppState::test_new();
-        let mut workspace = Workspace::test_new("herdr");
-        let agent_pane = workspace.tabs[0].root_pane;
-        workspace.test_split(ratatui::layout::Direction::Horizontal);
-        app.workspaces = vec![workspace];
-        app.ensure_test_terminals();
-        let agent_terminal = app.workspaces[0].tabs[0].panes[&agent_pane]
-            .attached_terminal_id
-            .clone();
-
-        assert_eq!(
-            workspace_agent_count_label(&app.workspaces[0], &app.terminals),
-            "no agents"
-        );
-
-        app.terminals
-            .get_mut(&agent_terminal)
-            .unwrap()
-            .detected_agent = Some(Agent::Claude);
-
-        assert_eq!(
-            workspace_agent_count_label(&app.workspaces[0], &app.terminals),
-            "1 agent"
-        );
     }
 
     #[test]
