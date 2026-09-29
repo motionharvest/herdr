@@ -34,6 +34,8 @@ pub struct Tab {
     /// What the tab is for, in the user's words. Written when the tab is made
     /// and edited from its menu; shown when the pointer rests on the tab.
     pub goal: Option<String>,
+    /// Whether the sidebar folds away the layout preview under this tab's name.
+    pub layout_preview_hidden: bool,
     pub number: usize,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -160,6 +162,7 @@ impl Tab {
             Self {
                 custom_name: None,
                 goal: None,
+                layout_preview_hidden: false,
                 number,
                 root_pane: root_id,
                 layout,

@@ -203,6 +203,8 @@ pub struct TabSnapshot {
     pub custom_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub layout_preview_hidden: bool,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -286,6 +288,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
         let identity_cwd = legacy_identity_cwd(&snap);
         let tab = TabSnapshot {
             goal: None,
+            layout_preview_hidden: false,
             custom_name: None,
             layout: snap.layout,
             panes: snap.panes,
@@ -581,6 +584,7 @@ fn capture_tab(
     TabSnapshot {
         custom_name: tab.custom_name.clone(),
         goal: tab.goal.clone(),
+        layout_preview_hidden: tab.layout_preview_hidden,
         layout: capture_node(tab.layout.root()),
         panes,
         zoomed: tab.zoomed,
@@ -835,6 +839,7 @@ mod tests {
                 agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     goal: None,
+                    layout_preview_hidden: false,
                     custom_name: Some("api".to_string()),
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
@@ -1429,6 +1434,7 @@ mod tests {
                 agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     goal: None,
+                    layout_preview_hidden: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,

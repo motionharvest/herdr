@@ -566,6 +566,7 @@ fn restore_tab(
             crate::workspace::Tab {
                 custom_name: snap.custom_name.clone(),
                 goal: snap.goal.clone(),
+                layout_preview_hidden: snap.layout_preview_hidden,
                 number,
                 root_pane,
                 layout,
@@ -1425,6 +1426,7 @@ mod tests {
                 worktree_space: None,
                 tabs: vec![TabSnapshot {
                     goal: None,
+                    layout_preview_hidden: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(7),
                     panes: HashMap::from([(
@@ -1521,6 +1523,7 @@ mod tests {
                 worktree_space: None,
                 tabs: vec![TabSnapshot {
                     goal: None,
+                    layout_preview_hidden: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
@@ -1622,6 +1625,7 @@ mod tests {
                 agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     goal: None,
+                    layout_preview_hidden: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -1706,6 +1710,7 @@ mod tests {
                 agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     goal: None,
+                    layout_preview_hidden: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -1923,6 +1928,7 @@ mod tests {
                 agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     goal: None,
+                    layout_preview_hidden: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes,
@@ -1971,6 +1977,7 @@ mod tests {
                 agent_order: Vec::new(),
                 tabs: vec![TabSnapshot {
                     goal: None,
+                    layout_preview_hidden: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,

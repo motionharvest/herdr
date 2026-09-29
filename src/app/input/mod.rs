@@ -482,7 +482,18 @@ impl App {
                     && mouse.column < sidebar.x + sidebar.width
                     && mouse.row >= sidebar.y
                     && mouse.row < sidebar.y + sidebar.height;
-                in_sidebar
+                // Only the name renames the tab. The preview arrow is a
+                // toggle, so pressing it twice folds and unfolds, and the
+                // preview picks panes, so a second press there picks again.
+                let on_arrow = self
+                    .state
+                    .tab_preview_toggle_at(mouse.column, mouse.row)
+                    .is_some();
+                let on_preview = self
+                    .state
+                    .tab_preview_target_at(mouse.column, mouse.row)
+                    .is_some();
+                (in_sidebar && !on_arrow && !on_preview)
                     .then(|| self.state.tab_row_target_at(mouse.row))
                     .flatten()
             });

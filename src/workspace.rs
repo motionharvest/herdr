@@ -905,6 +905,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: None,
             goal: None,
+            layout_preview_hidden: false,
             number: 1,
             root_pane: pane_id,
             layout,
@@ -982,6 +983,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: None,
             goal: None,
+            layout_preview_hidden: false,
             number: 1,
             root_pane: root_id,
             layout,
@@ -1040,6 +1042,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: name.map(str::to_string),
             goal: None,
+            layout_preview_hidden: false,
             number: self.tabs.len() + 1,
             root_pane: root_id,
             layout,

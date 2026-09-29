@@ -488,6 +488,68 @@ impl AppState {
             .map(|area| (area.ws_idx, area.pane_id))
     }
 
+    /// The tab whose layout-preview arrow is under `col`, `row`.
+    pub(super) fn tab_preview_toggle_at(&self, col: u16, row: u16) -> Option<(usize, usize)> {
+        if self.sidebar_collapsed {
+            return None;
+        }
+        let tab_rows = if self.view.tab_row_areas.is_empty() {
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).1
+        } else {
+            self.view.tab_row_areas.clone()
+        };
+        tab_rows
+            .iter()
+            .find(|area| {
+                crate::ui::tab_preview_toggle_rect(self, area)
+                    .is_some_and(|rect| col >= rect.x && col < rect.x + rect.width && row == rect.y)
+            })
+            .map(|area| (area.ws_idx, area.tab_idx))
+    }
+
+    /// The tab whose layout preview is under `col`, `row`, and the pane drawn
+    /// in that cell. The pane is `None` when the point lands where no pane is
+    /// drawn, which still counts as a press on the tab.
+    pub(super) fn tab_preview_target_at(
+        &self,
+        col: u16,
+        row: u16,
+    ) -> Option<(usize, usize, Option<crate::layout::PaneId>)> {
+        if self.sidebar_collapsed {
+            return None;
+        }
+        let tab_rows = if self.view.tab_row_areas.is_empty() {
+            crate::ui::compute_workspace_list_areas(self, self.view.sidebar_rect).1
+        } else {
+            self.view.tab_row_areas.clone()
+        };
+        tab_rows.iter().find_map(|area| {
+            let preview = crate::ui::tab_preview_rect(area.rect)?;
+            let inside = col >= preview.x
+                && col < preview.x + preview.width
+                && row >= preview.y
+                && row < preview.y + preview.height;
+            if !inside {
+                return None;
+            }
+            let tab = self.workspaces.get(area.ws_idx)?.tabs.get(area.tab_idx)?;
+            let pane = crate::ui::minimap_pane_at(tab.layout.root(), preview, col, row);
+            Some((area.ws_idx, area.tab_idx, pane))
+        })
+    }
+
+    /// Shows or hides the layout preview under a tab's name in the sidebar.
+    pub(crate) fn toggle_tab_layout_preview(&mut self, ws_idx: usize, tab_idx: usize) {
+        if let Some(tab) = self
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        {
+            tab.layout_preview_hidden = !tab.layout_preview_hidden;
+            self.mark_session_dirty();
+        }
+    }
+
     /// Tab row under `row` in the spaces list.
     pub(super) fn tab_row_target_at(&self, row: u16) -> Option<(usize, usize)> {
         if self.sidebar_collapsed {
@@ -1054,6 +1116,119 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_pane_in_a_tab_preview_switches_to_that_tab_and_focuses_it() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        ws.test_split(ratatui::layout::Direction::Horizontal);
+        let second_tab = ws.test_add_tab(Some("logs"));
+        ws.active_tab = second_tab;
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.view.terminal_area = Rect::new(0, 0, 120, 36);
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 30);
+        let (cards, tabs, agent_rows, folder_rows) =
+            crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect);
+        app.state.view.workspace_card_areas = cards;
+        app.state.view.tab_row_areas = tabs;
+        app.state.view.agent_row_areas = agent_rows;
+        app.state.view.agent_folder_areas = folder_rows;
+
+        // Aim at whichever half of the preview holds the pane the split tab
+        // is not focused on, so the press has to move focus to land.
+        let tab = &app.state.workspaces[0].tabs[0];
+        let focused = tab.layout.focused();
+        let other = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .find(|id| *id != focused)
+            .unwrap();
+        let preview = crate::ui::tab_preview_rect(app.state.view.tab_row_areas[0].rect).unwrap();
+        let col = (preview.x..preview.x + preview.width)
+            .find(|col| {
+                crate::ui::minimap_pane_at(tab.layout.root(), preview, *col, preview.y)
+                    == Some(other)
+            })
+            .expect("the other pane is drawn in the preview");
+
+        for _ in 0..2 {
+            app.handle_mouse(mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                col,
+                preview.y,
+            ));
+            app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), col, preview.y));
+        }
+
+        assert_eq!(app.state.workspaces[0].active_tab, 0);
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), other);
+        assert_eq!(
+            app.state.mode,
+            Mode::Terminal,
+            "a second press on the preview picks again rather than renaming the tab"
+        );
+    }
+
+    #[test]
+    fn the_arrow_on_a_tab_row_folds_its_layout_preview_without_switching_tabs() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        ws.test_split(ratatui::layout::Direction::Horizontal);
+        let second_tab = ws.test_add_tab(Some("logs"));
+        ws.active_tab = second_tab;
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.view.terminal_area = Rect::new(0, 0, 120, 36);
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 30);
+        let layout = |app: &crate::app::App| {
+            crate::ui::compute_workspace_list_areas(&app.state, app.state.view.sidebar_rect)
+        };
+        let refresh = |app: &mut crate::app::App| {
+            let (cards, tabs, agent_rows, folder_rows) = layout(app);
+            app.state.view.workspace_card_areas = cards;
+            app.state.view.tab_row_areas = tabs;
+            app.state.view.agent_row_areas = agent_rows;
+            app.state.view.agent_folder_areas = folder_rows;
+        };
+        refresh(&mut app);
+        let split_tab = app.state.view.tab_row_areas[0];
+        assert!(split_tab.rect.height > 1, "the split tab shows its preview");
+        let arrow = crate::ui::tab_preview_toggle_rect(&app.state, &split_tab)
+            .expect("a split tab has an arrow");
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            arrow.x,
+            arrow.y,
+        ));
+        refresh(&mut app);
+        assert!(app.state.workspaces[0].tabs[0].layout_preview_hidden);
+        assert_eq!(app.state.view.tab_row_areas[0].rect.height, 1);
+        assert_eq!(
+            app.state.workspaces[0].active_tab, second_tab,
+            "folding the preview leaves you in the tab you were in"
+        );
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            arrow.x,
+            arrow.y,
+        ));
+        refresh(&mut app);
+        assert!(!app.state.workspaces[0].tabs[0].layout_preview_hidden);
+        assert_eq!(
+            app.state.view.tab_row_areas[0].rect.height,
+            split_tab.rect.height
+        );
+    }
+
+    #[test]
     fn agents_in_every_tab_are_listed_and_a_click_switches_to_their_tab() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");
@@ -1465,6 +1640,13 @@ mod tests {
                     checkout_path: checkout_path.into(),
                     is_linked_worktree: idx != 0,
                 });
+        }
+        // Folded previews keep the list short enough to fit without a
+        // scrollbar, which is the case this test is about.
+        for ws in &mut app.state.workspaces {
+            for tab in &mut ws.tabs {
+                tab.layout_preview_hidden = true;
+            }
         }
         app.state.active = Some(0);
         app.state.selected = 0;

@@ -34,6 +34,8 @@ const AGENT_LOCATION_HEADER_X: u16 = 2;
 /// Rows per plain pane entry: one, holding the pane's name and then the command
 /// it is running.
 const PANE_ENTRY_ROWS: u16 = 1;
+/// Columns between a tab row's edges and its name or layout preview.
+const TAB_MINIMAP_INSET: u16 = 2;
 /// Glyph drawn down the left edge of a plain pane entry, where an agent entry
 /// has its status bar. It is dotted so it reads as the same column without
 /// claiming a state the pane does not report.
@@ -303,9 +305,10 @@ fn entry_row_height(
         WorkspaceListEntry::Workspace { ws_idx, .. } => {
             app.workspaces.get(*ws_idx).map(workspace_row_height)
         }
-        WorkspaceListEntry::Tab { ws_idx, .. } => {
-            Some(1 + space_group_trailing_rows(*ws_idx, next))
-        }
+        WorkspaceListEntry::Tab { ws_idx, tab_idx } => Some(
+            1 + tab_minimap_rows(app, *ws_idx, *tab_idx, body_width)
+                + space_group_trailing_rows(*ws_idx, next),
+        ),
         // A space's last agent reserves two rows below it: the blank row that
         // pads the bottom of the space's outline, and the outline's own floor.
         WorkspaceListEntry::Agent {
@@ -332,6 +335,71 @@ fn entry_row_height(
             )
         }
     }
+}
+
+/// Rows the layout preview under a tab's name takes. It spans the row between
+/// the tab name's indent and a matching margin on the right, so it widens and
+/// narrows with the sidebar, and it is as tall as that width needs to keep the
+/// shape of the area the tab's panes fill. A folded preview takes none.
+fn tab_minimap_rows(app: &AppState, ws_idx: usize, tab_idx: usize, row_width: u16) -> u16 {
+    let Some(tab) = app
+        .workspaces
+        .get(ws_idx)
+        .and_then(|ws| ws.tabs.get(tab_idx))
+    else {
+        return 0;
+    };
+    if tab.layout_preview_hidden {
+        return 0;
+    }
+    super::minimap::minimap_rows(tab_minimap_width(row_width), app.view.terminal_area)
+}
+
+/// Where a tab row draws its layout preview: every row below the name, inset
+/// like the name is. `None` when the row is only its name.
+pub(crate) fn tab_preview_rect(row: Rect) -> Option<Rect> {
+    (row.height > 1).then(|| {
+        Rect::new(
+            row.x + TAB_MINIMAP_INSET.min(row.width),
+            row.y + 1,
+            tab_minimap_width(row.width),
+            row.height - 1,
+        )
+    })
+}
+
+/// The color a preview draws its panes in: the surface one step up from the
+/// agent table's selected-row fill, so the preview reads as quiet shapes. A
+/// theme that leaves that surface to the terminal has no color to give it,
+/// and drawing with the terminal's default would paint the panes in full text
+/// color, so those themes keep the fill color itself.
+fn tab_minimap_pane_color(app: &AppState) -> Color {
+    match app.palette.surface0 {
+        Color::Reset => app.palette.surface_dim,
+        color => color,
+    }
+}
+
+/// Where the arrow that shows or hides a tab's layout preview sits: on the
+/// name row, in the preview's last column. The press target also takes the
+/// clear column to its right, so a one-column glyph is not a one-column aim.
+pub(crate) fn tab_preview_toggle_rect(
+    app: &AppState,
+    row: &crate::app::state::TabRowArea,
+) -> Option<Rect> {
+    app.workspaces.get(row.ws_idx)?.tabs.get(row.tab_idx)?;
+    if row.rect.width < TAB_MINIMAP_INSET * 2 + 1 {
+        return None;
+    }
+    let x = row.rect.x + row.rect.width - TAB_MINIMAP_INSET - 1;
+    Some(Rect::new(x, row.rect.y, 2, 1))
+}
+
+/// How wide a tab's layout preview runs: from the tab name's indent to the same
+/// distance short of the row's right edge, which leaves the space outline a
+/// clear column on each side.
+fn tab_minimap_width(row_width: u16) -> u16 {
+    row_width.saturating_sub(TAB_MINIMAP_INSET * 2)
 }
 
 fn space_group_trailing_rows(ws_idx: usize, next: Option<&WorkspaceListEntry>) -> u16 {
@@ -762,7 +830,12 @@ fn workspace_list_layout(app: &AppState, area: Rect) -> WorkspaceListLayout {
                 tab_rows.push(crate::app::state::TabRowArea {
                     ws_idx: *ws_idx,
                     tab_idx: *tab_idx,
-                    rect: Rect::new(body.x, row_y, body.width, 1),
+                    rect: Rect::new(
+                        body.x,
+                        row_y,
+                        body.width,
+                        1 + tab_minimap_rows(app, *ws_idx, *tab_idx, body.width),
+                    ),
                 });
             }
             WorkspaceListEntry::Agent {
@@ -1260,10 +1333,39 @@ fn render_tab_rows(app: &AppState, frame: &mut Frame, tab_rows: &[crate::app::st
         } else {
             Style::default().fg(app.palette.overlay1)
         };
-        let indent = 2usize.min(row.rect.width as usize);
-        let name = truncate_chars(&tab.display_name(), row.rect.width as usize - indent);
+        let toggle = tab_preview_toggle_rect(app, row);
+        // The name stops a column short of the arrow so the two never touch.
+        let name_end = toggle.map_or(row.rect.x + row.rect.width, |toggle| toggle.x - 1);
+        let indent = (TAB_MINIMAP_INSET as usize).min(row.rect.width as usize);
+        let name_width = usize::from(name_end - row.rect.x).saturating_sub(indent);
+        let name = truncate_chars(&tab.display_name(), name_width);
         let label = format!("{:indent$}{name}", "", indent = indent);
-        render_sidebar_line(frame, row.rect, Line::styled(label, style));
+        let name_rect = Rect::new(row.rect.x, row.rect.y, name_end - row.rect.x, 1);
+        render_sidebar_line(frame, name_rect, Line::styled(label, style));
+        if let Some(toggle) = toggle {
+            let arrow = if tab.layout_preview_hidden {
+                "▸"
+            } else {
+                "▾"
+            };
+            frame.buffer_mut()[(toggle.x, toggle.y)]
+                .set_symbol(arrow)
+                .set_style(Style::default().fg(app.palette.overlay0));
+        }
+
+        let Some(preview) = tab_preview_rect(row.rect) else {
+            continue;
+        };
+        // Only the tab you are in has a pane you are typing into, and that
+        // one takes the accent.
+        super::minimap::render_minimap(
+            tab.layout.root(),
+            active.then(|| tab.layout.focused()),
+            preview,
+            Style::default().fg(tab_minimap_pane_color(app)),
+            Style::default().fg(focus_accent(app)),
+            frame.buffer_mut(),
+        );
     }
 }
 
@@ -4262,5 +4364,102 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_split_tab_previews_its_layout_at_the_sidebar_width() {
+        let mut app = app_with_agents(&[2]);
+        app.view.terminal_area = Rect::new(0, 0, 120, 36);
+
+        // The preview spans the row inside a two-column inset and keeps the
+        // 120x36 shape, so dragging the sidebar wider makes it taller.
+        let tab_row =
+            |width: u16| compute_workspace_list_areas(&app, Rect::new(0, 0, width, 40)).1[0];
+        assert_eq!(tab_row(26).rect.height, 1 + 6);
+        assert_eq!(tab_row(36).rect.height, 1 + 9);
+
+        let area = Rect::new(0, 0, 26, 40);
+        let row = tab_row(26);
+        let rect = row.rect;
+        let runtimes = TerminalRuntimeRegistry::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.x + area.width, area.y + area.height)).unwrap();
+        terminal
+            .draw(|frame| render_workspace_rows(&app, &runtimes, frame, area))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let first_x = rect.x + TAB_MINIMAP_INSET;
+        let last_x = rect.x + rect.width - TAB_MINIMAP_INSET - 1;
+        let preview_row: String = (first_x..=last_x)
+            .map(|x| buf[(x, rect.y + 1)].symbol())
+            .collect();
+        assert_eq!(preview_row, "██████████▌██████████");
+
+        // The arrow sits over the preview's last column, and the pane you are
+        // in takes the accent while the other stays muted.
+        let arrow = tab_preview_toggle_rect(&app, &row).unwrap();
+        assert_eq!(arrow.x, last_x);
+        assert_eq!(buf[(arrow.x, rect.y)].symbol(), "▾");
+        let tab = &app.workspaces[0].tabs[0];
+        let left = tab.layout.panes(Rect::new(0, 0, 2, 1))[0].id;
+        let (focused_x, other_x) = if left == tab.layout.focused() {
+            (first_x, last_x)
+        } else {
+            (last_x, first_x)
+        };
+        assert_eq!(
+            buf[(focused_x, rect.y + 1)].style().fg,
+            Some(focus_accent(&app))
+        );
+        assert_eq!(
+            buf[(other_x, rect.y + 1)].style().fg,
+            Some(app.palette.surface0)
+        );
+    }
+
+    #[test]
+    fn a_folded_preview_leaves_the_tab_one_row_with_a_side_arrow() {
+        let mut app = app_with_agents(&[2]);
+        app.view.terminal_area = Rect::new(0, 0, 120, 36);
+        app.workspaces[0].tabs[0].layout_preview_hidden = true;
+        let area = Rect::new(0, 0, 26, 40);
+        let row = compute_workspace_list_areas(&app, area).1[0];
+        assert_eq!(row.rect.height, 1);
+
+        let runtimes = TerminalRuntimeRegistry::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.x + area.width, area.y + area.height)).unwrap();
+        terminal
+            .draw(|frame| render_workspace_rows(&app, &runtimes, frame, area))
+            .unwrap();
+        let arrow = tab_preview_toggle_rect(&app, &row).unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(arrow.x, arrow.y)].symbol(),
+            "▸"
+        );
+    }
+
+    #[test]
+    fn a_single_pane_tab_previews_one_whole_pane() {
+        let mut app = app_with_agents(&[1]);
+        app.view.terminal_area = Rect::new(0, 0, 120, 36);
+        let area = Rect::new(0, 0, 26, 40);
+        let row = compute_workspace_list_areas(&app, area).1[0];
+        assert_eq!(row.rect.height, 1 + 6);
+        assert!(tab_preview_toggle_rect(&app, &row).is_some());
+
+        let runtimes = TerminalRuntimeRegistry::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.x + area.width, area.y + area.height)).unwrap();
+        terminal
+            .draw(|frame| render_workspace_rows(&app, &runtimes, frame, area))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let preview = tab_preview_rect(row.rect).unwrap();
+        for y in preview.y..preview.y + preview.height {
+            for x in preview.x..preview.x + preview.width {
+                assert_eq!(buf[(x, y)].symbol(), "█", "({x}, {y}) is inside the pane");
+            }
+        }
     }
 }

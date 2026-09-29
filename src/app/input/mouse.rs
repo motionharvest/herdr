@@ -603,6 +603,29 @@ impl AppState {
                         return None;
                     }
 
+                    // The arrow only folds the preview; it leaves you where you are.
+                    if let Some((ws_idx, tab_idx)) =
+                        self.tab_preview_toggle_at(mouse.column, mouse.row)
+                    {
+                        self.toggle_tab_layout_preview(ws_idx, tab_idx);
+                        return None;
+                    }
+
+                    if let Some((ws_idx, tab_idx, pane_id)) =
+                        self.tab_preview_target_at(mouse.column, mouse.row)
+                    {
+                        match pane_id {
+                            Some(pane_id) => {
+                                self.focus_pane_in_workspace(ws_idx, pane_id);
+                            }
+                            None => {
+                                self.switch_workspace_tab(ws_idx, tab_idx);
+                            }
+                        }
+                        self.mode = Mode::Terminal;
+                        return None;
+                    }
+
                     if let Some((ws_idx, tab_idx)) = self.tab_row_target_at(mouse.row) {
                         self.switch_workspace_tab(ws_idx, tab_idx);
                         self.mode = Mode::Terminal;

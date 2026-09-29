@@ -11,6 +11,8 @@ mod describe_dialog;
 mod dialogs;
 mod keybind_help;
 mod menus;
+mod minimap;
+pub(crate) use self::minimap::minimap_pane_at;
 mod mobile;
 mod navigator;
 mod onboarding;
@@ -65,10 +67,11 @@ pub(crate) use self::sidebar::{
     agent_folder_position, collapsed_sidebar_sections, collapsed_sidebar_toggle_rect,
     compute_pane_row_areas, compute_workspace_card_areas, compute_workspace_list_areas,
     expanded_sidebar_toggle_rect, new_workspace_button_rect, normalized_workspace_scroll,
-    render_sidebar, spaces_section_collapsed, spaces_section_header_rect, workspace_agent_groups,
-    workspace_agents_expanded, workspace_drop_indicator_row, workspace_list_entries,
-    workspace_list_rect, workspace_list_scroll_metrics, workspace_list_scrollbar_rect,
-    workspace_parent_group_state, AgentFolderGroup, WorkspaceListEntry,
+    render_sidebar, spaces_section_collapsed, spaces_section_header_rect, tab_preview_rect,
+    tab_preview_toggle_rect, workspace_agent_groups, workspace_agents_expanded,
+    workspace_drop_indicator_row, workspace_list_entries, workspace_list_rect,
+    workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
+    AgentFolderGroup, WorkspaceListEntry,
 };
 pub(crate) use self::status::config_diagnostic_dismiss_rect;
 use self::status::{
@@ -236,8 +239,6 @@ fn compute_view_internal(
         area.height,
     );
 
-    app.workspace_scroll = normalized_workspace_scroll(app, sidebar_rect, app.workspace_scroll);
-
     let (composer, main_area) = split_composer(app, main_area);
     let (agent_table, main_area) = split_agent_table(app, main_area);
 
@@ -249,6 +250,10 @@ fn compute_view_internal(
     } else {
         (Rect::default(), main_area)
     };
+    // Tab rows in the sidebar size their layout previews to this area's shape,
+    // so it has to be in place before the sidebar is measured.
+    app.view.terminal_area = terminal_area;
+    app.workspace_scroll = normalized_workspace_scroll(app, sidebar_rect, app.workspace_scroll);
 
     let tab_bar_view = app
         .active
