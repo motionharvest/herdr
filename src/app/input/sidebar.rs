@@ -319,20 +319,7 @@ impl AppState {
     /// Fold a space's agent entries away, or bring them back. Clicking the
     /// space card drives this.
     pub(crate) fn toggle_workspace_agents(&mut self, ws_idx: usize) {
-        let Some(id) = self.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
-            return;
-        };
-        if crate::ui::workspace_agents_expanded(self, ws_idx) {
-            self.collapsed_agent_space_ids.insert(id);
-        } else {
-            self.collapsed_agent_space_ids.remove(&id);
-        }
-        self.mark_session_dirty();
-        self.workspace_scroll = crate::ui::normalized_workspace_scroll(
-            self,
-            self.view.sidebar_rect,
-            self.workspace_scroll,
-        );
+        self.toggle_shown(&crate::app::view::Fold::SpaceAgents(ws_idx));
     }
 
     /// Agent rows currently drawn for `ws_idx`, top to bottom.
@@ -540,14 +527,10 @@ impl AppState {
 
     /// Shows or hides the layout preview under a tab's name in the sidebar.
     pub(crate) fn toggle_tab_layout_preview(&mut self, ws_idx: usize, tab_idx: usize) {
-        if let Some(tab) = self
-            .workspaces
-            .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs.get_mut(tab_idx))
-        {
-            tab.layout_preview_hidden = !tab.layout_preview_hidden;
-            self.mark_session_dirty();
-        }
+        self.toggle_shown(&crate::app::view::Fold::Minimap {
+            ws: ws_idx,
+            tab: tab_idx,
+        });
     }
 
     /// Tab row under `row` in the spaces list.

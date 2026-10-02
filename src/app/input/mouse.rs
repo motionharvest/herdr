@@ -505,14 +505,12 @@ impl AppState {
 
                 if in_sidebar {
                     if self.on_sidebar_toggle(mouse.column, mouse.row) {
-                        self.sidebar_collapsed = !self.sidebar_collapsed;
-                        self.mark_session_dirty();
+                        self.toggle_shown(&crate::app::view::Fold::Sidebar);
                         return None;
                     }
 
                     if self.on_spaces_section_header(mouse.column, mouse.row) {
-                        self.spaces_collapsed = !self.spaces_collapsed;
-                        self.mark_session_dirty();
+                        self.toggle_shown(&crate::app::view::Fold::Spaces);
                         return None;
                     }
 
@@ -571,15 +569,10 @@ impl AppState {
                             && mouse.column == card.rect.x
                             && mouse.column < card.rect.x + card.rect.width
                     }) {
-                        if let Some((key, collapsed)) =
+                        if let Some((key, _)) =
                             crate::ui::workspace_parent_group_state(self, card.ws_idx)
                         {
-                            if collapsed {
-                                self.collapsed_space_keys.remove(&key);
-                            } else {
-                                self.collapsed_space_keys.insert(key);
-                            }
-                            self.mark_session_dirty();
+                            self.toggle_shown(&crate::app::view::Fold::SpaceGroup(key));
                             return None;
                         }
                     }
@@ -743,8 +736,7 @@ impl AppState {
                     && mouse.column >= collapse.x
                     && mouse.column < collapse.x + collapse.width
                 {
-                    self.agent_table_collapsed = !self.agent_table_collapsed;
-                    self.mark_session_dirty();
+                    self.toggle_shown(&crate::app::view::Fold::AgentTable);
                     return None;
                 }
 

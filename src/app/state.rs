@@ -1332,6 +1332,8 @@ pub struct SettingsState {
     /// The last key refused during that capture, because a plain key bound
     /// directly would take over typing in every pane.
     pub refused_commander_key: Option<String>,
+    /// The Jev API key being typed or pasted, while its field is open.
+    pub editing_jev_key: Option<String>,
 }
 
 pub(crate) enum DragTarget {
@@ -1964,6 +1966,14 @@ pub struct AppState {
     pub refresh_summary_with_grok: bool,
     /// The agent lists show only agents that are not in a space.
     pub hide_attached_agents: bool,
+    /// The TypeSafe key the Commander reads lines with, from `[commander]`
+    /// or the environment. `None` keeps the Commander on its fixed reading.
+    pub jev_api_key: Option<String>,
+    /// The TypeSafe model the Commander asks.
+    pub jev_model: String,
+    /// The model the Commander's planner runs under Claude Code; empty runs
+    /// a line's commands in the order written.
+    pub commander_planner_model: String,
     /// Prompt sent to that headless session. Empty uses the built-in default.
     pub refresh_summary_prompt: String,
     /// Persist the prompt field after it loses focus in Settings.
@@ -2401,6 +2411,9 @@ impl AppState {
             pane_history_persistence: false,
             refresh_summary_with_grok: false,
             hide_attached_agents: false,
+            jev_api_key: None,
+            jev_model: "jev-latest".into(),
+            commander_planner_model: "claude-opus-5-5".into(),
             refresh_summary_prompt: crate::config::DEFAULT_REFRESH_SUMMARY_PROMPT.into(),
             request_save_refresh_summary_prompt: false,
             reveal_hidden_cursor_for_cjk_ime: false,
@@ -2434,6 +2447,7 @@ impl AppState {
                 editing_refresh_prompt: false,
                 capturing_commander_key: false,
                 refused_commander_key: None,
+                editing_jev_key: None,
             },
             integration_recommendations: Vec::new(),
             integration_install_messages: Vec::new(),

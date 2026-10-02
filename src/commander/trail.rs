@@ -1,13 +1,11 @@
-//! The light that carries a prompt from the Commander to a pane.
+//! The light that carries a command from the Commander to what it acts on.
 //!
-//! A star flies along a curve from the Commander's box to the middle of the
-//! pane being prompted. It never draws characters directly: it leaves light in
+//! A star flies along a curve from the Commander's box to its target. It never draws characters directly: it leaves light in
 //! every cell it passes, and that light fades on its own, so the trail is just
 //! the light the star left behind, still fading. Where the light is hottest the
 //! cell's character is replaced by a stroke that follows the direction of
-//! travel; elsewhere the character stays and only its colour is lit. When the
-//! star lands it throws sparks and a ripple, and that landing is the moment the
-//! prompt is delivered.
+//! travel; elsewhere the character stays and only its colour is lit. The star
+//! lands without ceremony: what it carries happens, and the streak fades.
 //!
 //! All motion happens in "visual space", where a cell is 1 unit wide and 2 units
 //! tall, because a terminal cell is roughly twice as tall as it is wide and
@@ -24,12 +22,8 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 const CELL_ASPECT: f32 = 2.0;
 /// Distance between light deposits along the path, in visual units.
 const STAMP_STEP: f32 = 0.25;
-/// Sparks shed per visual unit travelled.
-const SPARKS_PER_UNIT: f32 = 0.35;
 /// How far the curve bows out, as a fraction of the straight-line distance.
 const BOW: f32 = 0.32;
-const RIPPLE_LIFE: f32 = 0.6;
-const RIPPLE_RADIUS: f32 = 7.0;
 /// Below this much light a cell is drawn as if the trail were not there, and a
 /// trail with no cell above it is finished.
 const DARK: f32 = 0.01;
@@ -172,10 +166,6 @@ fn ease_in_out_cubic(u: f32) -> f32 {
     }
 }
 
-fn ease_out_cubic(u: f32) -> f32 {
-    1.0 - (1.0 - u).powi(3)
-}
-
 /// A per-cell light buffer that everything bright draws into. Every layer loses
 /// light exponentially over time.
 #[derive(Debug, Clone)]
@@ -228,7 +218,8 @@ struct Field {
     h: u16,
     /// Short-lived, hot light: the star and its immediate trail.
     heat: Layer,
-    /// Long-lived, dim light: the ghost of the path.
+    /// Dim light that outlasts the heat briefly: a short tail behind the
+    /// star, gone a moment after it lands.
     glow: Layer,
 }
 
@@ -237,8 +228,8 @@ impl Field {
         Self {
             w: 0,
             h: 0,
-            heat: Layer::new(0.14),
-            glow: Layer::new(0.9),
+            heat: Layer::new(0.07),
+            glow: Layer::new(0.12),
         }
     }
 
@@ -251,15 +242,6 @@ impl Field {
         let n = w as usize * h as usize;
         self.heat.resize(n);
         self.glow.resize(n);
-    }
-
-    fn index(&self, p: V2) -> Option<usize> {
-        let col = p.x.floor();
-        let row = (p.y / CELL_ASPECT).floor();
-        if col < 0.0 || row < 0.0 || col >= self.w as f32 || row >= self.h as f32 {
-            return None;
-        }
-        Some(row as usize * self.w as usize + col as usize)
     }
 
     /// Deposit light at `p`. The cell containing `p` receives the full `amp`,
@@ -306,50 +288,6 @@ impl Field {
     }
 }
 
-/// A loose spark that drifts away from the star and burns out.
-#[derive(Debug, Clone)]
-struct Particle {
-    pos: V2,
-    vel: V2,
-    age: f32,
-    life: f32,
-    /// Starting brightness, 0.0 to 1.0.
-    heat: f32,
-}
-
-impl Particle {
-    fn intensity(&self) -> f32 {
-        let left = 1.0 - self.age / self.life;
-        self.heat * left * left
-    }
-}
-
-const DRAG: f32 = 3.0;
-/// Visual units per second², pointing down: sparks sag slightly as they cool.
-const GRAVITY: f32 = 6.0;
-
-/// Small xorshift generator. Enough randomness for sparks, no dependency.
-#[derive(Debug, Clone)]
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self(seed | 1)
-    }
-
-    /// Uniform in [0, 1).
-    fn f(&mut self) -> f32 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        (self.0 >> 40) as f32 / (1u64 << 24) as f32
-    }
-
-    fn range(&mut self, lo: f32, hi: f32) -> f32 {
-        lo + (hi - lo) * self.f()
-    }
-}
-
 #[derive(Debug, Clone)]
 struct Flight {
     arc: Arc,
@@ -373,28 +311,17 @@ impl Flight {
     }
 }
 
-/// An expanding ring of light where the star lands.
-#[derive(Debug, Clone)]
-struct Ripple {
-    center: V2,
-    age: f32,
-}
-
 /// One trip of the star, and the light it leaves behind until that has faded.
 #[derive(Debug, Clone)]
 pub struct Trail {
     field: Field,
-    particles: Vec<Particle>,
-    ripples: Vec<Ripple>,
-    rng: Rng,
     flight: Option<Flight>,
-    target: V2,
     time: f32,
 }
 
 impl Trail {
     /// A star leaving `from` for `to`, inside a frame `bounds` cells across.
-    pub fn new(from: V2, to: V2, bounds: Rect, seed: u64) -> Self {
+    pub fn new(from: V2, to: V2, bounds: Rect) -> Self {
         let mut field = Field::new();
         field.resize(bounds.width, bounds.height);
         let chord = to - from;
@@ -421,16 +348,12 @@ impl Trail {
         let duration = (0.45 + arc.len() / 110.0).clamp(0.5, 1.4);
         Self {
             field,
-            particles: Vec::new(),
-            ripples: Vec::new(),
-            rng: Rng::new(seed),
             flight: Some(Flight {
                 arc,
                 elapsed: 0.0,
                 duration,
                 travelled: 0.0,
             }),
-            target: to,
             time: 0.0,
         }
     }
@@ -441,14 +364,10 @@ impl Trail {
         self.flight.is_some()
     }
 
-    /// Whether anything is left to draw: the star, a spark, a ripple, or light
-    /// that has not yet faded.
+    /// Whether anything is left to draw: the star, or light that has not yet
+    /// faded.
     pub fn is_visible(&self) -> bool {
-        self.flight.is_some()
-            || !self.particles.is_empty()
-            || !self.ripples.is_empty()
-            || self.field.heat.lit()
-            || self.field.glow.lit()
+        self.flight.is_some() || self.field.heat.lit() || self.field.glow.lit()
     }
 
     /// Advance by `dt` seconds in a frame `w` by `h` cells. Returns whether the
@@ -458,21 +377,7 @@ impl Trail {
         self.field.resize(w, h);
         self.field.heat.decay(dt);
         self.field.glow.decay(dt);
-        self.update_particles(dt);
-        let landed = self.update_flight(dt);
-        self.update_ripples(dt);
-        landed
-    }
-
-    fn update_particles(&mut self, dt: f32) {
-        let drag = (-DRAG * dt).exp();
-        for p in &mut self.particles {
-            p.vel = p.vel * drag;
-            p.vel.y += GRAVITY * dt;
-            p.pos = p.pos + p.vel * dt;
-            p.age += dt;
-        }
-        self.particles.retain(|p| p.age < p.life);
+        self.update_flight(dt)
     }
 
     fn update_flight(&mut self, dt: f32) -> bool {
@@ -494,81 +399,16 @@ impl Trail {
         }
         f.travelled = goal;
         let done = f.progress() >= 1.0;
-        let end = f.arc.point(1.0);
 
         for (p, tan) in deposits {
-            self.field.stamp(Target::Heat, p, tan, 1.0, 2.0, 0.55);
+            self.field.stamp(Target::Heat, p, tan, 1.0, 1.5, 0.3);
             self.field.stamp(Target::Glow, p, tan, 1.0, 1.0, 0.0);
-            if self.rng.f() < STAMP_STEP * SPARKS_PER_UNIT {
-                let spread = tan.perp() * self.rng.range(-5.0, 5.0);
-                let vel = tan * self.rng.range(-8.0, -2.0) + spread;
-                let life = self.rng.range(0.25, 0.7);
-                let heat = self.rng.range(0.5, 0.95);
-                self.particles.push(Particle {
-                    pos: p,
-                    vel,
-                    age: 0.0,
-                    life,
-                    heat,
-                });
-            }
         }
 
         if done {
             self.flight = None;
-            self.land(end);
         }
         done
-    }
-
-    fn land(&mut self, at: V2) {
-        self.ripples.push(Ripple {
-            center: at,
-            age: 0.0,
-        });
-        for _ in 0..22 {
-            let a = self.rng.range(0.0, std::f32::consts::TAU);
-            let speed = self.rng.range(6.0, 22.0);
-            let vel = V2::new(a.cos(), a.sin()) * speed;
-            let life = self.rng.range(0.35, 0.9);
-            let heat = self.rng.range(0.6, 1.0);
-            self.particles.push(Particle {
-                pos: at,
-                vel,
-                age: 0.0,
-                life,
-                heat,
-            });
-        }
-    }
-
-    fn update_ripples(&mut self, dt: f32) {
-        let mut rings = Vec::new();
-        for r in &mut self.ripples {
-            r.age += dt;
-            let u = (r.age / RIPPLE_LIFE).min(1.0);
-            rings.push((
-                r.center,
-                ease_out_cubic(u) * RIPPLE_RADIUS,
-                0.7 * (1.0 - u) * (1.0 - u),
-            ));
-        }
-        for (center, radius, amp) in rings {
-            let n = ((std::f32::consts::TAU * radius) / 0.6).ceil().max(8.0) as usize;
-            for k in 0..n {
-                let a = k as f32 / n as f32 * std::f32::consts::TAU;
-                let outward = V2::new(a.cos(), a.sin());
-                self.field.stamp(
-                    Target::Heat,
-                    center + outward * radius,
-                    outward.perp(),
-                    amp,
-                    1.0,
-                    0.0,
-                );
-            }
-        }
-        self.ripples.retain(|r| r.age < RIPPLE_LIFE);
     }
 
     /// Light up whatever is already in `buf`. The rest of the frame has been
@@ -596,7 +436,9 @@ impl Trail {
                 // The shape comes from whichever layer holds a line here, and
                 // the colour is both layers' light added together, so a cooling
                 // trail hands over to the afterglow without a visible seam.
-                let stroke = if hv > 0.42 {
+                // Text under the streak is only lit, never replaced, so a name
+                // the star crosses or lands on stays readable.
+                let stroke = if hv > 0.42 && blank {
                     Some(line_glyph(heat.dir[i], heat.sub_y[i]))
                 } else if gv > 0.4 && blank {
                     Some(line_glyph(glow.dir[i], glow.sub_y[i]))
@@ -615,26 +457,7 @@ impl Trail {
             }
         }
 
-        for p in &self.particles {
-            let Some(i) = self.field.index(p.pos) else {
-                continue;
-            };
-            let e = p.intensity();
-            if e < 0.05 || e < heat.value[i] {
-                continue;
-            }
-            // Bright sparks are drawn; faint ones only warm the text they cross.
-            match e {
-                e if e > 0.6 => put(area, buf, p.pos, Some('*'), lerp_palette(HOT, e)),
-                e if e > 0.35 => put(area, buf, p.pos, Some('+'), lerp_palette(HOT, e)),
-                _ => put(area, buf, p.pos, None, light(HOT, e * 1.4)),
-            }
-        }
-
         if let Some(f) = &self.flight {
-            // The destination brightens as the star approaches it.
-            let e = 0.25 + 0.5 * f.progress();
-            put(area, buf, self.target, Some('o'), lerp_palette(COOL, e));
             let twinkle = 0.9 + 0.1 * (self.time * 17.0).sin();
             put(area, buf, f.head(), Some('*'), lerp_palette(HOT, twinkle));
         }
@@ -761,7 +584,7 @@ mod tests {
 
     #[test]
     fn the_star_lands_exactly_once_and_then_fades_out() {
-        let mut trail = Trail::new(V2::from_cell(40, 22), V2::from_cell(10, 5), frame(), 7);
+        let mut trail = Trail::new(V2::from_cell(40, 22), V2::from_cell(10, 5), frame());
         let mut landings = 0;
         for _ in 0..400 {
             if trail.update(1.0 / 60.0, 80, 24) {
@@ -774,8 +597,18 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_left_on_screen_a_moment_after_landing() {
+        let mut trail = Trail::new(V2::from_cell(40, 22), V2::from_cell(10, 5), frame());
+        while !trail.update(1.0 / 60.0, 80, 24) {}
+        for _ in 0..36 {
+            trail.update(1.0 / 60.0, 80, 24);
+        }
+        assert!(!trail.is_visible(), "still lit 0.6s after landing");
+    }
+
+    #[test]
     fn the_trail_draws_over_the_frame_while_it_flies() {
-        let mut trail = Trail::new(V2::from_cell(40, 22), V2::from_cell(10, 5), frame(), 7);
+        let mut trail = Trail::new(V2::from_cell(40, 22), V2::from_cell(10, 5), frame());
         for _ in 0..20 {
             trail.update(1.0 / 60.0, 80, 24);
         }
@@ -791,7 +624,7 @@ mod tests {
 
     #[test]
     fn a_shrunken_frame_does_not_panic() {
-        let mut trail = Trail::new(V2::from_cell(40, 22), V2::from_cell(10, 5), frame(), 3);
+        let mut trail = Trail::new(V2::from_cell(40, 22), V2::from_cell(10, 5), frame());
         trail.update(0.05, 80, 24);
         trail.update(0.05, 20, 6);
         let small = Rect::new(0, 0, 20, 6);

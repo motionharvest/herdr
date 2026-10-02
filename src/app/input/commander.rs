@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use super::navigate::{execute_navigate_action_in_context, ActionContext, NavigateAction};
 use crate::app::state::{AppState, Mode};
 use crate::commander::intent::{self, Action, Command, Entry, Kind};
-use crate::commander::{trail::V2, Delivery, Launch};
+use crate::commander::trail::V2;
 use crate::input::TerminalKey;
 use crate::terminal::TerminalRuntimeRegistry;
 
@@ -46,6 +46,10 @@ pub(crate) fn handle_commander_key(
         return CommanderKeyOutcome::Edited;
     }
     if key.code == KeyCode::Esc || state.keybinds.commander.matches_direct_key(raw_key) {
+        // Closing the box abandons a paragraph part way through; the commands
+        // already carried out stay done.
+        state.commander.asking = None;
+        state.commander.paragraph = None;
         close_commander(state);
         return CommanderKeyOutcome::Closed;
     }
@@ -67,40 +71,48 @@ pub(crate) fn handle_commander_key(
 }
 
 /// Read the field again and keep the sentence saying what it would do.
+///
+/// An edit makes any reading held for `Enter`, and any answer Jev has yet to
+/// give, about a line that is no longer there, so both are let go. With Jev
+/// set up, nothing is read while typing: the line is read when it is sent.
 pub(crate) fn refresh_reading(state: &mut AppState, terminal_runtimes: &TerminalRuntimeRegistry) {
+    state.commander.asking = None;
+    state.commander.paragraph = None;
     let text = state.commander.field.text();
-    state.commander.reading = if text.trim().is_empty() {
+    state.commander.reading = if text.trim().is_empty() || state.jev_api_key.is_some() {
         None
     } else {
         Some(intent::interpret(&text, &catalog(state, terminal_runtimes)).map(|c| c.describe()))
     };
 }
 
-/// Carry out the line in the field. A message for a pane is not delivered
-/// here: the pane is brought on screen and a star is readied to fly there, and
-/// the message goes when it lands. A line that cannot be read leaves the box
-/// open with the reason under it.
+/// Read the line in the field with the fixed reading. A line that cannot be
+/// read leaves the box open with the reason under it; one that can is handed
+/// back for the app to carry out.
 pub(crate) fn submit_commander(
     state: &mut AppState,
     terminal_runtimes: &mut TerminalRuntimeRegistry,
-) {
+) -> Option<Command> {
     let text = state.commander.field.text();
-    let command = match intent::interpret(&text, &catalog(state, terminal_runtimes)) {
-        Ok(command) => command,
+    match intent::interpret(&text, &catalog(state, terminal_runtimes)) {
+        Ok(command) => Some(command),
         Err(reason) => {
             state.commander.reading = (!reason.is_empty()).then_some(Err(reason));
-            return;
+            None
         }
-    };
-    let origin = state.commander.area;
-    close_commander(state);
-    state.commander.field.clear();
-    state.commander.reading = None;
+    }
+}
 
+/// Carry out what needs nothing but the screen's own state: showing a space,
+/// tab or pane, or one of herdr's key-bound actions. Everything else is handed
+/// back for the app, which reaches the socket API and the stars.
+pub(crate) fn perform(
+    state: &mut AppState,
+    terminal_runtimes: &mut TerminalRuntimeRegistry,
+    command: Command,
+) -> Option<Command> {
     match command {
-        Command::Go(entry) => {
-            go(state, &entry);
-        }
+        Command::Go(entry) => go(state, &entry),
         Command::Act(action) => {
             execute_navigate_action_in_context(
                 state,
@@ -109,39 +121,22 @@ pub(crate) fn submit_commander(
                 ActionContext::Direct,
             );
         }
-        Command::Send { to, text } => {
-            let Some(pane_id) = to.pane else {
-                return;
-            };
-            let Some(ws) = state.workspaces.get(to.ws) else {
-                return;
-            };
-            let workspace_id = ws.id.clone();
-            let tab = ws.find_tab_index_for_pane(pane_id).unwrap_or(to.tab);
-            // The star has to land on something the user can see.
-            let on_screen = state.active == Some(to.ws) && ws.active_tab_index() == tab;
-            if !on_screen {
-                state.switch_workspace_tab(to.ws, tab);
-            }
-            // The star leaves from the top edge of the box, or from the
-            // bottom of the panes if the box was never laid out.
-            let origin = if origin.width == 0 {
-                let area = state.view.terminal_area;
-                ratatui::layout::Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1)
-            } else {
-                origin
-            };
-            state.commander.launch = Some(Launch {
-                from: V2::from_cell(origin.x + origin.width / 2, origin.y),
-                delivery: Delivery {
-                    workspace_id,
-                    pane_id,
-                    text,
-                    label: to.label,
-                },
-            });
-        }
+        other => return Some(other),
     }
+    None
+}
+
+/// Where a star leaves from: the top edge of the box, or the bottom of the
+/// panes if the box was never laid out.
+pub(crate) fn launch_point(state: &AppState) -> V2 {
+    let origin = state.commander.area;
+    let origin = if origin.width == 0 {
+        let area = state.view.terminal_area;
+        ratatui::layout::Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1)
+    } else {
+        origin
+    };
+    V2::from_cell(origin.x + origin.width / 2, origin.y)
 }
 
 fn go(state: &mut AppState, entry: &Entry) {
@@ -324,7 +319,8 @@ mod tests {
         open_commander(&mut state);
         type_line(&mut state, "frobnicate the widgets");
         let mut runtimes = TerminalRuntimeRegistry::new();
-        submit_commander(&mut state, &mut runtimes);
+        assert_eq!(submit_commander(&mut state, &mut runtimes), None);
+        assert!(matches!(state.commander.reading, Some(Err(_))));
         assert_eq!(state.mode, Mode::Commander);
         assert!(matches!(state.commander.reading, Some(Err(_))));
     }

@@ -876,13 +876,11 @@ pub(super) fn execute_navigate_action_in_context(
             }
         }
         NavigateAction::ToggleSidebar => {
-            state.sidebar_collapsed = !state.sidebar_collapsed;
-            state.mark_session_dirty();
+            state.toggle_shown(&crate::app::view::Fold::Sidebar);
             leave_navigate_mode(state);
         }
         NavigateAction::ToggleAgentTable => {
-            state.agent_table_collapsed = !state.agent_table_collapsed;
-            state.mark_session_dirty();
+            state.toggle_shown(&crate::app::view::Fold::AgentTable);
             leave_navigate_mode(state);
         }
     }

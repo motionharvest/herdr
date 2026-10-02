@@ -470,6 +470,7 @@ fn main() -> io::Result<()> {
         println!("       herdr workspace <subcommand> ...");
         println!("       herdr worktree <subcommand> ...");
         println!("       herdr tab <subcommand> ...");
+        println!("       herdr view <part> [show|hide|toggle] ...");
         println!("       herdr agent <subcommand> ...");
         println!("       herdr pane <subcommand> ...");
         println!("       herdr wait <subcommand> ...");
@@ -514,6 +515,10 @@ fn main() -> io::Result<()> {
                 "Git worktree helpers over the socket API",
             ),
             ("herdr tab <subcommand>", "Tab helpers over the socket API"),
+            (
+                "herdr view <part> [show|hide|toggle]",
+                "Fold or show the sidebar, spaces, agent table, a space's agents or group, or minimaps",
+            ),
             (
                 "herdr agent <subcommand>",
                 "Agent/terminal helpers over the socket API",

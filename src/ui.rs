@@ -68,12 +68,12 @@ use self::settings::render_settings_overlay;
 pub(crate) use self::sidebar::{
     agent_folder_position, collapsed_sidebar_sections, collapsed_sidebar_toggle_rect,
     compute_pane_row_areas, compute_workspace_card_areas, compute_workspace_list_areas,
-    expanded_sidebar_toggle_rect, new_workspace_button_rect, normalized_workspace_scroll,
-    render_sidebar, spaces_section_collapsed, spaces_section_header_rect, tab_preview_rect,
-    tab_preview_toggle_rect, workspace_agent_groups, workspace_agents_expanded,
-    workspace_drop_indicator_row, workspace_list_entries, workspace_list_rect,
-    workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
-    AgentFolderGroup, WorkspaceListEntry,
+    expanded_sidebar_toggle_rect, listed_name_column, new_workspace_button_rect,
+    normalized_workspace_scroll, render_sidebar, spaces_section_collapsed,
+    spaces_section_header_rect, tab_preview_rect, tab_preview_toggle_rect, workspace_agent_groups,
+    workspace_agents_expanded, workspace_drop_indicator_row, workspace_list_entries,
+    workspace_list_rect, workspace_list_scroll_metrics, workspace_list_scrollbar_rect,
+    workspace_parent_group_state, AgentFolderGroup, WorkspaceListEntry,
 };
 pub(crate) use self::status::config_diagnostic_dismiss_rect;
 use self::status::{
@@ -106,8 +106,9 @@ pub(crate) use self::{
     },
     settings::{
         experiments_prompt_rect, settings_button_rects, settings_show_primary_action,
-        COMMANDER_KEY_ROW_OFFSET, EXPERIMENTS_CHECKBOX_ROWS_OFFSET, SETTINGS_POPUP_HEIGHT,
-        SETTINGS_POPUP_WIDTH, SOUND_ALERT_ROWS_OFFSET, SOUND_CHOICE_ROWS_OFFSET,
+        COMMANDER_JEV_ROW_OFFSET, COMMANDER_KEY_ROW_OFFSET, EXPERIMENTS_CHECKBOX_ROWS_OFFSET,
+        SETTINGS_POPUP_HEIGHT, SETTINGS_POPUP_WIDTH, SOUND_ALERT_ROWS_OFFSET,
+        SOUND_CHOICE_ROWS_OFFSET,
     },
 };
 use crate::app::state::ViewLayout;

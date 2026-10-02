@@ -721,12 +721,7 @@ pub(super) fn apply_context_menu_action(
                 .and_then(|ws| ws.worktree_space())
                 .map(|space| space.key.clone())
             {
-                if collapsed {
-                    state.collapsed_space_keys.remove(&key);
-                } else {
-                    state.collapsed_space_keys.insert(key);
-                }
-                state.mark_session_dirty();
+                state.set_shown(&crate::app::view::Fold::SpaceGroup(key), collapsed);
             }
             leave_modal(state);
         }

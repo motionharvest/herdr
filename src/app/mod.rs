@@ -20,6 +20,7 @@ mod session;
 pub mod state;
 mod terminal_targets;
 mod theme_sync;
+pub(crate) mod view;
 mod worktrees;
 
 use std::collections::{HashMap, HashSet};
@@ -157,6 +158,16 @@ pub struct App {
     pub(crate) commander_frame_deadline: Option<Instant>,
     /// When it last moved, so each step covers the time that really passed.
     pub(crate) commander_last_frame: Option<Instant>,
+    /// What answers the Commander's questions in place of Jev. Tests set it
+    /// so nothing reaches the network; `None` asks Jev with the configured
+    /// key.
+    pub(crate) commander_oracle:
+        Option<std::sync::Arc<dyn crate::commander::jev::Oracle + Send + Sync>>,
+    /// Set while the Commander carries out a command. Carrying one out can
+    /// handle other pending events part way through, while the box is
+    /// closed; the Commander's own answers that arrive then wait here.
+    pub(crate) commander_busy: bool,
+    pub(crate) commander_deferred: Vec<crate::events::AppEvent>,
     pub(crate) next_auto_update_check: Option<Instant>,
     pub(crate) agent_metadata_deadline: Option<Instant>,
     pub(crate) pending_agent_resume_deadline: Option<Instant>,
@@ -536,6 +547,9 @@ impl App {
             pane_history_persistence: config.experimental.pane_history,
             refresh_summary_with_grok: config.ui.refresh_summary_with_grok,
             hide_attached_agents: config.ui.hide_attached_agents,
+            jev_api_key: config.commander.api_key(),
+            jev_model: config.commander.jev_model.clone(),
+            commander_planner_model: config.commander.planner_model.clone(),
             refresh_summary_prompt: config.ui.refresh_summary_prompt.clone(),
             request_save_refresh_summary_prompt: false,
             reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
@@ -572,6 +586,7 @@ impl App {
                 editing_refresh_prompt: false,
                 capturing_commander_key: false,
                 refused_commander_key: None,
+                editing_jev_key: None,
             },
             integration_recommendations: crate::integration::integration_recommendations(),
             integration_install_messages: Vec::new(),
@@ -628,6 +643,9 @@ impl App {
             next_animation_tick: None,
             commander_frame_deadline: None,
             commander_last_frame: None,
+            commander_oracle: None,
+            commander_busy: false,
+            commander_deferred: Vec::new(),
             next_auto_update_check: auto_updates_enabled(no_session)
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
             agent_metadata_deadline: None,
@@ -1283,6 +1301,12 @@ impl App {
             }
         }
 
+        if !invalid_section("commander") {
+            self.state.jev_api_key = config.commander.api_key();
+            self.state.jev_model = config.commander.jev_model.clone();
+            self.state.commander_planner_model = config.commander.planner_model.clone();
+        }
+
         if !invalid_section("experimental") {
             let was_kitty_graphics_enabled = self.state.kitty_graphics_enabled;
             self.state.kitty_graphics_enabled = config.experimental.kitty_graphics;
@@ -1433,6 +1457,8 @@ impl App {
                 crate::raw_input::RawInputEvent::Paste(text) => {
                     if self.state.mode == Mode::Commander {
                         self.commander_paste(&text);
+                    } else if self.state.mode == Mode::Settings {
+                        self.settings_paste(&text);
                     } else if self.state.mode == Mode::Composer {
                         self.state.composer.task.insert_str(&text);
                     } else if self.state.mode == Mode::Terminal {
@@ -2408,6 +2434,435 @@ mod tests {
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn settings_save_jev_api_key_persists_then_removes() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("settings-save-jev-api-key");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "onboarding = false\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+        std::env::remove_var("TYPESAFE_API_KEY");
+
+        let mut app = test_app();
+        app.save_jev_api_key("ts-secret-1234");
+        assert_eq!(app.state.jev_api_key.as_deref(), Some("ts-secret-1234"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[commander]"));
+        assert!(content.contains("jev_api_key = \"ts-secret-1234\""));
+
+        app.save_jev_api_key("");
+        assert_eq!(app.state.jev_api_key, None);
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("jev_api_key"));
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    mod commander_lines {
+        use super::*;
+        use crate::commander::intent::{Action, Command};
+        use crate::commander::jev::{Answers, Oracle, Questions};
+        use crate::commander::plan::Reading;
+        use crate::commander::{Paragraph, Phase};
+
+        /// Stands in for Jev, so nothing reaches the network. The tests answer
+        /// each reading themselves through `commander_read`.
+        struct Offline;
+
+        impl Oracle for Offline {
+            fn ask(&self, _: &serde_json::Value, _: &Questions) -> Result<Answers, String> {
+                Err("offline".into())
+            }
+        }
+
+        fn app_with(line: &str, clauses: &[&str], after: Option<Vec<Vec<usize>>>) -> App {
+            let mut app = test_app();
+            app.commander_oracle = Some(std::sync::Arc::new(Offline));
+            crate::app::input::open_commander(&mut app.state);
+            app.state.commander.field.insert_str(line);
+            let mut paragraph =
+                Paragraph::new(line.into(), clauses.iter().map(|c| c.to_string()).collect());
+            paragraph.after = after;
+            app.state.commander.paragraph = Some(paragraph);
+            app.pump_paragraph(Instant::now());
+            app
+        }
+
+        fn phase(app: &App, i: usize) -> Phase {
+            app.state.commander.paragraph.as_ref().unwrap().steps[i]
+                .phase
+                .clone()
+        }
+
+        fn generation(app: &App, i: usize) -> u64 {
+            match phase(app, i) {
+                Phase::Reading(generation) => generation,
+                other => panic!("step {i} is not being read: {other:?}"),
+            }
+        }
+
+        fn reading(command: Command, confidence: f64) -> Result<Reading, String> {
+            Ok(Reading {
+                command,
+                confidence,
+                careful: false,
+                runner_up: None,
+            })
+        }
+
+        #[test]
+        fn an_unsure_reading_waits_for_enter() {
+            let line = "make it bigger";
+            let mut app = app_with(line, &[line], Some(vec![vec![]]));
+            let g = generation(&app, 0);
+            app.commander_read(g, line, reading(Command::Act(Action::Zoom), 0.4));
+            assert_eq!(app.state.mode, Mode::Commander);
+            assert!(matches!(phase(&app, 0), Phase::Held { .. }));
+            assert!(
+                matches!(&app.state.commander.reading, Some(Ok(said)) if said.contains("zoom"))
+            );
+            // An answer to a request no step is waiting on is dropped.
+            app.commander_read(g + 100, line, reading(Command::Act(Action::Help), 1.0));
+            assert_eq!(app.state.mode, Mode::Commander);
+
+            app.submit_commander();
+            assert_ne!(app.state.mode, Mode::Commander);
+            assert!(app.state.commander.paragraph.is_none());
+        }
+
+        #[test]
+        fn a_sure_reading_runs_at_once() {
+            let line = "show me the keys";
+            let mut app = app_with(line, &[line], Some(vec![vec![]]));
+            let g = generation(&app, 0);
+            app.commander_read(g, line, reading(Command::Act(Action::Help), 0.9));
+            assert_eq!(app.state.mode, Mode::KeybindHelp);
+        }
+
+        #[test]
+        fn commands_that_wait_for_nothing_are_read_together() {
+            let line = "toggle the sidebar and toggle the agent table";
+            let mut app = app_with(
+                line,
+                &["toggle the sidebar", "toggle the agent table"],
+                Some(vec![vec![], vec![]]),
+            );
+            let (first, second) = (generation(&app, 0), generation(&app, 1));
+
+            // The second answers first and runs; the box stays open for the
+            // first, which is still being read.
+            let table_before = app.state.agent_table_collapsed;
+            app.commander_read(
+                second,
+                line,
+                reading(Command::Act(Action::ToggleAgentTable), 0.9),
+            );
+            assert_ne!(app.state.agent_table_collapsed, table_before);
+            assert_eq!(app.state.mode, Mode::Commander);
+            assert!(matches!(phase(&app, 0), Phase::Reading(_)));
+            assert_eq!(app.state.commander.field.text(), line);
+
+            app.commander_read(
+                first,
+                line,
+                reading(Command::Act(Action::ToggleSidebar), 0.9),
+            );
+            assert_ne!(app.state.mode, Mode::Commander);
+            assert!(app.state.commander.paragraph.is_none());
+            assert!(app.state.commander.field.is_empty());
+        }
+
+        #[test]
+        fn a_command_waits_for_the_one_it_depends_on_to_settle() {
+            let line = "toggle the sidebar and then toggle the agent table";
+            let mut app = app_with(
+                line,
+                &["toggle the sidebar", "toggle the agent table"],
+                Some(vec![vec![], vec![0]]),
+            );
+            assert!(matches!(phase(&app, 1), Phase::Waiting));
+            let g = generation(&app, 0);
+            app.commander_read(g, line, reading(Command::Act(Action::ToggleSidebar), 0.9));
+            assert!(matches!(phase(&app, 0), Phase::Settling(_)));
+            assert!(matches!(phase(&app, 1), Phase::Waiting));
+            assert!(
+                matches!(&app.state.commander.reading, Some(Ok(said)) if said.starts_with("✓ toggle the sidebar · 1 of 2 done"))
+            );
+
+            app.pump_paragraph(Instant::now() + Duration::from_secs(1));
+            assert!(matches!(phase(&app, 0), Phase::Done));
+            assert!(matches!(phase(&app, 1), Phase::Reading(_)));
+            let context = app.state.commander.paragraph.as_ref().unwrap().context(1).0;
+            assert_eq!(context[0].did, "toggle the sidebar");
+        }
+
+        #[test]
+        fn an_unsure_command_pauses_only_itself() {
+            let line = "zoom and show the agent table";
+            let mut app = app_with(
+                line,
+                &["zoom", "show the agent table"],
+                Some(vec![vec![], vec![]]),
+            );
+            let (first, second) = (generation(&app, 0), generation(&app, 1));
+            app.commander_read(first, line, reading(Command::Act(Action::Zoom), 0.3));
+            app.commander_read(
+                second,
+                line,
+                reading(Command::Act(Action::ToggleAgentTable), 0.9),
+            );
+            assert!(matches!(phase(&app, 1), Phase::Settling(_)));
+            assert!(
+                matches!(&app.state.commander.reading, Some(Ok(said)) if said.starts_with("step 1 of 2: toggle zoom?"))
+            );
+            app.submit_commander();
+            assert!(app.state.commander.paragraph.is_none());
+        }
+
+        #[test]
+        fn until_the_plan_arrives_only_the_first_command_starts() {
+            let line = "zoom and show help";
+            let mut app = app_with(line, &["zoom", "show help"], None);
+            app.state.commander.paragraph.as_mut().unwrap().planning = Some(77);
+            assert!(matches!(phase(&app, 0), Phase::Reading(_)));
+            assert!(matches!(phase(&app, 1), Phase::Waiting));
+
+            // A failed plan runs the commands in the order written.
+            app.commander_ordered(77, line, Err("no claude".into()));
+            let paragraph = app.state.commander.paragraph.as_ref().unwrap();
+            assert_eq!(paragraph.after, Some(vec![vec![], vec![0]]));
+            assert!(matches!(phase(&app, 1), Phase::Waiting));
+        }
+
+        #[test]
+        fn an_answer_arriving_mid_command_is_handled_after_it() {
+            let line = "zoom and show the agent table";
+            let mut app = app_with(
+                line,
+                &["zoom", "show the agent table"],
+                Some(vec![vec![], vec![]]),
+            );
+            let (first, second) = (generation(&app, 0), generation(&app, 1));
+            // The second answer comes in while the first command is being
+            // carried out, as it does when that command goes through the
+            // socket API, which handles pending events part way through.
+            app.commander_deferred
+                .push(crate::events::AppEvent::CommanderRead {
+                    generation: second,
+                    line: line.into(),
+                    result: Err("no pane here goes by that name".into()),
+                });
+            app.commander_read(first, line, reading(Command::Act(Action::Zoom), 0.9));
+            assert!(app.commander_deferred.is_empty());
+            // Handled, not lost: the fixed reading of the line is offered.
+            assert!(matches!(phase(&app, 1), Phase::Held { .. }));
+        }
+
+        fn two_spaces() -> App {
+            let mut app = test_app();
+            app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+            app.state.active = Some(0);
+            app.state.commander.frame = ratatui::layout::Rect::new(0, 0, 100, 40);
+            app.state.view.terminal_area = ratatui::layout::Rect::new(20, 2, 80, 36);
+            crate::app::input::open_commander(&mut app.state);
+            app
+        }
+
+        /// Run the frame clock until no star carries anything.
+        fn fly(app: &mut App) {
+            let mut now = Instant::now();
+            for _ in 0..2000 {
+                app.sync_commander_clock(now);
+                now += Duration::from_millis(16);
+                app.tick_commander(now);
+                if !app
+                    .state
+                    .commander
+                    .flights
+                    .iter()
+                    .any(|f| f.cargo.is_some())
+                {
+                    return;
+                }
+            }
+            panic!("a star never landed");
+        }
+
+        fn space_entry(ws: usize, label: &str) -> crate::commander::intent::Entry {
+            crate::commander::intent::Entry {
+                kind: crate::commander::intent::Kind::Space,
+                ws,
+                tab: 0,
+                pane: None,
+                label: label.into(),
+                context: None,
+                names: Vec::new(),
+                locality: 0,
+            }
+        }
+
+        #[test]
+        fn a_switch_happens_when_its_star_lands() {
+            let mut app = two_spaces();
+            let (_, flight) = app.dispatch(Command::Go(space_entry(1, "two")), true);
+            assert!(flight.is_some());
+            assert_eq!(
+                app.state.active,
+                Some(0),
+                "switched before the star arrived"
+            );
+            fly(&mut app);
+            assert_eq!(app.state.active, Some(1));
+        }
+
+        #[test]
+        fn focusing_an_agent_in_another_space_waits_for_its_star() {
+            let mut app = two_spaces();
+            let pane = app.state.workspaces[1].focused_pane_id().unwrap();
+            let entry = crate::commander::intent::Entry {
+                kind: crate::commander::intent::Kind::Pane,
+                pane: Some(pane),
+                ..space_entry(1, "Emily")
+            };
+            let (_, flight) = app.dispatch(Command::Go(entry), true);
+            assert!(flight.is_some());
+            assert_eq!(
+                app.state.active,
+                Some(0),
+                "switched before the star arrived"
+            );
+            fly(&mut app);
+            assert_eq!(app.state.active, Some(1));
+        }
+
+        #[test]
+        fn next_space_happens_when_its_star_lands_on_that_space() {
+            let mut app = two_spaces();
+            let (_, flight) = app.dispatch(Command::Act(Action::NextSpace), true);
+            assert!(flight.is_some());
+            assert_eq!(app.state.active, Some(0), "moved before the star arrived");
+            let star = app.state.commander.flights.last().expect("a star");
+            assert_eq!(
+                star.aim,
+                crate::commander::Aim::Space {
+                    workspace_id: app.state.workspaces[1].id.clone()
+                }
+            );
+            fly(&mut app);
+            assert_eq!(app.state.active, Some(1));
+        }
+
+        #[test]
+        fn the_star_lands_without_a_burst() {
+            use crate::commander::trail::{Trail, V2};
+            let frame = ratatui::layout::Rect::new(0, 0, 60, 20);
+            let mut trail = Trail::new(V2::from_cell(30, 18), V2::from_cell(5, 2), frame);
+            while !trail.update(1.0 / 60.0, 60, 20) {}
+            let mut buf = ratatui::buffer::Buffer::empty(frame);
+            trail.render(frame, &mut buf);
+            let stars = buf
+                .content
+                .iter()
+                .filter(|c| c.symbol() == "*" || c.symbol() == "+")
+                .count();
+            assert_eq!(stars, 0, "nothing thrown out where it landed");
+        }
+
+        #[test]
+        fn a_panel_toggle_sends_no_star() {
+            let mut app = two_spaces();
+            app.dispatch(Command::Act(Action::ToggleSidebar), true);
+            assert!(app.state.commander.flights.is_empty());
+        }
+
+        #[test]
+        fn stars_aim_at_the_name_the_label_and_the_card() {
+            use crate::app::state::{PaneTitleHitArea, WorkspaceCardArea};
+            use crate::commander::{trail::V2, Aim};
+            use ratatui::layout::Rect;
+            let mut app = two_spaces();
+            let pane = crate::layout::PaneId::from_raw(9);
+            app.state.view.pane_title_hit_areas = vec![PaneTitleHitArea {
+                pane_id: pane,
+                rect: Rect::new(10, 5, 12, 1),
+            }];
+            // Past the corner and dash, at the middle of the name.
+            assert_eq!(app.aim_point(&Aim::Pane(pane)), V2::from_cell(17, 5));
+
+            app.state.view.tab_hit_areas = vec![Rect::new(30, 1, 10, 1)];
+            let id = app.state.workspaces[0].id.clone();
+            assert_eq!(
+                app.aim_point(&Aim::Tab {
+                    workspace_id: id,
+                    tab: 0
+                }),
+                V2::center_of(Rect::new(30, 1, 10, 1))
+            );
+
+            app.state.view.workspace_card_areas = vec![WorkspaceCardArea {
+                ws_idx: 1,
+                rect: Rect::new(1, 4, 20, 3),
+                indented: false,
+            }];
+            let id = app.state.workspaces[1].id.clone();
+            let card = app.aim_point(&Aim::Space { workspace_id: id });
+            assert_eq!(card.y, V2::from_cell(0, 5).y, "the card's name row");
+
+            // A message goes where the pane takes input: with no cursor to
+            // read, the middle of the pane.
+            let shown = crate::layout::PaneId::from_raw(10);
+            app.state.view.pane_infos = vec![crate::layout::PaneInfo {
+                id: shown,
+                rect: Rect::new(40, 10, 20, 10),
+                inner_rect: Rect::new(41, 11, 18, 8),
+                scrollbar_rect: None,
+                is_focused: false,
+                exposed: Default::default(),
+            }];
+            assert_eq!(
+                app.aim_point(&Aim::Input(shown)),
+                V2::center_of(Rect::new(41, 11, 18, 8))
+            );
+
+            // An agent whose pane is not on screen is reached at its name
+            // in the sidebar list.
+            let listed = crate::layout::PaneId::from_raw(11);
+            app.state.view.agent_row_areas = vec![crate::app::state::AgentRowArea {
+                ws_idx: 1,
+                tab_idx: 0,
+                pane_id: listed,
+                rect: Rect::new(1, 20, 24, 2),
+                location_header: false,
+            }];
+            assert_eq!(
+                app.aim_point(&Aim::Pane(listed)),
+                V2::from_cell(
+                    crate::ui::listed_name_column(Rect::new(1, 20, 24, 2)) + 2,
+                    20
+                )
+            );
+
+            // A pane with no place on screen falls back to the middle.
+            let lost = crate::layout::PaneId::from_raw(99);
+            assert_eq!(
+                app.aim_point(&Aim::Pane(lost)),
+                V2::center_of(app.state.view.terminal_area)
+            );
+        }
+
+        #[test]
+        fn escape_abandons_what_has_not_run() {
+            let mut app = app_with("a and b", &["a", "b"], Some(vec![vec![], vec![0]]));
+            app.commander_key(crate::input::TerminalKey::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            assert!(app.state.commander.paragraph.is_none());
+        }
     }
 
     #[test]

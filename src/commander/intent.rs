@@ -33,7 +33,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn noun(self) -> &'static str {
+    pub fn noun(self) -> &'static str {
         match self {
             Kind::Space => "space",
             Kind::Tab => "tab",
@@ -64,7 +64,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    fn full_label(&self) -> String {
+    pub fn full_label(&self) -> String {
         match &self.context {
             Some(context) => format!("{} in {context}", self.label),
             None => self.label.clone(),
@@ -257,6 +257,10 @@ impl Action {
 }
 
 /// What a line means.
+///
+/// The fixed reading in this module produces only `Go`, `Send` and `Act`.
+/// Jev's reading in [`super::plan`] can produce any of them; the rest reach
+/// what the CLI reaches, through the same socket API requests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Show a space or tab, or focus a pane.
@@ -265,6 +269,45 @@ pub enum Command {
     Send { to: Entry, text: String },
     /// Run one of herdr's actions.
     Act(Action),
+    /// Type `text` into a pane without pressing Enter.
+    Type { to: Entry, text: String },
+    /// Press keys in a pane. `said` is how the keys are named to the user.
+    Keys {
+        to: Entry,
+        keys: Vec<String>,
+        said: &'static str,
+    },
+    /// Open a tab in a space, named or not.
+    NewTab { space: Entry, name: Option<String> },
+    /// Open a space, named or not.
+    NewSpace { name: Option<String> },
+    /// Start an agent in a space's folder, on a task or on nothing yet.
+    StartAgent {
+        space: Entry,
+        harness: &'static crate::harness::Harness,
+        task: String,
+    },
+    /// Close a space, tab or pane.
+    Close(Entry),
+    /// Give a space, tab or pane a new name.
+    Rename { target: Entry, name: String },
+    /// Make a git worktree from a space's repository, on a branch or a
+    /// generated one.
+    NewWorktree {
+        space: Entry,
+        branch: Option<String>,
+    },
+    /// Remove a worktree space and its checkout.
+    RemoveWorktree(Entry),
+    /// Land a worktree space's branch onto its parent branch.
+    LandWorktree(Entry),
+    /// Show, hide or toggle a part of herdr's interface, for one space when
+    /// the part is per space.
+    View {
+        part: crate::api::schema::ViewPart,
+        change: crate::api::schema::ViewChange,
+        space: Option<Entry>,
+    },
 }
 
 impl Command {
@@ -278,17 +321,88 @@ impl Command {
                 Kind::Pane => format!("focus {}", entry.full_label()),
             },
             Command::Send { to, text } => {
-                let preview: String = text.chars().take(48).collect();
-                let more = if text.chars().count() > 48 { "…" } else { "" };
                 let who = match to.kind {
                     Kind::Pane => to.full_label(),
                     kind => format!("the focused pane of {} {}", kind.noun(), to.label),
                 };
-                format!("send to {who}: {preview}{more}")
+                format!("send to {who}: {}", preview(text))
             }
             Command::Act(action) => action.label().to_string(),
+            Command::Type { to, text } => {
+                format!("type into {}: {}", to.full_label(), preview(text))
+            }
+            Command::Keys { to, said, .. } => format!("press {said} in {}", to.full_label()),
+            Command::NewTab { space, name } => match name {
+                Some(name) => format!("open a tab called {name} in {}", space.label),
+                None => format!("open a new tab in {}", space.label),
+            },
+            Command::NewSpace { name } => match name {
+                Some(name) => format!("open a new space called {name}"),
+                None => "open a new space".to_string(),
+            },
+            Command::StartAgent {
+                space,
+                harness,
+                task,
+            } if task.is_empty() => format!("start {} in {}", harness.name, space.label),
+            Command::StartAgent {
+                space,
+                harness,
+                task,
+            } => format!(
+                "start {} in {} on: {}",
+                harness.name,
+                space.label,
+                preview(task)
+            ),
+            Command::Close(entry) => format!("close {} {}", entry.kind.noun(), entry.full_label()),
+            Command::Rename { target, name } => format!(
+                "rename {} {} to {name}",
+                target.kind.noun(),
+                target.full_label()
+            ),
+            Command::NewWorktree { space, branch } => match branch {
+                Some(branch) => format!("make a worktree of {} on branch {branch}", space.label),
+                None => format!("make a worktree of {}", space.label),
+            },
+            Command::RemoveWorktree(space) => format!("remove the worktree {}", space.label),
+            Command::LandWorktree(space) => {
+                format!("land the worktree {} onto its parent branch", space.label)
+            }
+            Command::View {
+                part,
+                change,
+                space,
+            } => {
+                use crate::api::schema::{ViewChange, ViewPart};
+                let verb = match change {
+                    ViewChange::Show => "show",
+                    ViewChange::Hide => "hide",
+                    ViewChange::Toggle => "toggle",
+                };
+                let of = |what: &str| match space {
+                    Some(space) => format!("{what} of {}", space.label),
+                    None => what.to_string(),
+                };
+                let what = match part {
+                    ViewPart::Sidebar => "the sidebar".to_string(),
+                    ViewPart::Spaces => "the spaces section".to_string(),
+                    ViewPart::AgentTable => "the agent table".to_string(),
+                    ViewPart::SpaceAgents => of("the agents"),
+                    ViewPart::SpaceGroup => of("the worktree group"),
+                    ViewPart::Minimap => "the minimaps".to_string(),
+                };
+                format!("{verb} {what}")
+            }
         }
     }
+}
+
+/// The start of a long text, for a one-line description.
+fn preview(text: &str) -> String {
+    let short: String = text.chars().take(48).collect();
+    let more = if text.chars().count() > 48 { "…" } else { "" };
+    format!("{short}{more}")
 }
 
 const SEND_VERBS: &[&str] = &["send", "tell", "ask", "prompt", "message", "msg"];
@@ -326,13 +440,13 @@ fn words(text: &str) -> Vec<String> {
 /// A word of the line as typed, and where in the line it sits, so a message
 /// can be cut out of the original text with its case and punctuation intact.
 #[derive(Debug, Clone)]
-struct Token {
-    word: String,
-    start: usize,
-    end: usize,
+pub(crate) struct Token {
+    pub word: String,
+    pub start: usize,
+    pub end: usize,
 }
 
-fn tokens(text: &str) -> Vec<Token> {
+pub(crate) fn tokens(text: &str) -> Vec<Token> {
     let mut out = Vec::new();
     let mut start = None;
     for (i, c) in text.char_indices() {

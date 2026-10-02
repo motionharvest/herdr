@@ -53,6 +53,12 @@ const AGENT_STATUS_BAR_BOTTOM_GLYPH: &str = "╰";
 /// clears the space outline with a column to spare and sits inside the folder
 /// header's own column, which is what indents an agent under its folder.
 const AGENT_STATUS_BAR_X: u16 = 3;
+
+/// The column where an agent's or pane's name starts on its sidebar row:
+/// past the status bar's inset, the bar, and the space after it.
+pub(crate) fn listed_name_column(row: Rect) -> u16 {
+    row.x + AGENT_STATUS_BAR_X + 2
+}
 /// Where an agent row's labels start: the status bar, and the air after it.
 const AGENT_ROW_LABEL_X: u16 = AGENT_STATUS_BAR_X + 2;
 /// `spinner_tick` advances once per animation frame at ~60fps, so 8 moves the

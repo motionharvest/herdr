@@ -195,6 +195,7 @@ pub struct Config {
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
+    pub commander: CommanderConfig,
 }
 
 #[derive(Debug)]
@@ -455,6 +456,43 @@ pub struct AdvancedConfig {
     /// Maximum scrollback buffer size in bytes retained per pane terminal. Default: 10000000.
     #[serde(alias = "scrollback_lines")]
     pub scrollback_limit_bytes: usize,
+}
+
+/// `[commander]`: how the Commander reads what is typed into it.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct CommanderConfig {
+    /// TypeSafe API key for Jev. When set, the Commander asks Jev what a line
+    /// means instead of matching it against fixed phrases. The
+    /// `TYPESAFE_API_KEY` environment variable is used when this is unset.
+    pub jev_api_key: Option<String>,
+    /// The TypeSafe model that reads the line. Default: "jev-latest".
+    pub jev_model: String,
+    /// The model a headless Claude Code runs to work out which commands of a
+    /// line must wait for which, so the rest run at the same time. Empty runs
+    /// every command in the order written. Default: "claude-opus-5-5".
+    pub planner_model: String,
+}
+
+impl Default for CommanderConfig {
+    fn default() -> Self {
+        Self {
+            jev_api_key: None,
+            jev_model: "jev-latest".to_string(),
+            planner_model: "claude-opus-5-5".to_string(),
+        }
+    }
+}
+
+impl CommanderConfig {
+    /// The key to use: the config's, else the environment's. Blank is none.
+    pub fn api_key(&self) -> Option<String> {
+        self.jev_api_key
+            .clone()
+            .or_else(|| std::env::var("TYPESAFE_API_KEY").ok())
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -28,6 +28,8 @@ const PAD: u16 = 1;
 const CHROME_ROWS: u16 = 3;
 const PLACEHOLDER: &str = "switch to herdr · tell Ada to run the tests · split right";
 const HINT: &str = "enter to run · shift+enter for a new line · esc to close";
+const JEV_HINT: &str = "enter to ask Jev · shift+enter for a new line · esc to close";
+const ASKING: &str = "asking Jev…";
 
 /// Width of the text inside a box `width` wide.
 fn text_width(width: u16) -> u16 {
@@ -109,6 +111,12 @@ pub(super) fn render_commander(app: &AppState, frame: &mut Frame) {
             Span::styled(sentence.clone(), Style::default().fg(p.text)),
         ]),
         Some(Err(reason)) => Line::from(Span::styled(reason.clone(), Style::default().fg(p.red))),
+        None if app.commander.asking.is_some() => {
+            Line::from(Span::styled(ASKING, Style::default().fg(p.accent)))
+        }
+        None if app.jev_api_key.is_some() => {
+            Line::from(Span::styled(JEV_HINT, Style::default().fg(p.overlay0)))
+        }
         None => Line::from(Span::styled(HINT, Style::default().fg(p.overlay0))),
     };
     frame.render_widget(
@@ -144,8 +152,13 @@ fn row_spans(app: &AppState, row: &Row) -> Vec<Span<'static>> {
 
 /// The star and its light, over everything else in the frame.
 pub(super) fn render_commander_trail(app: &AppState, frame: &mut Frame) {
-    if let Some(trail) = &app.commander.trail {
-        let area = frame.area();
+    let area = frame.area();
+    for trail in app
+        .commander
+        .flights
+        .iter()
+        .filter_map(|f| f.trail.as_ref())
+    {
         trail.render(area, frame.buffer_mut());
     }
 }

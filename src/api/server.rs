@@ -316,6 +316,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneWaitForOutput(_) => "pane.wait_for_output",
         Method::IntegrationInstall(_) => "integration.install",
         Method::IntegrationUninstall(_) => "integration.uninstall",
+        Method::ViewSet(_) => "view.set",
     }
 }
 

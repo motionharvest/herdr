@@ -385,15 +385,26 @@ fn render_settings_pane_header(app: &AppState, frame: &mut Frame, area: Rect) {
     }
 }
 
-/// The hotkey row inside the Commander section's content area.
-/// `app::input::settings` hit-tests clicks against it.
+/// The hotkey row and the Jev key row inside the Commander section's content
+/// area. `app::input::settings` hit-tests clicks against them.
 pub(crate) const COMMANDER_KEY_ROW_OFFSET: u16 = 3;
+pub(crate) const COMMANDER_JEV_ROW_OFFSET: u16 = 4;
+
+/// A key shown without giving it away: its length in dots, then its last four
+/// characters.
+fn masked(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    let shown = chars.len().min(4).min(chars.len() / 3);
+    let hidden = (chars.len() - shown).min(16);
+    let tail: String = chars[chars.len() - shown..].iter().collect();
+    format!("{}{tail}", "•".repeat(hidden))
+}
 
 fn render_settings_commander(app: &AppState, frame: &mut Frame, area: Rect) {
     let p = &app.palette;
     for (offset, line) in [
-        "the key that opens the Commander from anywhere",
-        "a terminal never sees the Fn key itself; a function key is the nearest choice",
+        "the key that opens the Commander from anywhere, and the TypeSafe key",
+        "that lets Jev read what is typed into it instead of fixed phrases",
     ]
     .into_iter()
     .enumerate()
@@ -405,6 +416,18 @@ fn render_settings_commander(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(p.overlay1),
         );
     }
+    let selected = app.settings.list.selected;
+    let row_style = |idx: usize| {
+        if selected == idx {
+            Style::default()
+                .bg(p.surface0)
+                .fg(p.text)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.subtext0)
+        }
+    };
+
     let row = area.y + COMMANDER_KEY_ROW_OFFSET;
     if row >= area.bottom() {
         return;
@@ -422,24 +445,42 @@ fn render_settings_commander(app: &AppState, frame: &mut Frame, area: Rect) {
             .label()
             .unwrap_or_else(|| "unset".to_string())
     };
-    let style = Style::default()
-        .bg(p.surface0)
-        .fg(p.text)
-        .add_modifier(Modifier::BOLD);
+    let style = row_style(0);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" hotkey  ", style),
+            Span::styled(" hotkey   ", style),
             Span::styled(value, style.fg(p.accent)),
         ]))
         .style(style),
         Rect::new(area.x, row, area.width, 1),
     );
+
+    let row = area.y + COMMANDER_JEV_ROW_OFFSET;
+    if row >= area.bottom() {
+        return;
+    }
+    let style = row_style(1);
+    let value = match (&app.settings.editing_jev_key, &app.jev_api_key) {
+        (Some(draft), _) if draft.is_empty() => {
+            Span::styled("paste or type the key▏", style.fg(p.overlay0))
+        }
+        (Some(draft), _) => Span::styled(format!("{}▏", masked(draft)), style.fg(p.accent)),
+        (None, Some(key)) => Span::styled(masked(key), style.fg(p.accent)),
+        (None, None) => Span::styled("unset", style.fg(p.overlay0)),
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(" jev key  ", style), value])).style(style),
+        Rect::new(area.x, row, area.width, 1),
+    );
+
+    let hint = match (selected, &app.settings.editing_jev_key) {
+        (_, Some(_)) => " enter to save · esc to cancel · saving it empty removes it",
+        (1, None) => " enter or click to set it · TYPESAFE_API_KEY is used when unset",
+        _ => " enter or click to change it",
+    };
     if row + 2 < area.bottom() {
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                " enter or click to change it",
-                Style::default().fg(p.overlay0),
-            )),
+            Paragraph::new(Span::styled(hint, Style::default().fg(p.overlay0))),
             Rect::new(area.x, row + 2, area.width, 1),
         );
     }

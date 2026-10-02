@@ -124,6 +124,25 @@ pub enum AppEvent {
         session_id: String,
         title: Option<String>,
     },
+    /// Jev finished cutting a Commander paragraph into commands.
+    CommanderSplit {
+        generation: u64,
+        line: String,
+        result: Result<Vec<String>, String>,
+    },
+    /// The planner finished working out which of a line's commands wait for
+    /// which.
+    CommanderOrdered {
+        generation: u64,
+        line: String,
+        result: Result<crate::commander::order::After, String>,
+    },
+    /// Jev finished reading a Commander line.
+    CommanderRead {
+        generation: u64,
+        line: String,
+        result: Result<crate::commander::plan::Reading, String>,
+    },
     /// Background `git worktree add` completed.
     WorktreeAddFinished(WorktreeAddResult),
     /// Background `git worktree remove` completed.

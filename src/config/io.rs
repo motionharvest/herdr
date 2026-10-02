@@ -229,6 +229,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut invalid_sections,
         |section| config.remote = section,
     );
+    load_live_section(
+        table,
+        "commander",
+        "commander config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.commander = section,
+    );
 
     Ok(LoadedConfig {
         config,

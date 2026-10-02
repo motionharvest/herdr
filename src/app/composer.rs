@@ -26,23 +26,7 @@ impl App {
     /// thing the band exists to avoid. The new pane takes the keyboard, so the
     /// next keys go to the agent that received the task.
     pub(crate) fn submit_composer(&mut self, pending: Pending) {
-        let result = match pending.launch() {
-            Launch::Agent { agent, argv }
-                if pending.worktree
-                    && pending.harness.prefix != crate::harness::AUTO_PREFIX
-                    && crate::workspace::git_space_metadata(&pending.cwd)
-                        .is_some_and(|space| !space.is_linked_worktree) =>
-            {
-                self.start_managed_worktree_agent(&pending.cwd, &argv, agent)
-            }
-            Launch::Agent { agent, argv } => self
-                .start_hidden_agent(pending.cwd.clone(), &argv, Some(agent))
-                .map(|pane_id| (pane_id, pending.cwd.clone())),
-            Launch::Terminal { command } => self
-                .start_hidden_terminal(pending.cwd.clone(), &command)
-                .map(|pane_id| (pane_id, pending.cwd.clone())),
-        }
-        .map_err(|err| self.agent_start_error_body(err).message);
+        let result = self.start_pending(&pending);
         match result {
             Ok((pane_id, started_cwd)) => {
                 self.state.composer.task.clear();
@@ -69,6 +53,31 @@ impl App {
         }
     }
 
+    /// Start what `pending` holds, without touching the band. Returns the new
+    /// pane and the folder it started in, or why it could not start.
+    pub(crate) fn start_pending(
+        &mut self,
+        pending: &Pending,
+    ) -> Result<(crate::layout::PaneId, PathBuf), String> {
+        match pending.launch() {
+            Launch::Agent { agent, argv }
+                if pending.worktree
+                    && pending.harness.prefix != crate::harness::AUTO_PREFIX
+                    && crate::workspace::git_space_metadata(&pending.cwd)
+                        .is_some_and(|space| !space.is_linked_worktree) =>
+            {
+                self.start_managed_worktree_agent(&pending.cwd, &argv, agent)
+            }
+            Launch::Agent { agent, argv } => self
+                .start_hidden_agent(pending.cwd.clone(), &argv, Some(agent))
+                .map(|pane_id| (pane_id, pending.cwd.clone())),
+            Launch::Terminal { command } => self
+                .start_hidden_terminal(pending.cwd.clone(), &command)
+                .map(|pane_id| (pane_id, pending.cwd.clone())),
+        }
+        .map_err(|err| self.agent_start_error_body(err).message)
+    }
+
     /// Put the keyboard on the agent the band just started.
     ///
     /// A worktree start stays hidden and peeks over the layout that was
@@ -77,7 +86,11 @@ impl App {
     /// over: replacing would end a shell that was being looked at. If the pane
     /// is too small to cut, the new agent takes it the same way clicking its
     /// row would.
-    fn focus_composer_started_agent(&mut self, pane_id: crate::layout::PaneId, peek: bool) {
+    pub(super) fn focus_composer_started_agent(
+        &mut self,
+        pane_id: crate::layout::PaneId,
+        peek: bool,
+    ) {
         if peek && self.find_pane(pane_id).is_none() {
             self.state.peek_agent(pane_id);
         } else if let Some((ws_idx, _)) = self.find_pane(pane_id) {
@@ -105,7 +118,7 @@ impl App {
         self.show_composer_toast(ToastKind::NeedsAttention, "composer", reason, None);
     }
 
-    fn show_composer_toast(
+    pub(super) fn show_composer_toast(
         &mut self,
         kind: ToastKind,
         title: &str,

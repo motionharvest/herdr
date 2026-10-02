@@ -66,6 +66,8 @@ pub(super) enum SettingsAction {
     SaveHideAttachedAgents(bool),
     /// The Commander's hotkey, written the way the config file writes keys.
     SaveCommanderKey(String),
+    /// The TypeSafe key Jev is reached with; empty removes it.
+    SaveJevApiKey(String),
     InstallRecommendedIntegrations,
 }
 
@@ -114,7 +116,18 @@ fn begin_editing_refresh_prompt(state: &mut AppState) {
     }
 }
 
+/// The Commander section's rows: the hotkey, then the Jev API key.
+const COMMANDER_ROWS: usize = 2;
+
 impl App {
+    /// A paste while settings are open goes into the Jev key field when it
+    /// is open, since pasting is how a key is usually entered.
+    pub(crate) fn settings_paste(&mut self, text: &str) {
+        if let Some(draft) = self.state.settings.editing_jev_key.as_mut() {
+            draft.push_str(text.trim());
+        }
+    }
+
     pub(crate) fn handle_settings_key(&mut self, key: KeyEvent) {
         let previous_section = self.state.settings.section;
         if let Some(action) = update_settings_state(&mut self.state, key) {
@@ -139,6 +152,7 @@ impl App {
                     self.save_hide_attached_agents(enabled)
                 }
                 SettingsAction::SaveCommanderKey(combo) => self.save_commander_key(&combo),
+                SettingsAction::SaveJevApiKey(key) => self.save_jev_api_key(&key),
                 SettingsAction::InstallRecommendedIntegrations => {
                     self.install_recommended_integrations()
                 }
@@ -428,7 +442,44 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
                 return Some(SettingsAction::SaveCommanderKey(name));
             }
         }
+        // The key field takes typing and pastes until Enter saves it or Esc
+        // drops it. Nothing in it moves between sections.
+        SettingsSection::Commander if state.settings.editing_jev_key.is_some() => {
+            let draft = state
+                .settings
+                .editing_jev_key
+                .get_or_insert_with(String::new);
+            match key.code {
+                KeyCode::Esc => state.settings.editing_jev_key = None,
+                KeyCode::Enter => {
+                    let key = draft.trim().to_string();
+                    state.settings.editing_jev_key = None;
+                    return Some(SettingsAction::SaveJevApiKey(key));
+                }
+                KeyCode::Backspace => {
+                    draft.pop();
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    draft.clear();
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    draft.push(c);
+                }
+                _ => {}
+            }
+        }
         SettingsSection::Commander => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => state.settings.list.move_prev(),
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.settings.list.move_next(COMMANDER_ROWS);
+            }
+            KeyCode::Enter | KeyCode::Char(' ') if state.settings.list.selected == 1 => {
+                state.settings.editing_jev_key = Some(String::new());
+            }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 state.settings.capturing_commander_key = true;
             }
@@ -490,6 +541,7 @@ pub(crate) fn open_settings_at(state: &mut AppState, section: SettingsSection) {
     };
     state.settings.editing_refresh_prompt = false;
     state.settings.capturing_commander_key = false;
+    state.settings.editing_jev_key = None;
     state.mode = Mode::Settings;
 }
 
@@ -587,7 +639,13 @@ impl AppState {
                 }
             }
             SettingsSection::Commander => {
-                (row == area.y + crate::ui::COMMANDER_KEY_ROW_OFFSET).then_some(0)
+                if row == area.y + crate::ui::COMMANDER_KEY_ROW_OFFSET {
+                    Some(0)
+                } else if row == area.y + crate::ui::COMMANDER_JEV_ROW_OFFSET {
+                    Some(1)
+                } else {
+                    None
+                }
             }
             SettingsSection::Experiments => {
                 let list_y = area.y + crate::ui::EXPERIMENTS_CHECKBOX_ROWS_OFFSET;
@@ -622,6 +680,7 @@ impl AppState {
                     stop_editing_refresh_prompt(self);
                 }
                 self.settings.capturing_commander_key = false;
+                self.settings.editing_jev_key = None;
                 if let Some(section) = self.settings_tab_at(mouse.column, mouse.row) {
                     self.settings.section = section;
                     self.settings.list.select(match section {
@@ -648,6 +707,10 @@ impl AppState {
                             Some(SettingsAction::SaveToastDelivery(delivery))
                         }
                         SettingsSection::PaneLabels => pane_header_toggle_action(self, idx),
+                        SettingsSection::Commander if idx == 1 => {
+                            self.settings.editing_jev_key = Some(String::new());
+                            None
+                        }
                         SettingsSection::Commander => {
                             self.settings.capturing_commander_key = true;
                             None

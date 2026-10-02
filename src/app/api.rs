@@ -6,6 +6,7 @@ mod integrations;
 mod panes;
 mod responses;
 mod tabs;
+mod view;
 mod workspaces;
 mod worktrees;
 
@@ -118,6 +119,54 @@ impl App {
                 self.render_dirty.store(true, Ordering::Release);
                 self.render_notify.notify_one();
             }
+            return;
+        }
+
+        if self.commander_busy
+            && matches!(
+                ev,
+                AppEvent::CommanderSplit { .. }
+                    | AppEvent::CommanderOrdered { .. }
+                    | AppEvent::CommanderRead { .. }
+            )
+        {
+            self.commander_deferred.push(ev);
+            return;
+        }
+
+        if let AppEvent::CommanderSplit {
+            generation,
+            line,
+            result,
+        } = ev
+        {
+            self.commander_split(generation, &line, result);
+            self.render_dirty.store(true, Ordering::Release);
+            self.render_notify.notify_one();
+            return;
+        }
+
+        if let AppEvent::CommanderOrdered {
+            generation,
+            line,
+            result,
+        } = ev
+        {
+            self.commander_ordered(generation, &line, result);
+            self.render_dirty.store(true, Ordering::Release);
+            self.render_notify.notify_one();
+            return;
+        }
+
+        if let AppEvent::CommanderRead {
+            generation,
+            line,
+            result,
+        } = ev
+        {
+            self.commander_read(generation, &line, result);
+            self.render_dirty.store(true, Ordering::Release);
+            self.render_notify.notify_one();
             return;
         }
 
@@ -676,6 +725,7 @@ impl App {
             Method::IntegrationUninstall(params) => {
                 return self.handle_integration_uninstall(request.id, params);
             }
+            Method::ViewSet(params) => return self.handle_view_set(request.id, params),
             _ => {
                 return responses::encode_error(
                     request.id,

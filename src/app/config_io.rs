@@ -162,6 +162,24 @@ impl App {
         }
     }
 
+    /// Write the Jev API key to `[commander]`, or take it out when empty.
+    pub(super) fn save_jev_api_key(&mut self, key: &str) {
+        if self.update_config_file("jev api key", |content| {
+            if key.is_empty() {
+                crate::config::remove_section_key(content, "commander", "jev_api_key")
+            } else {
+                crate::config::upsert_section_value(
+                    content,
+                    "commander",
+                    "jev_api_key",
+                    &crate::config::toml_quoted_string(key),
+                )
+            }
+        }) {
+            self.apply_config_from_disk(false);
+        }
+    }
+
     pub(super) fn save_refresh_summary_prompt(&mut self) {
         let prompt = self.state.refresh_summary_prompt();
         if self.update_config_file("refresh summary prompt", |content| {

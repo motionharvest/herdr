@@ -110,10 +110,65 @@ pub enum Method {
     IntegrationInstall(IntegrationInstallParams),
     #[serde(rename = "integration.uninstall")]
     IntegrationUninstall(IntegrationUninstallParams),
+    #[serde(rename = "view.set")]
+    ViewSet(ViewSetParams),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EmptyParams {}
+
+/// A part of the interface that folds away and shows again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewPart {
+    /// The whole sidebar.
+    Sidebar,
+    /// The sidebar's spaces section.
+    Spaces,
+    /// The agent table.
+    AgentTable,
+    /// The agent and pane rows under a space's card.
+    SpaceAgents,
+    /// The worktree spaces under their repository's card.
+    SpaceGroup,
+    /// The layout previews under tab names in the sidebar.
+    Minimap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewChange {
+    Show,
+    Hide,
+    #[default]
+    Toggle,
+}
+
+/// Show, hide or toggle a part of the interface. `space_agents` and
+/// `space_group` act on `workspace_id`, or the space on screen. `minimap`
+/// acts on `tab_id`, or every tab of `workspace_id`, or every tab there is.
+/// The other parts take neither.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewSetParams {
+    pub part: ViewPart,
+    #[serde(default)]
+    pub change: ViewChange,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+}
+
+/// One part after `view.set`, and whether it is shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewPartInfo {
+    pub part: ViewPart,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+    pub shown: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PingParams {}
@@ -782,6 +837,9 @@ pub enum ResponseResult {
     ConfigReload {
         status: crate::config::ConfigReloadStatus,
         diagnostics: Vec<String>,
+    },
+    ViewSet {
+        parts: Vec<ViewPartInfo>,
     },
     Ok {},
 }

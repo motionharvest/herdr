@@ -42,7 +42,8 @@ pub(crate) use self::agent_table::{
     handle_confirm_close_agent_key,
 };
 pub(crate) use self::commander::{
-    close_commander, handle_commander_key, open_commander,
+    catalog as commander_catalog, close_commander, handle_commander_key,
+    launch_point as commander_launch_point, open_commander, perform as perform_commander,
     refresh_reading as refresh_commander_reading, submit_commander, CommanderKeyOutcome,
 };
 pub(crate) use self::composer::{
@@ -139,6 +140,10 @@ impl App {
     pub(super) async fn handle_paste(&mut self, text: String) {
         if self.state.mode == Mode::Commander {
             self.commander_paste(&text);
+            return;
+        }
+        if self.state.mode == Mode::Settings {
+            self.settings_paste(&text);
             return;
         }
         if self.state.mode == Mode::Composer {
@@ -393,6 +398,7 @@ impl App {
                         self.save_hide_attached_agents(enabled)
                     }
                     SettingsAction::SaveCommanderKey(combo) => self.save_commander_key(&combo),
+                    SettingsAction::SaveJevApiKey(key) => self.save_jev_api_key(&key),
                     SettingsAction::InstallRecommendedIntegrations => {
                         self.install_recommended_integrations()
                     }
