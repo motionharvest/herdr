@@ -597,16 +597,59 @@ pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static 
     }
 }
 
-/// Every agent in every space, in the order the spaces hold them.
+/// The agents the table lists, in its durable order. With
+/// `[ui] hide_attached_agents` on, that is only the agents not in a space.
 pub(crate) fn agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
-    agent_panel_entries_with_runtimes(app, None)
+    listed_entries(app, agent_panel_entries_with_runtimes(app, None))
 }
 
 pub(crate) fn agent_panel_entries_from(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> Vec<AgentPanelEntry> {
+    listed_entries(
+        app,
+        agent_panel_entries_with_runtimes(app, Some(terminal_runtimes)),
+    )
+}
+
+/// Every agent, whether or not the table lists it. Name lookups and the
+/// durable order read this, so hiding a row never loses its name or its slot.
+pub(crate) fn all_agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
+    agent_panel_entries_with_runtimes(app, None)
+}
+
+/// Every agent, read against live runtimes. The spaces sidebar draws from
+/// this: the table's filter governs the table, not the agents under each tab.
+pub(crate) fn all_agent_panel_entries_from(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+) -> Vec<AgentPanelEntry> {
     agent_panel_entries_with_runtimes(app, Some(terminal_runtimes))
+}
+
+fn listed_entries(app: &AppState, mut entries: Vec<AgentPanelEntry>) -> Vec<AgentPanelEntry> {
+    if app.hide_attached_agents() {
+        entries.retain(|entry| !entry.docked);
+    }
+    entries
+}
+
+/// Write a new order for the listed rows and keep every unlisted agent's slot
+/// after them, in the order it already held.
+fn set_listed_agent_order(app: &mut AppState, listed: Vec<crate::terminal::TerminalId>) {
+    let mut order = listed;
+    let unlisted: Vec<_> = app
+        .agent_order
+        .iter()
+        .filter(|terminal_id| !order.contains(terminal_id))
+        .cloned()
+        .collect();
+    order.extend(unlisted);
+    if order != app.agent_order {
+        app.agent_order = order;
+        app.mark_session_dirty();
+    }
 }
 
 fn agent_panel_entries_with_runtimes(
@@ -742,7 +785,7 @@ fn agent_panel_entries_with_runtimes(
 /// Existing ids never move; agents not seen before append in their first
 /// observed order, and agents that ended stop occupying saved slots.
 pub(crate) fn sync_agent_order(app: &mut AppState) {
-    let listed: Vec<_> = agent_panel_entries(app)
+    let listed: Vec<_> = all_agent_panel_entries(app)
         .into_iter()
         .map(|entry| entry.terminal_id)
         .collect();
@@ -771,10 +814,18 @@ pub(crate) fn sort_agent_table_by_column(app: &mut AppState, column: usize) {
         }),
     }
     let order: Vec<_> = entries.into_iter().map(|entry| entry.terminal_id).collect();
-    if order != app.agent_order {
-        app.agent_order = order;
-        app.mark_session_dirty();
-    }
+    set_listed_agent_order(app, order);
+}
+
+/// Move one listed row so it lands before the row now at `insert_idx`.
+pub(crate) fn move_listed_agent(app: &mut AppState, from: usize, to: usize) {
+    let mut order: Vec<_> = agent_panel_entries(app)
+        .into_iter()
+        .map(|entry| entry.terminal_id)
+        .collect();
+    let moved = order.remove(from);
+    order.insert(to, moved);
+    set_listed_agent_order(app, order);
 }
 
 fn duration_sort_key(duration: Option<std::time::Duration>) -> (u8, std::cmp::Reverse<u128>) {
@@ -1505,6 +1556,59 @@ mod tests {
         state.workspaces[0].tabs[0].layout.focus_pane(pane_id);
         state.close_pane();
         (state, pane_id)
+    }
+
+    /// The set-down state above with its remaining pane made an agent too, so
+    /// the table holds one docked agent and one set-down agent.
+    fn state_with_a_docked_and_a_set_down_agent() -> (AppState, PaneId) {
+        let (mut state, set_down) = state_with_a_set_down_agent();
+        let docked: Vec<_> = state.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .map(|pane| pane.attached_terminal_id.clone())
+            .collect();
+        for terminal_id in docked {
+            if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
+                terminal.set_detected_state(Some(crate::detect::Agent::Pi), AgentState::Idle);
+            }
+        }
+        (state, set_down)
+    }
+
+    #[test]
+    fn hiding_attached_agents_lists_only_set_down_agents() {
+        let (mut state, set_down) = state_with_a_docked_and_a_set_down_agent();
+        assert_eq!(agent_panel_entries(&state).len(), 2);
+
+        state.hide_attached_agents = true;
+
+        let listed = agent_panel_entries(&state);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].pane_id, set_down);
+        assert!(!listed[0].docked);
+        assert_eq!(all_agent_panel_entries(&state).len(), 2);
+    }
+
+    #[test]
+    fn sorting_while_attached_agents_are_hidden_keeps_their_slots() {
+        let (mut state, set_down) = state_with_a_docked_and_a_set_down_agent();
+        sync_agent_order(&mut state);
+        let docked = all_agent_panel_entries(&state)
+            .into_iter()
+            .find(|entry| entry.docked)
+            .expect("docked agent")
+            .terminal_id;
+
+        state.hide_attached_agents = true;
+        sort_agent_table_by_column(&mut state, 0);
+        sync_agent_order(&mut state);
+
+        let set_down_id = all_agent_panel_entries(&state)
+            .into_iter()
+            .find(|entry| entry.pane_id == set_down)
+            .expect("set-down agent")
+            .terminal_id;
+        assert_eq!(state.agent_order, vec![set_down_id, docked]);
     }
 
     /// One space holding `count` docked agents, which is what makes the table

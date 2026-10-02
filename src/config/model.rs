@@ -406,6 +406,9 @@ pub struct UiConfig {
     /// headline of the latest user request. Off, it reads the latest prompt
     /// from the session log the way the automatic fill does.
     pub refresh_summary_with_grok: bool,
+    /// The agent table and the mobile agents list show only agents that are
+    /// not in a space: the ones set down out of every layout.
+    pub hide_attached_agents: bool,
     /// Prompt sent to that headless session. Empty uses
     /// [`DEFAULT_REFRESH_SUMMARY_PROMPT`].
     pub refresh_summary_prompt: String,
@@ -600,6 +603,7 @@ impl Default for UiConfig {
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
             refresh_summary_with_grok: false,
+            hide_attached_agents: false,
             refresh_summary_prompt: DEFAULT_REFRESH_SUMMARY_PROMPT.into(),
         }
     }
@@ -1238,6 +1242,18 @@ refresh_summary_with_grok = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.ui.refresh_summary_with_grok);
+    }
+
+    #[test]
+    fn hide_attached_agents_is_opt_in() {
+        assert!(!Config::default().ui.hide_attached_agents);
+
+        let toml = r#"
+[ui]
+hide_attached_agents = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.ui.hide_attached_agents);
     }
 
     #[test]

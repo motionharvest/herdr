@@ -1175,12 +1175,14 @@ pub(crate) enum ExperimentSetting {
     PaneHistory,
     SwitchAsciiInputSourceInPrefix,
     RefreshSummaryWithGrok,
+    HideAttachedAgents,
 }
 
 impl ExperimentSetting {
-    pub(crate) const ALL: [Self; 3] = [
+    pub(crate) const ALL: [Self; 4] = [
         Self::PaneHistory,
         Self::SwitchAsciiInputSourceInPrefix,
+        Self::HideAttachedAgents,
         Self::RefreshSummaryWithGrok,
     ];
 
@@ -1191,6 +1193,7 @@ impl ExperimentSetting {
                 "switch to ascii input source in prefix (macOS)"
             }
             Self::RefreshSummaryWithGrok => "refresh summary with grok",
+            Self::HideAttachedAgents => "agent list: only agents not in a space",
         }
     }
 
@@ -1201,6 +1204,7 @@ impl ExperimentSetting {
                 state.switch_ascii_input_source_in_prefix_enabled()
             }
             Self::RefreshSummaryWithGrok => state.refresh_summary_with_grok(),
+            Self::HideAttachedAgents => state.hide_attached_agents(),
         }
     }
 }
@@ -1946,6 +1950,8 @@ pub struct AppState {
     /// Refresh Summary asks a headless `grok -p` session for a 5–8 word
     /// headline. Off, it reads the latest prompt from the session log.
     pub refresh_summary_with_grok: bool,
+    /// The agent lists show only agents that are not in a space.
+    pub hide_attached_agents: bool,
     /// Prompt sent to that headless session. Empty uses the built-in default.
     pub refresh_summary_prompt: String,
     /// Persist the prompt field after it loses focus in Settings.
@@ -2061,6 +2067,10 @@ impl AppState {
 
     pub fn refresh_summary_with_grok(&self) -> bool {
         self.refresh_summary_with_grok
+    }
+
+    pub fn hide_attached_agents(&self) -> bool {
+        self.hide_attached_agents
     }
 
     pub fn refresh_summary_prompt(&self) -> String {
@@ -2377,6 +2387,7 @@ impl AppState {
             pane_header: PaneHeaderConfig::default(),
             pane_history_persistence: false,
             refresh_summary_with_grok: false,
+            hide_attached_agents: false,
             refresh_summary_prompt: crate::config::DEFAULT_REFRESH_SUMMARY_PROMPT.into(),
             request_save_refresh_summary_prompt: false,
             reveal_hidden_cursor_for_cjk_ime: false,

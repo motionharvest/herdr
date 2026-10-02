@@ -361,6 +361,9 @@ impl App {
                     SettingsAction::SaveRefreshSummaryWithGrok(enabled) => {
                         self.save_refresh_summary_with_grok(enabled)
                     }
+                    SettingsAction::SaveHideAttachedAgents(enabled) => {
+                        self.save_hide_attached_agents(enabled)
+                    }
                     SettingsAction::InstallRecommendedIntegrations => {
                         self.install_recommended_integrations()
                     }

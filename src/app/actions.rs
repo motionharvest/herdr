@@ -1525,14 +1525,7 @@ impl AppState {
         if to == from {
             return false;
         }
-        let mut order: Vec<_> = entries
-            .iter()
-            .map(|entry| entry.terminal_id.clone())
-            .collect();
-        let moved = order.remove(from);
-        order.insert(to, moved);
-        self.agent_order = order;
-        self.mark_session_dirty();
+        crate::ui::move_listed_agent(self, from, to);
         true
     }
 
@@ -1573,17 +1566,12 @@ impl AppState {
     }
 
     fn cycle_agent_entry(&mut self, forward: bool) {
-        let entries = crate::ui::agent_panel_entries(self);
-        if entries.is_empty() {
-            return;
-        }
-
+        // Cycling walks every agent in a space, listed or not: hiding those
+        // rows from the table does not take their panes out of reach.
         // Set-down agents have no pane to land on, so cycling steps over them.
-        let docked: Vec<usize> = entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.docked)
-            .map(|(idx, _)| idx)
+        let docked: Vec<_> = crate::ui::all_agent_panel_entries(self)
+            .into_iter()
+            .filter(|entry| entry.docked)
             .collect();
         if docked.is_empty() {
             return;
@@ -1592,11 +1580,8 @@ impl AppState {
             .active
             .and_then(|idx| self.workspaces.get(idx))
             .and_then(crate::workspace::Workspace::focused_pane_id);
-        let current_pos = focused.and_then(|pane_id| {
-            docked
-                .iter()
-                .position(|idx| entries[*idx].docked && entries[*idx].pane_id == pane_id)
-        });
+        let current_pos =
+            focused.and_then(|pane_id| docked.iter().position(|entry| entry.pane_id == pane_id));
         let target_pos = match (current_pos, forward) {
             (Some(pos), true) => (pos + 1) % docked.len(),
             (Some(0), false) => docked.len() - 1,
@@ -1605,7 +1590,18 @@ impl AppState {
             (None, false) => docked.len() - 1,
         };
 
-        self.focus_agent_entry(docked[target_pos]);
+        let target = &docked[target_pos];
+        let listed_idx = crate::ui::agent_panel_entries(self)
+            .iter()
+            .position(|entry| entry.pane_id == target.pane_id);
+        match listed_idx {
+            Some(idx) => {
+                self.focus_agent_entry(idx);
+            }
+            None => {
+                self.focus_pane_in_workspace(target.ws_idx, target.pane_id);
+            }
+        }
     }
 
     /// Bring an agent's row on screen. The table follows the focused agent

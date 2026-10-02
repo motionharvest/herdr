@@ -8,7 +8,7 @@ use ratatui::{
 
 #[cfg(test)]
 use super::agent_table::agent_panel_entries;
-use super::agent_table::{agent_panel_entries_from, AgentLocation, AgentPanelEntry};
+use super::agent_table::{all_agent_panel_entries_from, AgentLocation, AgentPanelEntry};
 use super::panes::{focus_accent, mute_when_host_unfocused};
 use super::scrollbar::should_show_scrollbar;
 use crate::app::state::Mode;
@@ -1860,7 +1860,7 @@ fn render_agent_rows(
         return;
     }
 
-    let entries: Vec<_> = agent_panel_entries_from(app, terminal_runtimes)
+    let entries: Vec<_> = all_agent_panel_entries_from(app, terminal_runtimes)
         .into_iter()
         .filter(|entry| entry.docked)
         .collect();
@@ -3205,6 +3205,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hiding_attached_agents_from_the_table_keeps_them_in_the_sidebar() {
+        let area = Rect::new(0, 0, 34, 24);
+        let (app, terminal) = render_sidebar_list_with(area, |app| {
+            app.hide_attached_agents = true;
+        });
+        assert!(crate::ui::agent_panel_entries(&app).is_empty());
+        let row = compute_workspace_list_areas(&app, area)
+            .2
+            .last()
+            .expect("the space's agent should have a row")
+            .rect;
+        let buf = terminal.backend().buffer();
+        let drawn: String = (row.y..row.y + row.height)
+            .flat_map(|y| (row.x..row.x + row.width).map(move |x| (x, y)))
+            .map(|cell| buf[cell].symbol())
+            .collect();
+        assert!(
+            drawn.contains("{Claude}"),
+            "the sidebar should still draw the agent's row, got {drawn:?}"
+        );
+    }
+
     /// One space holding two agent panes, working in `cwds`, drawn into `area`.
     fn render_two_agent_sidebar(
         area: Rect,
@@ -3424,7 +3447,7 @@ mod tests {
 
         let mut runtime_registry = TerminalRuntimeRegistry::new();
         runtime_registry.insert(terminal_id, runtime);
-        let entries = agent_panel_entries_from(&app, &runtime_registry);
+        let entries = super::super::agent_table::agent_panel_entries_from(&app, &runtime_registry);
         let location = entries[0].location.clone();
 
         for (_, runtime) in runtime_registry.drain() {

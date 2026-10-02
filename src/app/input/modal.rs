@@ -396,7 +396,7 @@ fn heuristic_summary_title(
 }
 
 fn land_agent_prompt_target(state: &AppState, pane_id: crate::layout::PaneId) -> String {
-    crate::ui::agent_panel_entries(state)
+    crate::ui::all_agent_panel_entries(state)
         .into_iter()
         .find(|entry| entry.pane_id == pane_id)
         .map(|entry| entry.name)

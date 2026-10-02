@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Settings → experiments has `agent list: only agents not in a space`. On, the agent table and the mobile agents list show only agents that have been set down out of every space. The hidden agents keep their order. If you drag or sort rows while they are hidden, they return below the rows you arranged. The next and previous agent keys still cycle through them. The same key lives at `[ui] hide_attached_agents`.
+
 ### Changed
 - A space's card in the spaces sidebar shows only its name. The agent count on the right of the name row, such as `2 agents` or `no agents`, is gone; the rows listed under the card already show which agents the space holds.
 

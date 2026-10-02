@@ -529,6 +529,7 @@ impl App {
             pane_header: config.ui.pane_header,
             pane_history_persistence: config.experimental.pane_history,
             refresh_summary_with_grok: config.ui.refresh_summary_with_grok,
+            hide_attached_agents: config.ui.hide_attached_agents,
             refresh_summary_prompt: config.ui.refresh_summary_prompt.clone(),
             request_save_refresh_summary_prompt: false,
             reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
@@ -1266,6 +1267,7 @@ impl App {
             self.state.notify_active_tab = config.ui.notify_active_tab;
             self.state.toast_config = config.ui.toast.clone();
             self.state.refresh_summary_with_grok = config.ui.refresh_summary_with_grok;
+            self.state.hide_attached_agents = config.ui.hide_attached_agents;
             if !self.state.settings.editing_refresh_prompt {
                 self.state.refresh_summary_prompt = config.ui.refresh_summary_prompt.clone();
             }

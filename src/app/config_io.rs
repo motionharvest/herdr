@@ -141,6 +141,14 @@ impl App {
         }
     }
 
+    pub(super) fn save_hide_attached_agents(&mut self, enabled: bool) {
+        if self.update_config_file("agent list filter", |content| {
+            crate::config::upsert_section_bool(content, "ui", "hide_attached_agents", enabled)
+        }) {
+            self.apply_config_from_disk(false);
+        }
+    }
+
     pub(super) fn save_refresh_summary_prompt(&mut self) {
         let prompt = self.state.refresh_summary_prompt();
         if self.update_config_file("refresh summary prompt", |content| {

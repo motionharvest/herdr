@@ -50,7 +50,7 @@ pub(crate) fn agent_table_delete_intercept(state: &mut AppState, key: TerminalKe
 /// question opened; an agent the table no longer lists has nothing to ask
 /// about.
 pub(crate) fn open_confirm_close_agent(state: &mut AppState, focus: AgentTableFocus) -> bool {
-    let Some(name) = crate::ui::agent_panel_entries(state)
+    let Some(name) = crate::ui::all_agent_panel_entries(state)
         .into_iter()
         .find(|entry| entry.pane_id == focus.pane_id)
         .map(|entry| entry.name)

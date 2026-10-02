@@ -298,6 +298,7 @@ agent_panel_scope = "all"
 accent = "cyan"
 notify_active_tab = false
 refresh_summary_with_grok = false
+hide_attached_agents = false
 refresh_summary_prompt = "In 5-8 words, name the most recent thing the user asked this AI to do. Reply with only that sentence."
 ```
 
@@ -339,6 +340,8 @@ git_status = false
 `status` draws the agent's status mark before everything else, the same mark the agent table shows: a spinner while it works, a diamond while it waits on an answer, and a dot once it finishes, which a click turns into a check and back. A pane with no agent has no mark. `working_directory` is the last folder of the pane's cwd. `parent_directory` is the folder above it. Both together write `parent/current`, the same pair the agent table's Directory column uses. `git_branch` and `git_status` follow in parentheses when the pane is in a repository (`main !`). `hostname` writes the name of the machine the pane is on next to the pane name (`Olivia@myhost`), or alone if `agent_name` is off. That is the local machine's hostname, except while `ssh` is the program running in the pane: then it is the machine ssh connected to, read from its command line, so `ssh aaron@king` shows `Olivia@king`. A Tailscale name keeps only its machine part, so `tailscale ssh king` also shows `king` rather than `king.<tailnet>.ts.net`. Any other destination shows as typed, including an ssh config alias. The title returns to the local hostname when ssh exits. Settings → pane labels toggles the same keys.
 
 `refresh_summary_with_grok` controls `Refresh Summary` on an agent row. Off (the default), Herdr reads the latest typed prompt from that agent's session log. On, it starts a headless `grok -p` session at `--effort none` that names the most recent user request. The column says `refreshing summary` until that session returns. For a Grok pane it forks that session so the live chat is not written. For other harnesses it passes the latest typed requests as prompt context. If Grok is missing or the one-shot fails, the command falls back to the session-log prompt. Settings → experiments toggles the same key and has a `prompt` field next to it for the text sent to Grok. `refresh_summary_prompt` is that text; empty uses the built-in 5–8 word ask.
+
+`hide_attached_agents` limits the agent table and the mobile agents list to agents that are not in any space: the ones set down out of every layout. Off (the default), both lists show every agent. Hidden agents keep their order; a drag or sort while they are hidden places them below the rows you arranged. The next and previous agent keys still cycle through them. Settings → experiments toggles the same key as `agent list: only agents not in a space`.
 
 ## Notifications
 

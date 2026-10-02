@@ -63,6 +63,7 @@ pub(super) enum SettingsAction {
     SavePaneHistory(bool),
     SaveSwitchAsciiInputSourceInPrefix(bool),
     SaveRefreshSummaryWithGrok(bool),
+    SaveHideAttachedAgents(bool),
     InstallRecommendedIntegrations,
 }
 
@@ -91,6 +92,9 @@ fn experiment_toggle_action(state: &AppState, idx: usize) -> Option<SettingsActi
                 !ExperimentSetting::RefreshSummaryWithGrok.enabled(state),
             ))
         }
+        ExperimentSetting::HideAttachedAgents => Some(SettingsAction::SaveHideAttachedAgents(
+            !ExperimentSetting::HideAttachedAgents.enabled(state),
+        )),
     }
 }
 
@@ -128,6 +132,9 @@ impl App {
                 }
                 SettingsAction::SaveRefreshSummaryWithGrok(enabled) => {
                     self.save_refresh_summary_with_grok(enabled)
+                }
+                SettingsAction::SaveHideAttachedAgents(enabled) => {
+                    self.save_hide_attached_agents(enabled)
                 }
                 SettingsAction::InstallRecommendedIntegrations => {
                     self.install_recommended_integrations()
@@ -944,7 +951,11 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
         );
-        assert_eq!(state.settings.list.selected, 2);
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+        assert_eq!(state.settings.list.selected, 3);
 
         let action = update_settings_state(
             &mut state,
@@ -959,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_experiments_down_from_refresh_summary_edits_the_prompt() {
+    fn settings_experiments_toggles_hide_attached_agents() {
         let mut state = state_with_workspaces(&["test"]);
         open_settings_at(&mut state, SettingsSection::Experiments);
         update_settings_state(
@@ -971,6 +982,32 @@ mod tests {
             KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
         );
         assert_eq!(state.settings.list.selected, 2);
+
+        let action = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+
+        assert_eq!(action, Some(SettingsAction::SaveHideAttachedAgents(true)));
+    }
+
+    #[test]
+    fn settings_experiments_down_from_refresh_summary_edits_the_prompt() {
+        let mut state = state_with_workspaces(&["test"]);
+        open_settings_at(&mut state, SettingsSection::Experiments);
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+        );
+        assert_eq!(state.settings.list.selected, 3);
 
         update_settings_state(
             &mut state,
