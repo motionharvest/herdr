@@ -1,6 +1,6 @@
 #[cfg(test)]
 use crossterm::event::KeyEvent;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, ModifierKeyCode};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -897,6 +897,10 @@ pub fn format_key_combo(binding: KeyCombo) -> String {
         KeyCode::Up => "up".to_string(),
         KeyCode::Down => "down".to_string(),
         KeyCode::F(n) => format!("f{n}"),
+        KeyCode::Modifier(key) => match modifier_key_name(key) {
+            Some(name) => name.to_string(),
+            None => format!("{:?}", code).to_lowercase(),
+        },
         _ => format!("{:?}", code).to_lowercase(),
     };
 
@@ -918,6 +922,35 @@ fn super_modifier_label() -> &'static str {
     } else {
         "super"
     }
+}
+
+/// The modifier keys a binding can name on their own, such as `right_alt`.
+/// Most terminals never report a modifier key pressed alone; one that does
+/// sends it as its own key, the way the kitty keyboard protocol numbers them.
+const MODIFIER_KEY_NAMES: &[(ModifierKeyCode, &str)] = &[
+    (ModifierKeyCode::LeftShift, "left_shift"),
+    (ModifierKeyCode::RightShift, "right_shift"),
+    (ModifierKeyCode::LeftControl, "left_ctrl"),
+    (ModifierKeyCode::RightControl, "right_ctrl"),
+    (ModifierKeyCode::LeftAlt, "left_alt"),
+    (ModifierKeyCode::RightAlt, "right_alt"),
+    (ModifierKeyCode::LeftSuper, "left_super"),
+    (ModifierKeyCode::RightSuper, "right_super"),
+];
+
+fn modifier_key_name(key: ModifierKeyCode) -> Option<&'static str> {
+    MODIFIER_KEY_NAMES
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, name)| *name)
+}
+
+fn modifier_key_from_name(name: &str) -> Option<ModifierKeyCode> {
+    let name = name.replace('-', "_");
+    MODIFIER_KEY_NAMES
+        .iter()
+        .find(|(_, n)| *n == name)
+        .map(|(k, _)| *k)
 }
 
 fn parse_modifier_token(token: &str) -> Option<KeyModifiers> {
@@ -1019,6 +1052,9 @@ pub(super) fn parse_key_combo(s: &str) -> Option<KeyCombo> {
         "ampersand" => KeyCode::Char('&'),
         "backtick" => KeyCode::Char('`'),
         "plus" => KeyCode::Char('+'),
+        name if modifier_key_from_name(name).is_some() => {
+            KeyCode::Modifier(modifier_key_from_name(name)?)
+        }
         _ if single_char.is_some() => {
             let ch = single_char?;
             if ch.is_ascii_uppercase() {
@@ -1061,6 +1097,12 @@ fn parse_key_combo_with_diagnostic(
 }
 
 pub fn normalize_key_combo((mut code, mut modifiers): KeyCombo) -> KeyCombo {
+    // A modifier key pressed on its own is the whole binding. A terminal may
+    // report that key's own modifier flag alongside it, and that flag says
+    // nothing the key does not.
+    if matches!(code, KeyCode::Modifier(_)) {
+        return (code, KeyModifiers::empty());
+    }
     if matches!(code, KeyCode::Tab) && modifiers.contains(KeyModifiers::SHIFT) {
         code = KeyCode::BackTab;
         modifiers.remove(KeyModifiers::SHIFT);
@@ -1285,6 +1327,47 @@ prefix = "ö"
                 KeyModifiers::SHIFT
             ))]
         );
+    }
+
+    #[test]
+    fn a_lone_modifier_key_can_be_bound_and_matches_its_tap() {
+        let combo = parse_key_combo("right_alt").expect("right_alt parses");
+        assert_eq!(
+            combo,
+            (
+                KeyCode::Modifier(ModifierKeyCode::RightAlt),
+                KeyModifiers::empty()
+            )
+        );
+        assert_eq!(format_key_combo(combo), "right_alt");
+        // The tap Black Box sends: ESC [ 57449 u, with no modifier field.
+        let tap = crate::input::parse_terminal_key_sequence("\x1b[57449u").expect("tap parses");
+        assert!(terminal_key_matches_combo(tap, combo));
+        // A terminal that also reports Alt as held still means the same key.
+        let with_flag = TerminalKey::new(
+            KeyCode::Modifier(ModifierKeyCode::RightAlt),
+            KeyModifiers::ALT,
+        );
+        assert!(terminal_key_matches_combo(with_flag, combo));
+        assert!(!terminal_key_matches_combo(
+            TerminalKey::new(KeyCode::Char('x'), KeyModifiers::ALT),
+            combo
+        ));
+    }
+
+    #[test]
+    fn right_alt_is_accepted_as_a_direct_binding() {
+        let mut config = Config::default();
+        config.keys.commander = BindingConfig::one("right_alt");
+        let diagnostics = config.collect_diagnostics();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert!(config
+            .keybinds()
+            .commander
+            .matches_direct_key(TerminalKey::new(
+                KeyCode::Modifier(ModifierKeyCode::RightAlt),
+                KeyModifiers::empty()
+            )));
     }
 
     #[test]

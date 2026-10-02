@@ -798,6 +798,19 @@ mod tests {
     }
 
     #[test]
+    fn a_right_alt_tap_split_across_reads_is_one_key() {
+        let mut framer = RawInputFramer::default();
+        let mut events = framer.push(b"\x1b");
+        events.extend(framer.push(b"[57449u"));
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_raw_key(
+            events.remove(0),
+            KeyCode::Modifier(crossterm::event::ModifierKeyCode::RightAlt),
+            KeyModifiers::empty(),
+        );
+    }
+
+    #[test]
     fn parses_bracketed_paste() {
         let (RawInputEvent::Paste(text), consumed) =
             extract_one_event(b"\x1b[200~hello\x1b[201~rest").unwrap()
