@@ -9,6 +9,7 @@ mod agent_resume;
 mod agents;
 mod api;
 mod api_helpers;
+mod commander;
 mod composer;
 mod config_io;
 mod creation;
@@ -152,6 +153,10 @@ pub struct App {
     pub(crate) last_tab_click: Option<TabClickState>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_animation_tick: Option<Instant>,
+    /// When the Commander's star next moves, while it has one moving.
+    pub(crate) commander_frame_deadline: Option<Instant>,
+    /// When it last moved, so each step covers the time that really passed.
+    pub(crate) commander_last_frame: Option<Instant>,
     pub(crate) next_auto_update_check: Option<Instant>,
     pub(crate) agent_metadata_deadline: Option<Instant>,
     pub(crate) pending_agent_resume_deadline: Option<Instant>,
@@ -454,6 +459,7 @@ impl App {
             name_input: String::new(),
             name_input_replace_on_type: false,
             composer,
+            commander: crate::commander::CommanderState::default(),
             release_notes: None,
             product_announcement: startup_product_announcement.map(|announcement| {
                 state::ProductAnnouncementState {
@@ -563,6 +569,7 @@ impl App {
                 original_palette: None,
                 original_theme: None,
                 editing_refresh_prompt: false,
+                capturing_commander_key: false,
             },
             integration_recommendations: crate::integration::integration_recommendations(),
             integration_install_messages: Vec::new(),
@@ -617,6 +624,8 @@ impl App {
             last_tab_click: None,
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
             next_animation_tick: None,
+            commander_frame_deadline: None,
+            commander_last_frame: None,
             next_auto_update_check: auto_updates_enabled(no_session)
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
             agent_metadata_deadline: None,
@@ -1419,7 +1428,9 @@ impl App {
                     }
                 }
                 crate::raw_input::RawInputEvent::Paste(text) => {
-                    if self.state.mode == Mode::Composer {
+                    if self.state.mode == Mode::Commander {
+                        self.commander_paste(&text);
+                    } else if self.state.mode == Mode::Composer {
                         self.state.composer.task.insert_str(&text);
                     } else if self.state.mode == Mode::Terminal {
                         if let Some((_, _, runtime)) =
@@ -1477,6 +1488,7 @@ impl App {
                     input::ComposerKeyOutcome::Edited => {}
                 }
             }
+            Mode::Commander => self.commander_key(key),
             Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
                 input::handle_rename_key(&mut self.state, key_event);
             }

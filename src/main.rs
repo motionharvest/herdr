@@ -27,6 +27,7 @@ mod build_info;
 mod checksum;
 mod cli;
 mod client;
+mod commander;
 mod composer;
 mod config;
 mod detect;
@@ -128,6 +129,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # workspace_picker = "prefix+w"
 # goto = "prefix+g"
 # composer = "prefix+/"
+# commander = "f2"
 # new_workspace = "prefix+shift+n"
 # new_worktree = "prefix+shift+g"
 # open_worktree = ""    # optional, unset by default

@@ -3006,6 +3006,7 @@ impl HeadlessServer {
             changed = true;
         }
 
+        changed |= self.app.tick_commander(now);
         changed |= self.app.clear_due_selection_highlight(now);
 
         if self.has_app_client() {

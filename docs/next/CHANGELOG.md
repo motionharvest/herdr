@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- `F2` opens the Commander, a box centred along the bottom of the frame, half its width, with the keyboard already in it. Type what you want in plain words and the line under the field says what `Enter` will do before it does it. `switch to the chat ui space`, `go to tab 2`, or just a name shows a space, tab, or pane; `split right`, `new tab`, `zoom`, `next space`, `toggle sidebar`, and the rest of herdr's actions run by name. `tell Ada to run the tests`, `Ada: run the tests`, or `send claude in herdr: fix the build` sends a message: a star flies from the box to the middle of that pane, and when it lands the message is pasted in and submitted. Names match what herdr shows for a space, tab, or pane, ignoring case and punctuation, and a tie goes to whatever is on screen; a real tie is refused with the candidates named. The box grows as the text wraps, `Shift+Enter` breaks a line, and a paste is carried out at once. The key is `keys.commander`, and Settings has a `commander` tab that rebinds it by pressing the new key. It is a function key because a terminal never receives the keyboard's Fn key.
+
 ### Changed
 - A space's card in the spaces sidebar shows only its name. The agent count on the right of the name row, such as `2 agents` or `no agents`, is gone; the rows listed under the card already show which agents the space holds.
 

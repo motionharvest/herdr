@@ -520,6 +520,7 @@ pub(crate) enum NavigateAction {
     Detach,
     OpenNavigator,
     OpenComposer,
+    OpenCommander,
     ToggleSidebar,
     ToggleAgentTable,
 }
@@ -622,6 +623,7 @@ fn action_for_key(
         (&kb.detach, NavigateAction::Detach),
         (&kb.goto, NavigateAction::OpenNavigator),
         (&kb.composer, NavigateAction::OpenComposer),
+        (&kb.commander, NavigateAction::OpenCommander),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
         (&kb.toggle_agent_table, NavigateAction::ToggleAgentTable),
         (&kb.new_tab, NavigateAction::NewTab),
@@ -838,6 +840,7 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::OpenNavigator => state.open_navigator_from(terminal_runtimes),
         NavigateAction::OpenComposer => super::enter_composer_mode(state, terminal_runtimes),
+        NavigateAction::OpenCommander => super::open_commander(state),
         NavigateAction::SwitchTab(idx) => {
             let tab_exists = state
                 .active

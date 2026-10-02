@@ -24,6 +24,7 @@ enum WheelRouting {
 const PANE_DRAG_THRESHOLD: u16 = 1;
 
 mod agent_table;
+mod commander;
 mod composer;
 mod copy_mode;
 mod describe_dialog;
@@ -39,6 +40,10 @@ mod terminal;
 pub(crate) use self::agent_table::{
     agent_table_delete_intercept, confirm_close_agent_accept, confirm_close_agent_cancel,
     handle_confirm_close_agent_key,
+};
+pub(crate) use self::commander::{
+    close_commander, handle_commander_key, open_commander,
+    refresh_reading as refresh_commander_reading, submit_commander, CommanderKeyOutcome,
 };
 pub(crate) use self::composer::{
     enter_composer_mode, handle_composer_key, leave_composer_mode, ComposerKeyOutcome,
@@ -77,6 +82,7 @@ impl App {
             Mode::Prefix => self.handle_prefix_key(key),
             Mode::Navigate => self.handle_navigate_key(key),
             Mode::Copy => self.handle_copy_mode_key(key),
+            Mode::Commander => self.commander_key(key),
             Mode::Composer => {
                 match handle_composer_key(&mut self.state, &self.terminal_runtimes, key) {
                     ComposerKeyOutcome::Submit(pending) => self.submit_composer(*pending),
@@ -91,7 +97,11 @@ impl App {
                     Mode::Onboarding => self.handle_onboarding_key(key_event),
                     Mode::ReleaseNotes => self.handle_release_notes_key(key_event),
                     Mode::ProductAnnouncement => self.handle_product_announcement_key(key_event),
-                    Mode::Prefix | Mode::Navigate | Mode::Copy | Mode::Composer => unreachable!(),
+                    Mode::Prefix
+                    | Mode::Navigate
+                    | Mode::Copy
+                    | Mode::Composer
+                    | Mode::Commander => unreachable!(),
                     Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
                         handle_rename_key(&mut self.state, key_event)
                     }
@@ -127,6 +137,10 @@ impl App {
     }
 
     pub(super) async fn handle_paste(&mut self, text: String) {
+        if self.state.mode == Mode::Commander {
+            self.commander_paste(&text);
+            return;
+        }
         if self.state.mode == Mode::Composer {
             match self.state.composer.focus {
                 // A pasted task keeps its lines: the field holds as many as it
@@ -311,6 +325,20 @@ impl App {
             return;
         }
 
+        // The Commander is a small box over the panes: a click away from it
+        // puts it away, and nothing under it takes the event while it is up.
+        if self.state.mode == Mode::Commander {
+            let area = self.state.commander.area;
+            let inside = mouse.column >= area.x
+                && mouse.column < area.right()
+                && mouse.row >= area.y
+                && mouse.row < area.bottom();
+            if matches!(mouse.kind, MouseEventKind::Down(_)) && !inside {
+                close_commander(&mut self.state);
+            }
+            return;
+        }
+
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             if let Some(reason) = self
                 .state
@@ -361,6 +389,7 @@ impl App {
                     SettingsAction::SaveRefreshSummaryWithGrok(enabled) => {
                         self.save_refresh_summary_with_grok(enabled)
                     }
+                    SettingsAction::SaveCommanderKey(combo) => self.save_commander_key(&combo),
                     SettingsAction::InstallRecommendedIntegrations => {
                         self.install_recommended_integrations()
                     }
