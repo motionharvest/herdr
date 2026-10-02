@@ -917,8 +917,9 @@ fn render_code_ui_pane_chrome(
 }
 
 /// The click target over a finished agent's dot or check, which sits right
-/// after the title's opening corner. `None` when the pane has no mark a click
-/// can move.
+/// after the title's opening corner. It covers the mark and the space after
+/// it, because many fonts draw the dot wider than one cell and it spills into
+/// that space. `None` when the pane has no mark a click can move.
 fn pane_status_control(
     area: Rect,
     pane_id: crate::layout::PaneId,
@@ -927,10 +928,12 @@ fn pane_status_control(
     if area.width < 4 || area.height == 0 || !title.status.is_some_and(|mark| mark.clickable) {
         return None;
     }
+    let x = area.x + "╭─ ".chars().count() as u16;
+    let width = 2.min(area.right().saturating_sub(x));
     Some(PaneChromeControl {
         pane_id,
         action: PaneChromeAction::Acknowledge,
-        rect: Rect::new(area.x + "╭─ ".chars().count() as u16, area.y, 1, 1),
+        rect: Rect::new(x, area.y, width, 1),
     })
 }
 

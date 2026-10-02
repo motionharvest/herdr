@@ -4773,9 +4773,10 @@ mod tests {
             "acknowledging a finish should not also focus that pane"
         );
 
+        // The dot spills into the cell to its right, so that cell toggles too.
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            mark.x,
+            mark.x + 1,
             mark.y,
         ));
         assert!(!app.state.workspaces[0].tabs[0].panes[&finished].seen);
