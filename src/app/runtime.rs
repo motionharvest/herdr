@@ -236,6 +236,7 @@ impl App {
             changed = true;
         }
 
+        changed |= self.tick_commander(now);
         changed |= self.clear_due_selection_highlight(now);
 
         self.start_git_status_refresh_if_due(now);
@@ -655,6 +656,7 @@ impl App {
             self.toast_deadline,
             self.copy_feedback_deadline,
             self.next_animation_tick,
+            self.commander_frame_deadline,
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
                 .flatten(),

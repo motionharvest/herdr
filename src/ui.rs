@@ -6,6 +6,7 @@ use ratatui::{
 };
 
 mod agent_table;
+mod commander;
 mod composer;
 mod describe_dialog;
 mod dialogs;
@@ -105,8 +106,8 @@ pub(crate) use self::{
     },
     settings::{
         experiments_prompt_rect, settings_button_rects, settings_show_primary_action,
-        EXPERIMENTS_CHECKBOX_ROWS_OFFSET, SETTINGS_POPUP_HEIGHT, SETTINGS_POPUP_WIDTH,
-        SOUND_ALERT_ROWS_OFFSET, SOUND_CHOICE_ROWS_OFFSET,
+        COMMANDER_KEY_ROW_OFFSET, EXPERIMENTS_CHECKBOX_ROWS_OFFSET, SETTINGS_POPUP_HEIGHT,
+        SETTINGS_POPUP_WIDTH, SOUND_ALERT_ROWS_OFFSET, SOUND_CHOICE_ROWS_OFFSET,
     },
 };
 use crate::app::state::ViewLayout;
@@ -212,6 +213,7 @@ fn compute_view_internal(
     }
 
     app.view.ssh_hosts = self::panes::compute_ssh_hosts(app, terminal_runtimes);
+    self::commander::compute_commander(app, area);
 
     if is_mobile_width(area, app.mobile_width_threshold) {
         // Mobile has no sidebar, so the composer still spans the frame.
@@ -521,6 +523,7 @@ pub fn render_with_runtime_registry(
         Mode::GlobalMenu => render_global_launcher_menu(app, frame),
         Mode::KeybindHelp => render_keybind_help_overlay(app, frame),
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),
+        Mode::Commander => self::commander::render_commander(app, frame),
         // The composer band is chrome, not an overlay: it draws itself above.
         Mode::Composer | Mode::Terminal => {}
     }
@@ -535,6 +538,10 @@ pub fn render_with_runtime_registry(
     // Its open list is an overlay, though, and hangs over the panes — so it
     // goes on last, after everything it covers has been drawn.
     render_composer_dropdown(app, frame, &app.view.composer);
+
+    // The Commander's star only recolours what is already drawn, so it goes
+    // over everything, overlays included.
+    self::commander::render_commander_trail(app, frame);
 }
 
 fn render_notifications(app: &AppState, frame: &mut Frame, terminal_area: Rect) {

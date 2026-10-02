@@ -244,6 +244,11 @@ pub struct KeysConfig {
     pub goto: BindingConfig,
     /// Focus the composer above the tabs. Default: "prefix+/"
     pub composer: BindingConfig,
+    /// Open the Commander, the box at the bottom of the frame that turns a
+    /// typed line into a herdr action or a message for a pane. Default: "f2".
+    /// Terminals never receive the keyboard's Fn key itself, so a function key
+    /// is the closest binding a terminal program can have.
+    pub commander: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
     pub toggle_sidebar: BindingConfig,
     /// Toggle agent table collapse. Default: "prefix+shift+b"
@@ -523,6 +528,7 @@ impl Default for KeysConfig {
             workspace_picker: BindingConfig::one("prefix+w"),
             goto: BindingConfig::one("prefix+g"),
             composer: BindingConfig::one("prefix+/"),
+            commander: BindingConfig::one("f2"),
             toggle_sidebar: BindingConfig::one("prefix+b"),
             toggle_agent_table: BindingConfig::one("prefix+shift+b"),
             navigate_workspace_up: BindingConfig::one("up"),

@@ -6,8 +6,6 @@ use crate::api::schema::{
 };
 use crate::app::App;
 
-use super::super::api_helpers::{encode_api_keys, encode_api_text};
-
 use super::responses::{encode_error, encode_error_body, encode_success};
 
 impl App {
@@ -127,23 +125,10 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
             return agent_not_found(id, &params.target);
         };
-        let encoded_enter = match encode_api_keys(runtime, &["Enter".into()]) {
-            Ok(encoded_enter) => encoded_enter,
-            Err(key) => return encode_error(id, "invalid_key", format!("unsupported key {key}")),
-        };
-        if !params.text.is_empty() {
-            let text_bytes = encode_api_text(runtime, &params.text);
-            if let Err(err) = runtime.try_send_bytes(Bytes::from(text_bytes)) {
-                return encode_error(id, "agent_send_failed", err.to_string());
-            }
+        match super::super::api_helpers::send_prompt(runtime, &params.text) {
+            Ok(()) => encode_success(id, ResponseResult::Ok {}),
+            Err((code, message)) => encode_error(id, code, message),
         }
-        for bytes in encoded_enter {
-            if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-                return encode_error(id, "agent_send_failed", err.to_string());
-            }
-        }
-
-        encode_success(id, ResponseResult::Ok {})
     }
 }
 

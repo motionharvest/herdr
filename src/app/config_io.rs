@@ -149,6 +149,19 @@ impl App {
         }
     }
 
+    pub(super) fn save_commander_key(&mut self, combo: &str) {
+        if self.update_config_file("commander hotkey", |content| {
+            crate::config::upsert_section_value(
+                content,
+                "keys",
+                "commander",
+                &crate::config::toml_quoted_string(combo),
+            )
+        }) {
+            self.apply_config_from_disk(false);
+        }
+    }
+
     pub(super) fn save_refresh_summary_prompt(&mut self) {
         let prompt = self.state.refresh_summary_prompt();
         if self.update_config_file("refresh summary prompt", |content| {

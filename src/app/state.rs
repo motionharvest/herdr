@@ -1051,6 +1051,7 @@ pub enum Mode {
     Copy,
     Terminal,
     Composer,
+    Commander,
     RenameWorkspace,
     RenameTab,
     RenamePane,
@@ -1144,6 +1145,7 @@ pub enum SettingsSection {
     Sound,
     Toast,
     PaneLabels,
+    Commander,
     Experiments,
     Integrations,
 }
@@ -1154,6 +1156,7 @@ impl SettingsSection {
         Self::Sound,
         Self::Toast,
         Self::PaneLabels,
+        Self::Commander,
         Self::Integrations,
         Self::Experiments,
     ];
@@ -1164,6 +1167,7 @@ impl SettingsSection {
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::PaneLabels => "pane labels",
+            Self::Commander => "commander",
             Self::Experiments => "experiments",
             Self::Integrations => "integrations",
         }
@@ -1323,6 +1327,8 @@ pub struct SettingsState {
     pub original_theme: Option<String>,
     /// The Refresh Summary prompt field is focused for typing.
     pub editing_refresh_prompt: bool,
+    /// The next key pressed becomes the Commander's hotkey.
+    pub capturing_commander_key: bool,
 }
 
 pub(crate) enum DragTarget {
@@ -1858,6 +1864,9 @@ pub struct AppState {
     /// The always-visible band that starts agents: where to work, who works,
     /// what to do.
     pub composer: crate::composer::ComposerState,
+    /// The box at the bottom of the frame that turns a typed line into an
+    /// action, and the star carrying its last message to a pane.
+    pub commander: crate::commander::CommanderState,
     pub release_notes: Option<ReleaseNotesState>,
     pub product_announcement: Option<ProductAnnouncementState>,
     pub keybind_help: KeybindHelpState,
@@ -2325,6 +2334,7 @@ impl AppState {
             name_input: String::new(),
             name_input_replace_on_type: false,
             composer: crate::composer::ComposerState::default(),
+            commander: crate::commander::CommanderState::default(),
             release_notes: None,
             product_announcement: None,
             keybind_help: KeybindHelpState { scroll: 0 },
@@ -2419,6 +2429,7 @@ impl AppState {
                 original_palette: None,
                 original_theme: None,
                 editing_refresh_prompt: false,
+                capturing_commander_key: false,
             },
             integration_recommendations: Vec::new(),
             integration_install_messages: Vec::new(),

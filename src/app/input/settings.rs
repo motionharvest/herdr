@@ -64,6 +64,8 @@ pub(super) enum SettingsAction {
     SaveSwitchAsciiInputSourceInPrefix(bool),
     SaveRefreshSummaryWithGrok(bool),
     SaveHideAttachedAgents(bool),
+    /// The Commander's hotkey, written the way the config file writes keys.
+    SaveCommanderKey(String),
     InstallRecommendedIntegrations,
 }
 
@@ -136,6 +138,7 @@ impl App {
                 SettingsAction::SaveHideAttachedAgents(enabled) => {
                     self.save_hide_attached_agents(enabled)
                 }
+                SettingsAction::SaveCommanderKey(combo) => self.save_commander_key(&combo),
                 SettingsAction::InstallRecommendedIntegrations => {
                     self.install_recommended_integrations()
                 }
@@ -336,7 +339,7 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
                 state.settings.list.selected = toast_delivery_index(state.toast_delivery());
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
-                state.settings.section = SettingsSection::Integrations;
+                state.settings.section = SettingsSection::Commander;
                 state.settings.list.selected = 0;
             }
             _ => {
@@ -406,12 +409,41 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
                 }
             }
         },
+        // While a key is being captured, every key but Esc is the answer,
+        // including the ones that would otherwise move between sections.
+        SettingsSection::Commander if state.settings.capturing_commander_key => {
+            state.settings.capturing_commander_key = false;
+            if key.code != KeyCode::Esc {
+                let combo = crate::config::format_key_combo((key.code, key.modifiers));
+                return Some(SettingsAction::SaveCommanderKey(combo));
+            }
+        }
+        SettingsSection::Commander => match key.code {
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                state.settings.capturing_commander_key = true;
+            }
+            KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                state.settings.section = SettingsSection::PaneLabels;
+                state.settings.list.selected = 0;
+            }
+            KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
+                state.settings.section = SettingsSection::Integrations;
+                state.settings.list.selected = 0;
+            }
+            _ => {
+                if let Some(super::modal::ModalAction::Close) =
+                    super::modal::modal_action_from_key(&key, super::modal::SETTINGS_ACTIONS)
+                {
+                    cancel_settings(state);
+                }
+            }
+        },
         SettingsSection::Integrations => match key.code {
             KeyCode::Enter | KeyCode::Char(' ') if integrations_need_install(state) => {
                 return Some(SettingsAction::InstallRecommendedIntegrations);
             }
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
-                state.settings.section = SettingsSection::PaneLabels;
+                state.settings.section = SettingsSection::Commander;
                 state.settings.list.selected = 0;
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
@@ -442,10 +474,12 @@ pub(crate) fn open_settings_at(state: &mut AppState, section: SettingsSection) {
         SettingsSection::Sound => sound_selected_index(state),
         SettingsSection::Toast => toast_delivery_index(state.toast_delivery()),
         SettingsSection::PaneLabels => 0,
+        SettingsSection::Commander => 0,
         SettingsSection::Experiments => 0,
         SettingsSection::Integrations => 0,
     };
     state.settings.editing_refresh_prompt = false;
+    state.settings.capturing_commander_key = false;
     state.mode = Mode::Settings;
 }
 
@@ -542,6 +576,9 @@ impl AppState {
                     None
                 }
             }
+            SettingsSection::Commander => {
+                (row == area.y + crate::ui::COMMANDER_KEY_ROW_OFFSET).then_some(0)
+            }
             SettingsSection::Experiments => {
                 let list_y = area.y + crate::ui::EXPERIMENTS_CHECKBOX_ROWS_OFFSET;
                 if row >= list_y && row < list_y + ExperimentSetting::ALL.len() as u16 {
@@ -574,6 +611,7 @@ impl AppState {
                 if self.settings.editing_refresh_prompt {
                     stop_editing_refresh_prompt(self);
                 }
+                self.settings.capturing_commander_key = false;
                 if let Some(section) = self.settings_tab_at(mouse.column, mouse.row) {
                     self.settings.section = section;
                     self.settings.list.select(match section {
@@ -581,6 +619,7 @@ impl AppState {
                         SettingsSection::Sound => sound_selected_index(self),
                         SettingsSection::Toast => toast_delivery_index(self.toast_delivery()),
                         SettingsSection::PaneLabels => 0,
+                        SettingsSection::Commander => 0,
                         SettingsSection::Experiments => 0,
                         SettingsSection::Integrations => 0,
                     });
@@ -599,6 +638,10 @@ impl AppState {
                             Some(SettingsAction::SaveToastDelivery(delivery))
                         }
                         SettingsSection::PaneLabels => pane_header_toggle_action(self, idx),
+                        SettingsSection::Commander => {
+                            self.settings.capturing_commander_key = true;
+                            None
+                        }
                         SettingsSection::Experiments => experiment_toggle_action(self, idx),
                         SettingsSection::Integrations => None,
                     };
@@ -1058,6 +1101,12 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
         );
+        assert_eq!(state.settings.section, SettingsSection::Commander);
+
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        );
         assert_eq!(state.settings.section, SettingsSection::Integrations);
 
         update_settings_state(
@@ -1083,6 +1132,45 @@ mod tests {
             KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
         );
         assert_eq!(state.settings.section, SettingsSection::Integrations);
+    }
+
+    #[test]
+    fn the_next_key_becomes_the_commander_hotkey() {
+        let mut state = state_with_workspaces(&["test"]);
+        open_settings_at(&mut state, SettingsSection::Commander);
+
+        let start = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+        assert_eq!(start, None);
+        assert!(state.settings.capturing_commander_key);
+
+        // Tab would change section; while capturing it is the answer instead.
+        let saved = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::F(3), KeyModifiers::empty()),
+        );
+        assert_eq!(saved, Some(SettingsAction::SaveCommanderKey("f3".into())));
+        assert!(!state.settings.capturing_commander_key);
+        assert_eq!(state.settings.section, SettingsSection::Commander);
+    }
+
+    #[test]
+    fn escape_abandons_a_commander_key_capture() {
+        let mut state = state_with_workspaces(&["test"]);
+        open_settings_at(&mut state, SettingsSection::Commander);
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+        let action = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+        );
+        assert_eq!(action, None);
+        assert!(!state.settings.capturing_commander_key);
+        assert_eq!(state.mode, Mode::Settings);
     }
 
     #[test]

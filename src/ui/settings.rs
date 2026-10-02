@@ -118,6 +118,9 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
         SettingsSection::PaneLabels => {
             render_settings_pane_header(app, frame, content_area);
         }
+        SettingsSection::Commander => {
+            render_settings_commander(app, frame, content_area);
+        }
         SettingsSection::Experiments => {
             render_settings_experiments(app, frame, content_area);
         }
@@ -378,6 +381,61 @@ fn render_settings_pane_header(app: &AppState, frame: &mut Frame, area: Rect) {
         frame.render_widget(
             Paragraph::new(format!(" {} {marker}", field.label())).style(style),
             row,
+        );
+    }
+}
+
+/// The hotkey row inside the Commander section's content area.
+/// `app::input::settings` hit-tests clicks against it.
+pub(crate) const COMMANDER_KEY_ROW_OFFSET: u16 = 3;
+
+fn render_settings_commander(app: &AppState, frame: &mut Frame, area: Rect) {
+    let p = &app.palette;
+    for (offset, line) in [
+        "the key that opens the Commander from anywhere",
+        "a terminal never sees the Fn key itself; a function key is the nearest choice",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        super::widgets::render_modal_description(
+            frame,
+            Rect::new(area.x, area.y + offset as u16, area.width, 1),
+            line,
+            Style::default().fg(p.overlay1),
+        );
+    }
+    let row = area.y + COMMANDER_KEY_ROW_OFFSET;
+    if row >= area.bottom() {
+        return;
+    }
+    let value = if app.settings.capturing_commander_key {
+        "press a key… (esc to cancel)".to_string()
+    } else {
+        app.keybinds
+            .commander
+            .label()
+            .unwrap_or_else(|| "unset".to_string())
+    };
+    let style = Style::default()
+        .bg(p.surface0)
+        .fg(p.text)
+        .add_modifier(Modifier::BOLD);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" hotkey  ", style),
+            Span::styled(value, style.fg(p.accent)),
+        ]))
+        .style(style),
+        Rect::new(area.x, row, area.width, 1),
+    );
+    if row + 2 < area.bottom() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " enter or click to change it",
+                Style::default().fg(p.overlay0),
+            )),
+            Rect::new(area.x, row + 2, area.width, 1),
         );
     }
 }

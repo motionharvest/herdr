@@ -42,6 +42,28 @@ pub(super) fn encode_api_text(runtime: &crate::terminal::TerminalRuntime, text: 
     }
 }
 
+/// Paste `text` into a pane and press Enter, the way an agent is prompted.
+/// `Err` carries an error code and message for the API to report.
+pub(super) fn send_prompt(
+    runtime: &crate::terminal::TerminalRuntime,
+    text: &str,
+) -> Result<(), (&'static str, String)> {
+    let encoded_enter = encode_api_keys(runtime, &["Enter".into()])
+        .map_err(|key| ("invalid_key", format!("unsupported key {key}")))?;
+    if !text.is_empty() {
+        let text_bytes = encode_api_text(runtime, text);
+        runtime
+            .try_send_bytes(bytes::Bytes::from(text_bytes))
+            .map_err(|err| ("agent_send_failed", err.to_string()))?;
+    }
+    for bytes in encoded_enter {
+        runtime
+            .try_send_bytes(bytes::Bytes::from(bytes))
+            .map_err(|err| ("agent_send_failed", err.to_string()))?;
+    }
+    Ok(())
+}
+
 pub(super) fn encode_api_keys(
     runtime: &crate::terminal::TerminalRuntime,
     keys: &[String],

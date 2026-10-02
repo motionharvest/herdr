@@ -63,6 +63,7 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
             ),
             help_entry(keybind_label(&kb.help), "keybinds"),
             help_entry(keybind_label(&kb.composer), "start an agent"),
+            help_entry(keybind_label(&kb.commander), "commander"),
             help_entry(keybind_label(&kb.settings), "settings"),
             help_entry(keybind_label(&kb.detach), "detach"),
             help_entry(keybind_label(&kb.reload_config), "reload config"),
