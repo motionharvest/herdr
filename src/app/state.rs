@@ -1329,6 +1329,9 @@ pub struct SettingsState {
     pub editing_refresh_prompt: bool,
     /// The next key pressed becomes the Commander's hotkey.
     pub capturing_commander_key: bool,
+    /// The last key refused during that capture, because a plain key bound
+    /// directly would take over typing in every pane.
+    pub refused_commander_key: Option<String>,
 }
 
 pub(crate) enum DragTarget {
@@ -2430,6 +2433,7 @@ impl AppState {
                 original_theme: None,
                 editing_refresh_prompt: false,
                 capturing_commander_key: false,
+                refused_commander_key: None,
             },
             integration_recommendations: Vec::new(),
             integration_install_messages: Vec::new(),

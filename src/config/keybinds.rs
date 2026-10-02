@@ -1198,7 +1198,7 @@ fn is_shifted_punctuation(ch: char) -> bool {
     )
 }
 
-fn is_unmodified_printable(combo: KeyCombo) -> bool {
+pub(crate) fn is_unmodified_printable(combo: KeyCombo) -> bool {
     matches!(combo.0, KeyCode::Char(ch) if !ch.is_control())
         && combo.1.difference(KeyModifiers::SHIFT).is_empty()
 }

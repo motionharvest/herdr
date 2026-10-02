@@ -571,6 +571,7 @@ impl App {
                 original_theme: None,
                 editing_refresh_prompt: false,
                 capturing_commander_key: false,
+                refused_commander_key: None,
             },
             integration_recommendations: crate::integration::integration_recommendations(),
             integration_install_messages: Vec::new(),

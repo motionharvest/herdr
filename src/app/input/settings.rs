@@ -410,12 +410,22 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
         },
         // While a key is being captured, every key but Esc is the answer,
-        // including the ones that would otherwise move between sections.
+        // including the ones that would otherwise move between sections. A
+        // plain letter, digit or symbol is refused and the capture stays open:
+        // bound directly, it would swallow that character in every pane, and
+        // the config loader rejects it for that reason.
         SettingsSection::Commander if state.settings.capturing_commander_key => {
-            state.settings.capturing_commander_key = false;
-            if key.code != KeyCode::Esc {
-                let combo = crate::config::format_key_combo((key.code, key.modifiers));
-                return Some(SettingsAction::SaveCommanderKey(combo));
+            let combo = (key.code, key.modifiers);
+            let name = crate::config::format_key_combo(combo);
+            if key.code == KeyCode::Esc {
+                state.settings.capturing_commander_key = false;
+                state.settings.refused_commander_key = None;
+            } else if crate::config::is_unmodified_printable(combo) {
+                state.settings.refused_commander_key = Some(name);
+            } else {
+                state.settings.capturing_commander_key = false;
+                state.settings.refused_commander_key = None;
+                return Some(SettingsAction::SaveCommanderKey(name));
             }
         }
         SettingsSection::Commander => match key.code {
@@ -1154,6 +1164,33 @@ mod tests {
         assert_eq!(saved, Some(SettingsAction::SaveCommanderKey("f3".into())));
         assert!(!state.settings.capturing_commander_key);
         assert_eq!(state.settings.section, SettingsSection::Commander);
+    }
+
+    #[test]
+    fn a_plain_letter_is_refused_and_the_capture_stays_open() {
+        let mut state = state_with_workspaces(&["test"]);
+        open_settings_at(&mut state, SettingsSection::Commander);
+        update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+        let refused = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty()),
+        );
+        assert_eq!(refused, None);
+        assert!(state.settings.capturing_commander_key);
+        assert_eq!(state.settings.refused_commander_key.as_deref(), Some("m"));
+
+        let saved = update_settings_state(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            saved,
+            Some(SettingsAction::SaveCommanderKey("ctrl+m".into()))
+        );
+        assert_eq!(state.settings.refused_commander_key, None);
     }
 
     #[test]

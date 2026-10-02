@@ -27,6 +27,7 @@ pub use self::{
 };
 
 pub(crate) use self::io::upsert_top_level_bool;
+pub(crate) use self::keybinds::is_unmodified_printable;
 pub(crate) use self::model::PaneHeaderField;
 
 pub const CONFIG_PATH_ENV_VAR: &str = "HERDR_CONFIG_PATH";

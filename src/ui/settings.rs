@@ -409,7 +409,12 @@ fn render_settings_commander(app: &AppState, frame: &mut Frame, area: Rect) {
     if row >= area.bottom() {
         return;
     }
-    let value = if app.settings.capturing_commander_key {
+    let value = if let (true, Some(refused)) = (
+        app.settings.capturing_commander_key,
+        &app.settings.refused_commander_key,
+    ) {
+        format!("“{refused}” would take over typing; try f2 or ctrl+space (esc to cancel)")
+    } else if app.settings.capturing_commander_key {
         "press a key… (esc to cancel)".to_string()
     } else {
         app.keybinds
