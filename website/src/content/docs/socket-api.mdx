@@ -77,6 +77,13 @@ Raw socket method names use dot notation:
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.send`, `agent.prompt`, `agent.rename`, `agent.focus`, `agent.start` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
+| View | `view.set` |
+
+`view.set` takes `part` (`sidebar`, `spaces`, `agent_table`, `space_agents`, `space_group`, or `minimap`), `change` (`show`, `hide`, or `toggle`, the default), and for the per-space parts an optional `workspace_id` or `tab_id`, as `herdr view` describes. It answers with `parts`: each part it changed, with its `workspace_id` and `tab_id` where it has them, and whether it is now `shown`.
+
+```json
+{"id":"req_v","method":"view.set","params":{"part":"minimap","change":"hide"}}
+```
 
 Some CLI commands are conveniences around these methods. For example, `herdr agent wait` resolves an agent target and then subscribes to pane agent state events.
 

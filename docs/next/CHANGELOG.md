@@ -10,10 +10,12 @@
 - `herdr view <part> [show|hide|toggle]` and the socket method `view.set` fold away or show the parts of the interface that only a click or a key reached before: the sidebar, its spaces section, the agent table, the agents under a space's card, a space's worktree group, and the minimaps under tab names. The Commander uses the same method, so `hide the minimaps` or `collapse the agent table` works there, and a line can mix these with other commands. Clicks, keys, the context menu, the API, and the Commander now change these parts through one place, so each fold is saved with the session the same way whichever of them did it.
 
 ### Changed
+- A pane whose name is already taken gets the next unused name from the word list, so a second `Olivia` becomes another name rather than `Olivia-2`. Panes claim names in a stable order, so a pane keeps its name when a new one appears, and a name set by hand counts as taken. A numeric suffix appears only once every name in the list is in use. Two panes used to share a base name and differ only by a number, which made them hard to tell apart.
 - A space's card in the spaces sidebar shows only its name. The agent count on the right of the name row, such as `2 agents` or `no agents`, is gone; the rows listed under the card already show which agents the space holds.
 
 ### Fixed
 - A pane title's `hostname` names the machine an `ssh` in the pane is connected to, so `ssh aaron@king` or `tailscale ssh king` shows `Olivia@king`. It used to name the local machine no matter where the pane's shell was, so every pane said the same host. The name comes from ssh's command line; a Tailscale name keeps only its machine part, and the title returns to the local hostname when ssh exits.
+- Clicking the done dot or check in a pane title lands. The click target now covers the mark and the cell after it, because many fonts draw the dot wider than one cell, so a click on the visible part of the dot used to miss.
 
 ## [0.13.0] - 2026-09-29
 
