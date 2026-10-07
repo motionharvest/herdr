@@ -662,6 +662,9 @@ impl AppState {
                         }
                         self.focus_pane(control.pane_id);
                         match control.action {
+                            crate::app::state::PaneChromeAction::PopOut => {
+                                self.request_pane_pop_out(control.pane_id);
+                            }
                             crate::app::state::PaneChromeAction::Focus => self.toggle_zoom(),
                             crate::app::state::PaneChromeAction::Close => {
                                 self.close_pane();
@@ -2288,6 +2291,35 @@ impl AppState {
                 && row >= p.rect.y
                 && row < p.rect.y + p.rect.height
         })
+    }
+
+    /// Leaves a request for the server to open `pane_id` in its own window in
+    /// the host terminal, over the cells the pane occupies now.
+    fn request_pane_pop_out(&mut self, pane_id: crate::layout::PaneId) {
+        let Some(ws_idx) = self.active else {
+            return;
+        };
+        let Some(rect) = self
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == pane_id)
+            .map(|info| info.rect)
+        else {
+            return;
+        };
+        let Some(terminal_id) = self.terminal_id_for_pane(ws_idx, pane_id) else {
+            return;
+        };
+        let Some(ws) = self.workspaces.get(ws_idx) else {
+            return;
+        };
+        let title = crate::ui::pane_pop_out_title(self, ws, pane_id);
+        self.pending_pane_pop_out = Some(crate::app::state::PanePopOutRequest {
+            terminal_id: terminal_id.to_string(),
+            title,
+            rect,
+        });
     }
 
     pub(super) fn focus_pane(&mut self, pane_id: crate::layout::PaneId) {

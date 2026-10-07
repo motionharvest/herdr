@@ -440,6 +440,7 @@ fn do_handshake(
         } else {
             ClientLaunchMode::App
         },
+        host_terminal_program: std::env::var("TERM_PROGRAM").ok(),
     };
     protocol::write_message(stream, &hello)
         .map_err(|e| ClientError::ConnectionFailed(io::Error::other(e.to_string())))?;
@@ -503,6 +504,44 @@ pub fn run_client() -> io::Result<()> {
 }
 
 /// Runs a direct terminal attach client.
+/// The OSC 666 sequence that asks Black Box to open a herdr terminal in its
+/// own window over the given cells of this terminal. OSC 666 sets VTE
+/// terminal properties; Black Box registers these and opens the window when
+/// `open` is raised. Black Box builds the attach command itself, so the
+/// sequence carries only the terminal id, never a command.
+fn black_box_pop_out_sequence(
+    terminal_id: &str,
+    title: &str,
+    column: u16,
+    row: u16,
+    columns: u16,
+    rows: u16,
+) -> String {
+    const PREFIX: &str = "vte.ext.blackbox.pop-out";
+    format!(
+        "\x1b]666;{PREFIX}.terminal-id={};{PREFIX}.title={};{PREFIX}.column={column};\
+         {PREFIX}.row={row};{PREFIX}.columns={columns};{PREFIX}.rows={rows};{PREFIX}.open!\x1b\\",
+        escape_termprop_string(terminal_id),
+        escape_termprop_string(title),
+    )
+}
+
+/// Escapes a string termprop value: OSC 666 separates statements with `;`,
+/// so VTE reads `\s` as a semicolon and `\\` as a backslash. Control
+/// characters cannot appear in an OSC string and are dropped.
+fn escape_termprop_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            ';' => escaped.push_str("\\s"),
+            ch if ch.is_control() => {}
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 pub fn run_terminal_attach(terminal_id: String, takeover: bool) -> io::Result<()> {
     run_client_with_mode(
         RenderEncoding::TerminalAnsi,
@@ -881,6 +920,26 @@ async fn run_client_loop(
                 ServerMessage::Clipboard { data } => {
                     forward_clipboard(&data);
                     let _ = io::stdout().flush();
+                }
+                ServerMessage::PopOutPane {
+                    terminal_id,
+                    title,
+                    column,
+                    row,
+                    columns,
+                    rows,
+                } => {
+                    let request = black_box_pop_out_sequence(
+                        &terminal_id,
+                        &title,
+                        column,
+                        row,
+                        columns,
+                        rows,
+                    );
+                    let mut stdout = io::stdout();
+                    let _ = stdout.write_all(request.as_bytes());
+                    let _ = stdout.flush();
                 }
                 ServerMessage::ReloadSoundConfig => {
                     reload_local_client_config(
@@ -1301,6 +1360,23 @@ fn init_logging() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn black_box_pop_out_sequence_sets_every_termprop_then_raises_open() {
+        let sequence = black_box_pop_out_sequence("term_abc1", "Joseph", 3, 4, 50, 20);
+        assert_eq!(
+            sequence,
+            "\x1b]666;vte.ext.blackbox.pop-out.terminal-id=term_abc1;\
+             vte.ext.blackbox.pop-out.title=Joseph;vte.ext.blackbox.pop-out.column=3;\
+             vte.ext.blackbox.pop-out.row=4;vte.ext.blackbox.pop-out.columns=50;\
+             vte.ext.blackbox.pop-out.rows=20;vte.ext.blackbox.pop-out.open!\x1b\\"
+        );
+    }
+
+    #[test]
+    fn termprop_strings_escape_separators_and_drop_controls() {
+        assert_eq!(escape_termprop_string("a;b\\c\x07d"), "a\\sb\\\\cd");
+    }
     use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
 

@@ -885,8 +885,21 @@ pub struct PaneTitleHitArea {
     pub rect: Rect,
 }
 
+/// One pane to open in its own window, over the cells it occupies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanePopOutRequest {
+    /// Public id of the pane's terminal.
+    pub terminal_id: String,
+    /// The pane's name as its title shows it.
+    pub title: String,
+    /// The pane's outer rect, border included, in client screen cells.
+    pub rect: Rect,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PaneChromeAction {
+    /// Open the pane in its own window in the host terminal.
+    PopOut,
     Focus,
     Close,
     /// The finished agent's dot or check on the title: turns one into the other.
@@ -1806,6 +1819,12 @@ pub struct AppState {
         std::collections::HashMap<PaneId, crate::workspace::WorkspaceGitStatusSnapshot>,
     /// Terminal ids whose size is currently owned by a direct attach client.
     pub direct_attach_resize_locks: std::collections::HashSet<crate::terminal::TerminalId>,
+    /// Whether the terminal the foreground client runs in can open a pane in
+    /// its own window. Pane titles show a POP control only while this holds.
+    pub host_pops_out_panes: bool,
+    /// A pane the person asked to pop out, waiting for the server to send it
+    /// to the client that asked.
+    pub pending_pane_pop_out: Option<PanePopOutRequest>,
     pub(crate) pane_id_aliases: std::collections::HashMap<u32, PaneId>,
     pub workspaces: Vec<Workspace>,
     pub active: Option<usize>,
@@ -2301,6 +2320,8 @@ impl AppState {
             detached_agents: Vec::new(),
             detached_git_statuses: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
+            host_pops_out_panes: false,
+            pending_pane_pop_out: None,
             pane_id_aliases: std::collections::HashMap::new(),
             workspaces: Vec::new(),
             active: None,

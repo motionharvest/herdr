@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -82,6 +82,10 @@ pub enum ClientMessage {
         keybindings: ClientKeybindings,
         /// Whether this connection will render the full app or attach directly to a pane terminal.
         launch_mode: ClientLaunchMode,
+        /// The client's `TERM_PROGRAM`: the terminal emulator the client runs
+        /// in, when it says. The server offers features that depend on that
+        /// terminal, such as popping a pane out into a Black Box window.
+        host_terminal_program: Option<String>,
     },
 
     /// Raw input bytes read from the client's stdin.
@@ -389,6 +393,24 @@ pub enum ServerMessage {
         /// True when Herdr mouse UI is enabled or the focused pane app requests mouse reporting.
         enabled: bool,
     },
+
+    /// Ask the client's host terminal to open one pane in its own window,
+    /// over the cells the pane occupies. Sent only to a client whose host
+    /// terminal can do it.
+    PopOutPane {
+        /// Public id of the pane's terminal, for `herdr terminal attach`.
+        terminal_id: String,
+        /// The pane's name, used as the window title.
+        title: String,
+        /// Leftmost column of the pane, counted from 0 in the client's screen.
+        column: u16,
+        /// Top row of the pane, counted from 0 in the client's screen.
+        row: u16,
+        /// Width of the pane in columns.
+        columns: u16,
+        /// Height of the pane in rows.
+        rows: u16,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -663,6 +685,7 @@ mod tests {
             requested_encoding: RenderEncoding::SemanticFrame,
             keybindings: ClientKeybindings::Server,
             launch_mode: ClientLaunchMode::App,
+            host_terminal_program: None,
         };
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ClientMessage, _) =
@@ -965,6 +988,7 @@ mod tests {
             requested_encoding: RenderEncoding::SemanticFrame,
             keybindings: ClientKeybindings::Server,
             launch_mode: ClientLaunchMode::App,
+            host_terminal_program: None,
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).unwrap();
@@ -1039,6 +1063,7 @@ mod tests {
                     requested_encoding: RenderEncoding::SemanticFrame,
                     keybindings: ClientKeybindings::Server,
                     launch_mode: ClientLaunchMode::App,
+                    host_terminal_program: None,
                 },
                 1 => ClientMessage::Input {
                     data: vec![(i % 256) as u8; (i as usize % 50) + 1],
@@ -1475,6 +1500,7 @@ mod tests {
             requested_encoding: RenderEncoding::SemanticFrame,
             keybindings: ClientKeybindings::Server,
             launch_mode: ClientLaunchMode::App,
+            host_terminal_program: None,
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).unwrap();
@@ -1510,6 +1536,7 @@ mod tests {
                 requested_encoding: RenderEncoding::SemanticFrame,
                 keybindings: ClientKeybindings::Server,
                 launch_mode: ClientLaunchMode::App,
+                host_terminal_program: None,
             },
             ClientMessage::Input {
                 data: b"hello world".to_vec(),

@@ -58,6 +58,8 @@ pub(crate) enum ServerEvent {
         render_encoding: RenderEncoding,
         keybindings: Option<Box<crate::config::LiveKeybindConfig>>,
         direct_attach_requested: bool,
+        /// The client's `TERM_PROGRAM`, from its Hello.
+        host_terminal_program: Option<String>,
         writer: ClientWriter,
     },
     /// A client sent an input message.
@@ -168,6 +170,7 @@ pub(crate) fn handle_client_handshake(
         render_encoding,
         keybindings,
         direct_attach_requested,
+        host_terminal_program,
     ) = match hello {
         ClientMessage::Hello {
             version,
@@ -178,6 +181,7 @@ pub(crate) fn handle_client_handshake(
             requested_encoding,
             keybindings,
             launch_mode,
+            host_terminal_program,
         } => {
             // Version check.
             match protocol::check_client_version(version) {
@@ -217,6 +221,7 @@ pub(crate) fn handle_client_handshake(
                 requested_encoding,
                 keybindings,
                 launch_mode == ClientLaunchMode::TerminalAttach,
+                host_terminal_program,
             )
         }
         _ => {
@@ -261,6 +266,7 @@ pub(crate) fn handle_client_handshake(
         render_encoding,
         keybindings,
         direct_attach_requested,
+        host_terminal_program,
         writer,
     });
 
@@ -539,6 +545,7 @@ mod tests {
                 requested_encoding: RenderEncoding::TerminalAnsi,
                 keybindings: ClientKeybindings::Server,
                 launch_mode: ClientLaunchMode::App,
+                host_terminal_program: Some("BlackBox".to_owned()),
             },
         )
         .expect("write hello");
@@ -571,9 +578,11 @@ mod tests {
                 render_encoding,
                 keybindings,
                 direct_attach_requested,
+                host_terminal_program,
                 writer,
             } => {
                 assert_eq!(client_id, 42);
+                assert_eq!(host_terminal_program.as_deref(), Some("BlackBox"));
                 assert_eq!((cols, rows), (100, 30));
                 assert_eq!((cell_width_px, cell_height_px), (8, 16));
                 assert_eq!(render_encoding, RenderEncoding::TerminalAnsi);
@@ -613,6 +622,7 @@ mod tests {
                 requested_encoding: RenderEncoding::TerminalAnsi,
                 keybindings: ClientKeybindings::Server,
                 launch_mode: ClientLaunchMode::TerminalAttach,
+                host_terminal_program: None,
             },
         )
         .expect("write hello");

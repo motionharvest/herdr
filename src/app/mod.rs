@@ -424,6 +424,8 @@ impl App {
             detached_agents: restored_detached_agents,
             detached_git_statuses: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
+            host_pops_out_panes: false,
+            pending_pane_pop_out: None,
             pane_id_aliases: std::collections::HashMap::new(),
             workspaces,
             active,

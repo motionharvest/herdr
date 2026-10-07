@@ -49,6 +49,8 @@ pub(crate) struct ClientConnection {
     pub(crate) render_pending: bool,
     /// Last host mouse capture mode sent to this client.
     pub(crate) host_mouse_capture_active: Option<bool>,
+    /// The client's `TERM_PROGRAM`: the terminal emulator it runs in.
+    pub(crate) host_terminal_program: Option<String>,
     /// Temporary files staged from this client's local clipboard image pastes.
     pub(crate) staged_clipboard_files: Vec<PathBuf>,
     /// Channels for sending framed ServerMessage data to the client writer thread.
@@ -107,6 +109,7 @@ impl ClientConnection {
             graphics_surface_reset_pending: false,
             render_pending: false,
             host_mouse_capture_active: None,
+            host_terminal_program: None,
             staged_clipboard_files: Vec::new(),
             writer,
         }

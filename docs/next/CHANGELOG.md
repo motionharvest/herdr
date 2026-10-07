@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- In Black Box, a pane title shows `⧉ POP` to the left of `⛶ FOCUS`. Clicking it opens the pane in its own Black Box window that stays above other windows and sits exactly over the pane: same position on screen, same width and height. The window is a direct attach to the pane's terminal, so closing it returns the pane to the layout at its usual size. The client tells the server which terminal it runs in when it connects, from `TERM_PROGRAM`, and POP appears only for a client running in Black Box. The window is opened through Black Box's `vte.ext.blackbox.pop-out` terminal properties, which carry the pane's terminal id and cells, never a command. This changes the client protocol, so the client and server must both be updated.
+
 ## [0.14.0] - 2026-10-04
 
 ### Added
