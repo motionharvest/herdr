@@ -23,6 +23,7 @@ mod agent_resume;
 mod agent_summary;
 mod api;
 mod app;
+mod black_box;
 mod build_info;
 mod checksum;
 mod cli;

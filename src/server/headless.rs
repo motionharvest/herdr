@@ -77,15 +77,11 @@ enum LoopEvent {
     RenderRequested,
 }
 
-/// `TERM_PROGRAM` of Black Box, the host terminal that opens a pane in its
-/// own window when a client asks.
-const BLACK_BOX_TERM_PROGRAM: &str = "BlackBox";
-
 /// Whether this client draws the app inside a terminal that can open a pane
 /// in its own window. A direct terminal attach draws no pane titles.
 fn client_host_pops_out_panes(client: &ClientConnection) -> bool {
     matches!(client.mode, ClientConnectionMode::App)
-        && client.host_terminal_program.as_deref() == Some(BLACK_BOX_TERM_PROGRAM)
+        && client.host_terminal_program.as_deref() == Some(crate::black_box::TERM_PROGRAM)
 }
 
 fn rect_fits_frame(rect: Rect, frame: &FrameData) -> bool {
