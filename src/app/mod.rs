@@ -150,6 +150,10 @@ pub struct App {
     pub(crate) agent_model_cache:
         HashMap<crate::terminal::TerminalId, crate::agent_model::AgentModelCacheEntry>,
     pub(crate) last_pane_click: Option<PaneClickState>,
+    /// True from a Ctrl+click press that opened a URL until its release. The
+    /// drag and release of that click belong to the URL click, so they are
+    /// not forwarded to the pane, whose program would open the URL again.
+    pub(crate) url_click_in_progress: bool,
     pub(crate) last_agent_name_click: Option<AgentNameClickState>,
     pub(crate) last_tab_click: Option<TabClickState>,
     pub(crate) next_resize_poll: Instant,
@@ -639,6 +643,7 @@ impl App {
             summary_refresh_in_flight: HashSet::new(),
             agent_model_cache: HashMap::new(),
             last_pane_click: None,
+            url_click_in_progress: false,
             last_agent_name_click: None,
             last_tab_click: None,
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,

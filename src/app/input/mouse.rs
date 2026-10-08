@@ -2717,6 +2717,22 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
     use ratatui::layout::{Direction, Rect};
 
+    #[test]
+    fn the_drag_and_release_of_a_url_click_do_not_reach_the_pane() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let event = |kind| super::super::mouse(kind, 5, 5);
+        let mut app = app_for_mouse_test();
+        app.url_click_in_progress = true;
+
+        assert!(app.handle_modified_url_click(event(MouseEventKind::Drag(MouseButton::Left))));
+        assert!(app.handle_modified_url_click(event(MouseEventKind::Up(MouseButton::Left))));
+        assert!(!app.url_click_in_progress);
+        assert!(
+            !app.handle_modified_url_click(event(MouseEventKind::Up(MouseButton::Left))),
+            "a later release is an ordinary one again"
+        );
+    }
+
     use super::super::{
         app_for_mouse_test, capture_snapshot, handle_context_menu_key, mouse, numbered_lines_bytes,
         root_layout_ratio,

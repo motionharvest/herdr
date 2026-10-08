@@ -562,6 +562,17 @@ impl App {
     }
 
     fn handle_modified_url_click(&mut self, mouse: MouseEvent) -> bool {
+        if self.url_click_in_progress {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => return true,
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.url_click_in_progress = false;
+                    return true;
+                }
+                _ => self.url_click_in_progress = false,
+            }
+        }
+
         if self.state.mode != Mode::Terminal
             || !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             || !mouse.modifiers.contains(KeyModifiers::CONTROL)
@@ -582,6 +593,7 @@ impl App {
         };
 
         self.last_pane_click = None;
+        self.url_click_in_progress = true;
         if let Err(err) = crate::platform::open_url(&url) {
             tracing::warn!(err = %err, url = %url, "failed to open pane URL");
         }
