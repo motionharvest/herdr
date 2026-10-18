@@ -299,8 +299,8 @@ impl Workspace {
     pub fn active_tab_mut(&mut self) -> Option<&mut Tab> {
         self.tabs.get_mut(self.active_tab)
     }
-    /// Switching to a tab shows its agents; it does not acknowledge them. The
-    /// done marker toggles when it is clicked, and nowhere else.
+    /// Switching tabs changes layout focus only. AppState applies the optional
+    /// acknowledge-on-focus preference at the end of a navigation action.
     pub fn switch_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.active_tab = idx;

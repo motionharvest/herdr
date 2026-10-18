@@ -566,6 +566,16 @@ fn pane_status_mark(
             land_failed: docked && app.landing_failures.contains_key(&ws.id),
         },
     )?;
+    let pending_completion = terminal.state == crate::detect::AgentState::Idle
+        && !pane.seen
+        && !(docked
+            && (app.landing_worktrees.contains(&ws.id)
+                || app.landing_failures.contains_key(&ws.id)));
+    let color = if pending_completion && !super::completion_blink_on(app.spinner_tick) {
+        mute_when_host_unfocused(app, app.palette.overlay0)
+    } else {
+        color
+    };
     Some(PaneStatusMark {
         glyph,
         color,
@@ -2099,6 +2109,52 @@ mod tests {
             pane_chrome_title_for_pane(&app, &app.workspaces[0], pane_id).formatted_title(),
             "Olivia@king"
         );
+    }
+
+    #[test]
+    fn unconfirmed_pane_completion_blinks_without_losing_its_click_target() {
+        let (mut app, pane_id) = usage_app_with_agent(Some(crate::detect::Agent::Codex));
+        app.active = Some(0);
+        let terminal_id = app.workspaces[0]
+            .pane_state(pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().state = crate::detect::AgentState::Idle;
+        let pane = app.workspaces[0].pane_state_mut(pane_id).unwrap();
+        pane.seen = false;
+        pane.completed = true;
+        for tick in [0, 4, 8, 12] {
+            app.spinner_tick = tick;
+            let mark = pane_status_mark(
+                &app,
+                &app.workspaces[0],
+                pane_id,
+                app.terminals.get(&terminal_id),
+            )
+            .unwrap();
+            assert_eq!(mark.glyph, "●");
+            assert!(mark.clickable);
+            let expected = if super::super::completion_blink_on(tick) {
+                app.palette.green
+            } else {
+                app.palette.overlay0
+            };
+            assert_eq!(mark.color, expected);
+        }
+        assert!(app.toggle_agent_completion_acknowledgement(pane_id));
+        for tick in [0, 4] {
+            app.spinner_tick = tick;
+            let mark = pane_status_mark(
+                &app,
+                &app.workspaces[0],
+                pane_id,
+                app.terminals.get(&terminal_id),
+            )
+            .unwrap();
+            assert_eq!(mark.glyph, "✓");
+            assert_eq!(mark.color, app.palette.green);
+        }
     }
 
     fn usage_app_with_agent(

@@ -1409,7 +1409,7 @@ fn status_commands_report_client_and_server_versions() {
         "stdout: {full_stdout}"
     );
     assert!(
-        full_stdout.contains("  protocol: 12"),
+        full_stdout.contains("  protocol: 13"),
         "stdout: {full_stdout}"
     );
     assert!(full_stdout.contains("server:\n"), "stdout: {full_stdout}");
@@ -1442,7 +1442,7 @@ fn status_commands_report_client_and_server_versions() {
         "stdout: {server_stdout}"
     );
     assert!(
-        server_stdout.contains("protocol: 12"),
+        server_stdout.contains("protocol: 13"),
         "stdout: {server_stdout}"
     );
 
@@ -1454,7 +1454,7 @@ fn status_commands_report_client_and_server_versions() {
         "stdout: {client_stdout}"
     );
     assert!(
-        client_stdout.contains("protocol: 12"),
+        client_stdout.contains("protocol: 13"),
         "stdout: {client_stdout}"
     );
     assert!(
@@ -1464,7 +1464,7 @@ fn status_commands_report_client_and_server_versions() {
 
     let full_json = run_cli_json(&socket_path, &["status", "--json"]);
     assert_eq!(full_json["client"]["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(full_json["client"]["protocol"], 12);
+    assert_eq!(full_json["client"]["protocol"], 13);
     assert_eq!(full_json["server"]["status"], "running");
     assert_eq!(full_json["server"]["running"], true);
     assert_eq!(full_json["server"]["compatible"], true);
@@ -1478,12 +1478,12 @@ fn status_commands_report_client_and_server_versions() {
     let server_json = run_cli_json(&socket_path, &["status", "server", "--json"]);
     assert_eq!(server_json["status"], "running");
     assert_eq!(server_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(server_json["protocol"], 12);
+    assert_eq!(server_json["protocol"], 13);
     assert_eq!(server_json["compatible"], true);
 
     let client_json = run_cli_json(&socket_path, &["status", "client", "--json"]);
     assert_eq!(client_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(client_json["protocol"], 12);
+    assert_eq!(client_json["protocol"], 13);
     assert!(client_json["binary"]
         .as_str()
         .is_some_and(|path| !path.is_empty()));
@@ -2851,7 +2851,7 @@ fn pane_shell_gets_herdr_socket_and_pane_env() {
 }
 
 #[test]
-fn wait_agent_status_exits_when_idle_status_matches() {
+fn wait_agent_status_exits_when_a_finish_reports_done() {
     let base = unique_test_dir();
     let config_home = base.join("config");
     let runtime_dir = base.join("runtime");
@@ -2903,7 +2903,7 @@ fn wait_agent_status_exits_when_idle_status_matches() {
             "agent-status",
             "1-1",
             "--status",
-            "idle",
+            "done",
             "--timeout",
             "5000",
         ],
@@ -2915,7 +2915,7 @@ fn wait_agent_status_exits_when_idle_status_matches() {
     );
     let waited_json: serde_json::Value = serde_json::from_slice(&waited.stdout).unwrap();
     assert_eq!(waited_json["event"], "pane.agent_status_changed");
-    assert_eq!(waited_json["data"]["agent_status"], "idle");
+    assert_eq!(waited_json["data"]["agent_status"], "done");
     assert_eq!(waited_json["data"]["agent"], "pi");
 
     cleanup_spawned_herdr(herdr, base);

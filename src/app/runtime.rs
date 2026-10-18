@@ -399,24 +399,24 @@ impl App {
         })
     }
 
-    /// Whether anything in the table is animating, which is what keeps the
-    /// frame ticking. Only a working agent animates: the done and blocked
-    /// markers are still glyphs, and the done marker now waits to be clicked,
-    /// so counting it here would leave the frame clock running for as long as
-    /// the marker sat there. Every space is asked, because the table lists them
-    /// all, and so is every set-down agent: a row spins whether or not a pane
-    /// is showing that agent.
+    /// Working agents and unconfirmed completions keep status animations ticking,
+    /// including the focused pane and set-down agents shown in a peek.
     fn agent_panel_has_animation(&self) -> bool {
-        self.state
-            .workspaces
-            .iter()
-            .any(|ws| ws.has_working_pane(&self.state.terminals))
-            || self.state.detached_agents.iter().any(|detached| {
-                self.state
-                    .terminals
-                    .get(&detached.pane.attached_terminal_id)
-                    .is_some_and(|terminal| terminal.state == AgentState::Working)
-            })
+        self.state.workspaces.iter().any(|ws| {
+            ws.has_working_pane(&self.state.terminals)
+                || ws
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.has_unseen_idle_pane(&self.state.terminals))
+        }) || self.state.detached_agents.iter().any(|agent| {
+            self.state
+                .terminals
+                .get(&agent.pane.attached_terminal_id)
+                .is_some_and(|terminal| {
+                    terminal.state == AgentState::Working
+                        || (terminal.state == AgentState::Idle && !agent.pane.seen)
+                })
+        })
     }
 
     pub(crate) fn tick_selection_autoscroll(&mut self, now: Instant) {
@@ -1721,6 +1721,42 @@ mod tests {
         app.sync_animation_timer(Instant::now());
 
         assert!(app.next_animation_tick.is_some());
+    }
+
+    #[test]
+    fn pending_completion_keeps_animation_ticking_until_acknowledged() {
+        let (mut app, pane_id) = test_app_with_pane();
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        app.state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Idle;
+        app.state.workspaces[0]
+            .pane_state_mut(pane_id)
+            .unwrap()
+            .seen = false;
+        let now = Instant::now();
+        app.sync_animation_timer(now);
+        assert_eq!(app.next_animation_tick, Some(now + ANIMATION_INTERVAL));
+        assert!(app.state.toggle_agent_completion_acknowledgement(pane_id));
+        app.sync_animation_timer(now);
+        assert!(app.next_animation_tick.is_none());
+    }
+
+    #[test]
+    fn pending_detached_completion_keeps_animation_ticking() {
+        let (mut app, _) = test_app_with_pane();
+        app.state.workspaces.clear();
+        app.state.active = None;
+        push_detached_agent(&mut app, AgentState::Idle, false);
+        let now = Instant::now();
+        app.sync_headless_animation_timer(now);
+        assert_eq!(
+            app.next_animation_tick,
+            Some(now + crate::app::HEADLESS_ANIMATION_INTERVAL)
+        );
     }
 
     #[test]

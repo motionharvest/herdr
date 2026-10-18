@@ -285,6 +285,30 @@ pub fn named(name: &str) -> Option<&'static Harness> {
         })
 }
 
+/// The Claude Code row, with a stand-in `claude` first on `PATH`, for tests.
+///
+/// Tests that start an agent or list what is installed would otherwise depend
+/// on whether Claude Code is installed on the machine running them, and CI
+/// does not have it. The stand-in only waits, which is all a test asks of an
+/// agent. It is put on the path once per test process.
+#[cfg(all(test, unix))]
+pub fn stand_in_claude_code() -> &'static Harness {
+    static STAND_IN: std::sync::Once = std::sync::Once::new();
+    STAND_IN.call_once(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = std::env::temp_dir().join(format!("herdr-test-claude-{}", std::process::id()));
+        std::fs::create_dir_all(&bin).unwrap();
+        let claude = bin.join("claude");
+        std::fs::write(&claude, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let joined =
+            std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))).unwrap();
+        std::env::set_var("PATH", joined);
+    });
+    named("Claude Code").unwrap()
+}
+
 /// Whether a program is somewhere on `PATH`. Asked of the path rather than by
 /// running anything: a harness that is installed but broken is still a harness
 /// worth offering, and the way to find that out is to start it.

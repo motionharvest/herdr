@@ -316,7 +316,7 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
         }
         let active = idx == ws.active_tab;
         let needs_attention = !active && tab.has_unseen_idle_pane(&app.terminals);
-        let blink_on = (app.spinner_tick / 4).is_multiple_of(2);
+        let blink_on = super::completion_blink_on(app.spinner_tick);
         let style = if needs_attention && blink_on {
             Style::default()
                 .fg(panel_contrast_fg(p))

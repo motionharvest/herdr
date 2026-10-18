@@ -884,11 +884,15 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
+        // macOS reaches the temp directory through a symlink, so `pwd` can
+        // print the resolved path; compare the folders, not their spellings.
         assert_eq!(
-            std::fs::read_to_string(&proof)
-                .expect("the command should write its working directory")
-                .trim(),
-            cwd.to_string_lossy()
+            crate::worktree::canonical_or_original(std::path::Path::new(
+                std::fs::read_to_string(&proof)
+                    .expect("the command should write its working directory")
+                    .trim()
+            )),
+            crate::worktree::canonical_or_original(&cwd)
         );
         let terminal_id = app.state.detached_agents[0]
             .pane
@@ -1152,7 +1156,7 @@ mod tests {
         let workspaces_before = app.state.workspaces.len();
         app.submit_composer(crate::composer::Pending {
             cwd: checkout.clone(),
-            harness: crate::harness::named("Claude Code").unwrap(),
+            harness: crate::harness::stand_in_claude_code(),
             task: "run the tests".into(),
             worktree: true,
         });
@@ -1163,6 +1167,8 @@ mod tests {
         let workspaces_after = app.state.workspaces.len();
         let started_cwd = started_agent_cwd(&app);
         let toast = app.state.toast.clone();
+        // Resolved before cleanup: a deleted folder no longer resolves.
+        let expected_cwd = Some(crate::worktree::canonical_or_original(&checkout));
 
         shutdown_started_runtimes(&mut app);
         let _ = crate::worktree::remove_worktree_and_branch(&repo, &checkout, true);
@@ -1170,10 +1176,7 @@ mod tests {
 
         assert_eq!(worktrees_after, worktrees_before);
         assert_eq!(workspaces_after, workspaces_before);
-        assert_eq!(
-            started_cwd,
-            Some(crate::worktree::canonical_or_original(&checkout))
-        );
+        assert_eq!(started_cwd, expected_cwd);
         assert!(
             toast.is_some_and(|toast| toast.kind == crate::app::state::ToastKind::Finished),
             "the composer should start in the current worktree"
@@ -1190,7 +1193,7 @@ mod tests {
         let mut app = test_app();
         app.submit_composer(crate::composer::Pending {
             cwd: repo.clone(),
-            harness: crate::harness::named("Claude Code").unwrap(),
+            harness: crate::harness::stand_in_claude_code(),
             task: "run the tests".into(),
             worktree: false,
         });
@@ -1199,14 +1202,12 @@ mod tests {
             .unwrap()
             .len();
         let started_cwd = started_agent_cwd(&app);
+        let expected_cwd = Some(crate::worktree::canonical_or_original(&repo));
         shutdown_started_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&repo);
 
         assert_eq!(worktrees_after, worktrees_before);
-        assert_eq!(
-            started_cwd,
-            Some(crate::worktree::canonical_or_original(&repo))
-        );
+        assert_eq!(started_cwd, expected_cwd);
     }
 
     #[tokio::test]
@@ -1219,7 +1220,7 @@ mod tests {
         let mut app = test_app();
         app.submit_composer(crate::composer::Pending {
             cwd: repo.clone(),
-            harness: crate::harness::named("Claude Code").unwrap(),
+            harness: crate::harness::stand_in_claude_code(),
             task: "run the tests".into(),
             worktree: true,
         });
@@ -1232,6 +1233,9 @@ mod tests {
             .collect();
         let started_cwd = started_agent_cwd(&app);
 
+        let expected_cwd = created
+            .first()
+            .map(|worktree| crate::worktree::canonical_or_original(&worktree.path));
         shutdown_started_runtimes(&mut app);
         for worktree in &created {
             let _ = crate::worktree::remove_worktree_and_branch(&repo, &worktree.path, true);
@@ -1240,10 +1244,7 @@ mod tests {
 
         assert_eq!(listed.len(), worktrees_before + 1);
         assert_eq!(created.len(), 1);
-        assert_eq!(
-            started_cwd,
-            Some(crate::worktree::canonical_or_original(&created[0].path))
-        );
+        assert_eq!(started_cwd, expected_cwd);
     }
 
     fn started_agent_cwd(app: &App) -> Option<std::path::PathBuf> {
@@ -1275,7 +1276,7 @@ mod tests {
 
         app.submit_composer(crate::composer::Pending {
             cwd: repo.clone(),
-            harness: crate::harness::named("Claude Code").unwrap(),
+            harness: crate::harness::stand_in_claude_code(),
             task: "run the tests".into(),
             worktree: true,
         });
@@ -1303,6 +1304,9 @@ mod tests {
             .map(|workspace| workspace.id.clone());
         let pane_count = app.state.workspaces[0].layout.pane_count();
         let workspace_count = app.state.workspaces.len();
+        let expected_cwd = created
+            .first()
+            .map(|worktree| crate::worktree::canonical_or_original(&worktree.path));
 
         shutdown_started_runtimes(&mut app);
         for worktree in &created {
@@ -1317,13 +1321,7 @@ mod tests {
         assert_eq!(workspace_count, workspaces_before);
         assert!(still_hidden);
         assert!(peeked.is_some());
-        assert_eq!(
-            started_cwd.as_ref(),
-            created
-                .first()
-                .map(|worktree| crate::worktree::canonical_or_original(&worktree.path))
-                .as_ref()
-        );
+        assert_eq!(started_cwd, expected_cwd);
         assert_eq!(created.len(), 1);
     }
 
@@ -1336,7 +1334,7 @@ mod tests {
 
         app.submit_composer(crate::composer::Pending {
             cwd: repo.clone(),
-            harness: crate::harness::named("Claude Code").unwrap(),
+            harness: crate::harness::stand_in_claude_code(),
             task: "run the tests".into(),
             worktree: false,
         });
@@ -1353,6 +1351,7 @@ mod tests {
             .find_pane(focused)
             .and_then(|(_, pane)| app.state.terminals.get(&pane.attached_terminal_id))
             .map(|terminal| crate::worktree::canonical_or_original(&terminal.cwd));
+        let expected_cwd = Some(crate::worktree::canonical_or_original(&repo));
 
         shutdown_started_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&repo);
@@ -1361,9 +1360,6 @@ mod tests {
         assert_ne!(focused, original_pane);
         assert!(focused_in_layout);
         assert!(!still_detached);
-        assert_eq!(
-            started_cwd,
-            Some(crate::worktree::canonical_or_original(&repo))
-        );
+        assert_eq!(started_cwd, expected_cwd);
     }
 }

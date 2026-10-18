@@ -391,6 +391,8 @@ pub struct UiConfig {
     pub confirm_close: bool,
     /// Ask for a tab name before creating a new tab. Default: true.
     pub prompt_new_tab_name: bool,
+    /// Acknowledge a finished agent when its pane is focused. Default: false.
+    pub acknowledge_on_pane_focus: bool,
     /// Start new tabs with their sidebar layout preview folded. Default: false.
     pub minimap_collapsed_by_default: bool,
     /// Use Nerd Font glyphs in optional UI chrome. Default: false.
@@ -643,6 +645,7 @@ impl Default for UiConfig {
             mouse_scroll_lines: None,
             confirm_close: true,
             prompt_new_tab_name: true,
+            acknowledge_on_pane_focus: false,
             minimap_collapsed_by_default: false,
             nerd_font: false,
             show_agent_labels_on_pane_borders: true,
@@ -1120,6 +1123,17 @@ directory = "~/Projects/herdr-worktrees"
             ))
             .unwrap();
             assert_eq!(config.ui.minimap_collapsed_by_default, collapsed);
+        }
+    }
+
+    #[test]
+    fn acknowledge_on_pane_focus_defaults_off_and_parses() {
+        let absent: Config = toml::from_str("[ui]\nprompt_new_tab_name = false").unwrap();
+        assert!(!absent.ui.acknowledge_on_pane_focus);
+        for enabled in [false, true] {
+            let config: Config =
+                toml::from_str(&format!("[ui]\nacknowledge_on_pane_focus = {enabled}")).unwrap();
+            assert_eq!(config.ui.acknowledge_on_pane_focus, enabled);
         }
     }
 

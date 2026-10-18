@@ -3417,6 +3417,10 @@ mod tests {
                 .as_nanos()
         );
         let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).unwrap();
+        // The live cwd comes back resolved, and macOS reaches its temp dir
+        // through a symlink, so build the expected paths from the real one.
+        let root = root.canonicalize().unwrap();
         let stale_cwd = root.join("issue-264-nix-support");
         let live_cwd = root.join("herdr");
         std::fs::create_dir_all(stale_cwd.join(".git")).unwrap();

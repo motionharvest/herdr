@@ -162,6 +162,14 @@ impl App {
         }
     }
 
+    pub(super) fn save_acknowledge_on_pane_focus(&mut self, enabled: bool) {
+        if self.update_config_file("acknowledge completion on pane focus", |content| {
+            crate::config::upsert_section_bool(content, "ui", "acknowledge_on_pane_focus", enabled)
+        }) {
+            self.apply_config_from_disk(false);
+        }
+    }
+
     pub(super) fn save_commander_key(&mut self, combo: &str) {
         if self.update_config_file("commander hotkey", |content| {
             crate::config::upsert_section_value(

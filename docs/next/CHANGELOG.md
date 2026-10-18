@@ -2,11 +2,15 @@
 
 ## Unreleased
 
+### Changed
+- A finished agent's dot in its pane header blinks until its completion is acknowledged, using the same rhythm as an inactive tab's attention indicator. It used to stay solid even while waiting for acknowledgement. Pending completions keep the animation clock running without another agent working.
+
 ### Fixed
 - Ctrl+clicking a URL in a pane opens it once from herdr. The release of that click used to reach the pane, so a program in the pane that opens links on click, such as Claude Code, opened the same URL a second time.
 - In Black Box, a Ctrl+clicked URL also stopped opening a third time from Black Box itself. herdr sets Black Box's `vte.ext.blackbox.app-opens-links` terminal property while it runs and clears it on exit, and Black Box leaves Ctrl+clicked links to herdr while it is set.
 
 ### Added
+- `[ui] acknowledge_on_pane_focus = true` confirms a finished agent when its pane is clicked or focused. The default is `false`, preserving manual confirmation. Settings → experiments toggles the same preference as `acknowledge completion on pane focus`. Focusing one pane leaves other agents' pending completions alone, and repeated focus never undoes a confirmation.
 - `[ui] minimap_collapsed_by_default = true` starts new tabs with their sidebar layout previews folded, including the first tab of a new space. Previews used to always start open. Each tab can still be unfolded with its arrow, and restored tabs keep their saved choice.
 - In Black Box, a pane title shows `⧉ POP` to the left of `⛶ FOCUS`. Clicking it opens the pane in its own Black Box window that stays above other windows and sits exactly over the pane: same position on screen, same width and height. The window is a direct attach to the pane's terminal, so closing it returns the pane to the layout at its usual size. The client tells the server which terminal it runs in when it connects, from `TERM_PROGRAM`, and POP appears only for a client running in Black Box. The window is opened through Black Box's `vte.ext.blackbox.pop-out` terminal properties, which carry the pane's terminal id and cells, never a command. This changes the client protocol, so the client and server must both be updated.
 

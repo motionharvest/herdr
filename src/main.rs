@@ -243,6 +243,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Set false to create tabs immediately with generated names.
 # prompt_new_tab_name = true
 
+# Confirm a finished agent when its pane is clicked or focused.
+# Only the focused pane is confirmed. Off keeps confirmation manual.
+# Also available in Settings → experiments.
+# acknowledge_on_pane_focus = false
+
 # Start new tabs with their sidebar layout previews folded away.
 # Restored tabs keep their saved choice; reloading affects future tabs only.
 # minimap_collapsed_by_default = false
@@ -256,7 +261,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Fields on each pane's top edge. Status and name are on; the rest are off,
 # matching the current name-only titles. Turn them on from Settings → pane
 # labels, or here. Status is the agent's mark before its name: a spinner while
-# it works, a dot once it finishes, which a click turns into a check.
+# it works, a blinking dot once it finishes, which a click turns into a steady check.
+# The pending dot blinks even in the focused pane, in sync with tab attention.
 # usage is off until you set it true.
 # [ui.pane_header]
 # status = true
@@ -793,6 +799,18 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_config_documents_acknowledge_on_pane_focus_in_the_ui_section() {
+        let default: config::Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert!(!default.ui.acknowledge_on_pane_focus);
+        let enabled = DEFAULT_CONFIG.replace(
+            "# acknowledge_on_pane_focus = false",
+            "acknowledge_on_pane_focus = true",
+        );
+        let configured: config::Config = toml::from_str(&enabled).unwrap();
+        assert!(configured.ui.acknowledge_on_pane_focus);
+    }
 
     #[test]
     fn nested_herdr_blocks_when_env_is_set() {

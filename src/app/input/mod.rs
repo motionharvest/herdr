@@ -400,6 +400,9 @@ impl App {
                     SettingsAction::SaveHideAttachedAgents(enabled) => {
                         self.save_hide_attached_agents(enabled)
                     }
+                    SettingsAction::SaveAcknowledgeOnPaneFocus(enabled) => {
+                        self.save_acknowledge_on_pane_focus(enabled)
+                    }
                     SettingsAction::SaveCommanderKey(combo) => self.save_commander_key(&combo),
                     SettingsAction::SaveJevApiKey(key) => self.save_jev_api_key(&key),
                     SettingsAction::InstallRecommendedIntegrations => {

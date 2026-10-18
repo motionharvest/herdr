@@ -65,6 +65,7 @@ pub(super) enum SettingsAction {
     SaveSwitchAsciiInputSourceInPrefix(bool),
     SaveRefreshSummaryWithGrok(bool),
     SaveHideAttachedAgents(bool),
+    SaveAcknowledgeOnPaneFocus(bool),
     /// The Commander's hotkey, written the way the config file writes keys.
     SaveCommanderKey(String),
     /// The TypeSafe key Jev is reached with; empty removes it.
@@ -105,6 +106,11 @@ fn experiment_toggle_action(state: &AppState, idx: usize) -> Option<SettingsActi
         ExperimentSetting::RefreshSummaryWithGrok => {
             Some(SettingsAction::SaveRefreshSummaryWithGrok(
                 !ExperimentSetting::RefreshSummaryWithGrok.enabled(state),
+            ))
+        }
+        ExperimentSetting::AcknowledgeOnPaneFocus => {
+            Some(SettingsAction::SaveAcknowledgeOnPaneFocus(
+                !ExperimentSetting::AcknowledgeOnPaneFocus.enabled(state),
             ))
         }
         ExperimentSetting::HideAttachedAgents => Some(SettingsAction::SaveHideAttachedAgents(
@@ -164,6 +170,9 @@ impl App {
                 }
                 SettingsAction::SaveHideAttachedAgents(enabled) => {
                     self.save_hide_attached_agents(enabled)
+                }
+                SettingsAction::SaveAcknowledgeOnPaneFocus(enabled) => {
+                    self.save_acknowledge_on_pane_focus(enabled)
                 }
                 SettingsAction::SaveCommanderKey(combo) => self.save_commander_key(&combo),
                 SettingsAction::SaveJevApiKey(key) => self.save_jev_api_key(&key),
@@ -1076,19 +1085,17 @@ mod tests {
         state.refresh_summary_with_grok = false;
         open_settings_at(&mut state, SettingsSection::Experiments);
 
-        update_settings_state(
-            &mut state,
-            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
-        );
-        update_settings_state(
-            &mut state,
-            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
-        );
-        update_settings_state(
-            &mut state,
-            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
-        );
-        assert_eq!(state.settings.list.selected, 3);
+        let row = ExperimentSetting::ALL
+            .iter()
+            .position(|setting| *setting == ExperimentSetting::RefreshSummaryWithGrok)
+            .unwrap();
+        for _ in 0..row {
+            update_settings_state(
+                &mut state,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+            );
+        }
+        assert_eq!(state.settings.list.selected, row);
 
         let action = update_settings_state(
             &mut state,
@@ -1100,6 +1107,43 @@ mod tests {
             Some(SettingsAction::SaveRefreshSummaryWithGrok(true))
         );
         assert_eq!(state.mode, Mode::Settings);
+    }
+
+    #[test]
+    fn settings_experiments_toggles_acknowledge_on_pane_focus_by_keyboard_and_mouse() {
+        let row = ExperimentSetting::ALL
+            .iter()
+            .position(|setting| *setting == ExperimentSetting::AcknowledgeOnPaneFocus)
+            .unwrap();
+        for enabled in [false, true] {
+            let mut app = app_for_mouse_test();
+            app.state.acknowledge_on_pane_focus = enabled;
+            app.state.view.terminal_area = Rect::new(0, 0, 120, 40);
+            open_settings_at(&mut app.state, SettingsSection::Experiments);
+            for _ in 0..row {
+                update_settings_state(
+                    &mut app.state,
+                    KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+                );
+            }
+            assert_eq!(
+                update_settings_state(
+                    &mut app.state,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::empty())
+                ),
+                Some(SettingsAction::SaveAcknowledgeOnPaneFocus(!enabled))
+            );
+            let area = app.state.settings_content_rect();
+            let action = app.state.handle_settings_mouse(mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                area.x + 2,
+                area.y + crate::ui::EXPERIMENTS_CHECKBOX_ROWS_OFFSET + row as u16,
+            ));
+            assert_eq!(
+                action,
+                Some(SettingsAction::SaveAcknowledgeOnPaneFocus(!enabled))
+            );
+        }
     }
 
     #[test]
@@ -1128,19 +1172,17 @@ mod tests {
     fn settings_experiments_down_from_refresh_summary_edits_the_prompt() {
         let mut state = state_with_workspaces(&["test"]);
         open_settings_at(&mut state, SettingsSection::Experiments);
-        update_settings_state(
-            &mut state,
-            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
-        );
-        update_settings_state(
-            &mut state,
-            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
-        );
-        update_settings_state(
-            &mut state,
-            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
-        );
-        assert_eq!(state.settings.list.selected, 3);
+        let row = ExperimentSetting::ALL
+            .iter()
+            .position(|setting| *setting == ExperimentSetting::RefreshSummaryWithGrok)
+            .unwrap();
+        for _ in 0..row {
+            update_settings_state(
+                &mut state,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+            );
+        }
+        assert_eq!(state.settings.list.selected, row);
 
         update_settings_state(
             &mut state,

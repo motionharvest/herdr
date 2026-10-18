@@ -131,6 +131,11 @@ pub(super) fn spinner_frame(tick: u32) -> &'static str {
     SPINNERS[(elapsed / SPINNER_FRAME_MS) as usize % SPINNERS.len()]
 }
 
+/// Shared phase for pending-completion attention in tabs and pane headers.
+pub(super) fn completion_blink_on(tick: u32) -> bool {
+    (tick / 4).is_multiple_of(2)
+}
+
 /// Compute view geometry and reconcile pane sizes.
 /// Called before render to separate mutation from drawing.
 #[cfg_attr(not(test), allow(dead_code))]

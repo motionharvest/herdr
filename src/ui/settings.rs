@@ -839,6 +839,16 @@ mod tests {
     }
 
     #[test]
+    fn experiments_renders_acknowledge_on_pane_focus_with_its_live_checkmark() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Settings;
+        app.settings.section = SettingsSection::Experiments;
+        assert!(rendered_settings(&app).contains("acknowledge completion on pane focus [ ]"));
+        app.acknowledge_on_pane_focus = true;
+        assert!(rendered_settings(&app).contains("acknowledge completion on pane focus [✓]"));
+    }
+
+    #[test]
     fn experiments_renders_refresh_summary_with_grok_row() {
         let mut app = AppState::test_new();
         app.refresh_summary_with_grok = true;

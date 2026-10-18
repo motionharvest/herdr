@@ -1961,7 +1961,7 @@ fn events_subscribe_streams_output_and_agent_status_events() {
     let mut reader = open_subscription(
         &socket_path,
         &format!(
-            r#"{{"id":"sub_1","method":"events.subscribe","params":{{"subscriptions":[{{"type":"pane.output_matched","pane_id":"{}","source":"recent","lines":40,"match":{{"type":"substring","value":"hello from socket"}}}},{{"type":"pane.agent_status_changed","pane_id":"{}","agent_status":"idle"}}]}}}}"#,
+            r#"{{"id":"sub_1","method":"events.subscribe","params":{{"subscriptions":[{{"type":"pane.output_matched","pane_id":"{}","source":"recent","lines":40,"match":{{"type":"substring","value":"hello from socket"}}}},{{"type":"pane.agent_status_changed","pane_id":"{}","agent_status":"done"}}]}}}}"#,
             pane_id, pane_id,
         ),
     );
@@ -2016,11 +2016,11 @@ fn events_subscribe_streams_output_and_agent_status_events() {
     );
     assert_eq!(send_enter["result"]["type"], "ok");
 
-    let agent_idle = reader.read_json_line(Duration::from_secs(8));
-    assert_eq!(agent_idle["event"], "pane.agent_status_changed");
-    assert_eq!(agent_idle["data"]["pane_id"], pane_id);
-    assert_eq!(agent_idle["data"]["agent_status"], "idle");
-    assert_eq!(agent_idle["data"]["agent"], "pi");
+    let agent_done = reader.read_json_line(Duration::from_secs(8));
+    assert_eq!(agent_done["event"], "pane.agent_status_changed");
+    assert_eq!(agent_done["data"]["pane_id"], pane_id);
+    assert_eq!(agent_done["data"]["agent_status"], "done");
+    assert_eq!(agent_done["data"]["agent"], "pi");
 
     cleanup_spawned_herdr(child, base);
 }
