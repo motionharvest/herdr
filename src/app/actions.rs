@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::state::{
     text_matches_query, AppState, Mode, NavigatorRow, NavigatorStateFilter, NavigatorTarget,
-    PaneFocusTarget, ToastKind, ToastNotification, ToastTarget, ViewLayout,
+    PaneFocusTarget, ToastKind, ToastNotification, ViewLayout,
 };
 
 /// Only `Working -> Idle` is a completion. `Blocked -> Idle` is a dialog being
@@ -71,7 +71,7 @@ pub fn notification_toast_for_state_change(
     }
 }
 
-fn toast_agent_label(agent_label: &str) -> &str {
+pub(super) fn toast_agent_label(agent_label: &str) -> &str {
     agent_label
 }
 
@@ -3320,13 +3320,6 @@ impl AppState {
         change: &EffectiveStateChange,
         update_marker: bool,
     ) -> Option<bool> {
-        let is_active_tab = self.pane_is_in_active_tab(ws_idx, pane_id);
-        let suppress_active_tab_notifications = active_tab_suppresses_notifications(
-            is_active_tab,
-            self.outer_terminal_focus,
-            self.notify_active_tab,
-        );
-        let suppress_active_tab_toast = is_active_tab && !self.notify_active_tab;
         let pane = self.workspaces[ws_idx]
             .tabs
             .iter_mut()
@@ -3348,56 +3341,13 @@ impl AppState {
             self.mark_session_dirty();
         }
 
-        if self.local_sound_playback && self.sound.allows(change.known_agent) {
-            if let Some(sound) = notification_sound_for_state_change(
-                suppress_active_tab_notifications,
-                change.previous_state,
-                change.state,
-            ) {
-                crate::sound::play(sound, &self.sound);
-            }
-        }
-
-        if matches!(
-            self.toast_config.delivery,
-            crate::config::ToastDelivery::Herdr
-        ) {
-            if let (Some(agent_label), Some(kind)) = (
-                change.agent_label.as_deref(),
-                notification_toast_for_state_change(
-                    suppress_active_tab_toast,
-                    change.previous_state,
-                    change.state,
-                ),
-            ) {
-                let event_text = match kind {
-                    ToastKind::NeedsAttention => "needs attention",
-                    ToastKind::Finished => "finished",
-                    ToastKind::UpdateInstalled => "updated",
-                };
-                let workspace_label = self.workspaces[ws_idx].display_name();
-                let context = notification_context(
-                    &self.workspaces[ws_idx],
-                    &workspace_label,
-                    ws_idx,
-                    pane_id,
-                );
-                self.toast = Some(ToastNotification {
-                    kind,
-                    title: format!("{} {}", toast_agent_label(agent_label), event_text),
-                    context,
-                    target: Some(ToastTarget {
-                        workspace_id: self.workspaces[ws_idx].id.clone(),
-                        pane_id,
-                    }),
-                });
-            }
-        }
+        self.record_agent_notification(ws_idx, pane_id, change);
 
         Some(seen)
     }
 
     fn handle_pane_died(&mut self, pane_id: PaneId) {
+        self.pending_agent_notifications.remove(&pane_id);
         let ws_idx = self
             .workspaces
             .iter()
@@ -3474,6 +3424,8 @@ mod tests {
 
     fn app_with_workspaces(names: &[&str]) -> AppState {
         let mut state = AppState::test_new();
+        // These marker/transition tests exercise immediate delivery explicitly.
+        state.toast_config.delay_seconds = 0;
         for name in names {
             let ws = Workspace::test_new(name);
             state.workspaces.push(ws);

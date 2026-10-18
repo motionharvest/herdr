@@ -15,6 +15,7 @@ mod config_io;
 mod creation;
 mod ids;
 mod input;
+pub(crate) mod notifications;
 mod runtime;
 mod session;
 pub mod state;
@@ -549,6 +550,8 @@ impl App {
             update_dismissed: false,
             config_diagnostic,
             toast: None,
+            pending_agent_notifications: Default::default(),
+            ready_agent_notifications: Vec::new(),
             copy_feedback: None,
             outer_terminal_focus: None,
             prefix_code,

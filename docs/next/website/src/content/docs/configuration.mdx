@@ -409,7 +409,10 @@ Herdr can show popup notifications when agents finish or need input.
 ```toml
 [ui.toast]
 delivery = "off"
+delay_seconds = 1
 ```
+
+`delay_seconds` delays agent sounds and popups by one second by default. If the agent resumes work or changes state before the delay expires, Herdr cancels the pending alert. This reduces notifications during brief pauses between tool calls or streamed responses. Set it to `0` for immediate alerts; values from `0` to `3600` are accepted. The delay also applies to sounds when popup delivery is off. Focus, agent identity, and sound preferences are checked again before delivery.
 
 `delivery = "off"` disables popup notifications. This is the default.
 

@@ -303,61 +303,9 @@ impl App {
             if let Some((version, install_command)) = update_ready {
                 let instruction = crate::update::update_install_instruction(&install_command);
                 let _ = notify(&format!("v{version} available"), Some(&instruction));
-            } else {
-                for update in &pane_updates {
-                    let is_active_tab = self
-                        .state
-                        .pane_is_in_active_tab(update.ws_idx, update.pane_id);
-                    let suppress_active_tab_notifications =
-                        crate::app::actions::active_tab_suppresses_notifications(
-                            is_active_tab,
-                            self.state.outer_terminal_focus,
-                            self.state.notify_active_tab,
-                        );
-                    let Some(kind) = crate::app::actions::notification_toast_for_state_change(
-                        suppress_active_tab_notifications,
-                        update.previous_state,
-                        update.state,
-                    ) else {
-                        continue;
-                    };
-                    let Some(ws) = self.state.workspaces.get(update.ws_idx) else {
-                        continue;
-                    };
-                    let Some(pane) = ws
-                        .tabs
-                        .iter()
-                        .find_map(|tab| tab.panes.get(&update.pane_id))
-                    else {
-                        continue;
-                    };
-                    let Some(agent_label) = self
-                        .state
-                        .terminals
-                        .get(&pane.attached_terminal_id)
-                        .and_then(|terminal| terminal.effective_agent_label())
-                    else {
-                        continue;
-                    };
-                    let event_text = match kind {
-                        ToastKind::NeedsAttention => "needs attention",
-                        ToastKind::Finished => "finished",
-                        ToastKind::UpdateInstalled => "updated",
-                    };
-                    let workspace_label =
-                        ws.display_name_from(&self.state.terminals, &self.terminal_runtimes);
-                    let _ = notify(
-                        &format!("{} {}", agent_label, event_text),
-                        Some(&crate::app::actions::notification_context(
-                            ws,
-                            &workspace_label,
-                            update.ws_idx,
-                            update.pane_id,
-                        )),
-                    );
-                }
             }
         }
+        self.flush_agent_notifications(std::time::Instant::now());
 
         self.sync_toast_deadline(previous_toast);
         self.shutdown_detached_terminal_runtimes();
@@ -849,6 +797,11 @@ mod tests {
             observed_at: std::time::Instant::now(),
         });
 
+        let notification_deadline = app
+            .state
+            .next_pending_agent_notification_deadline()
+            .unwrap();
+        app.flush_agent_notifications(notification_deadline);
         assert_eq!(
             app.state.toast.as_ref().map(|toast| toast.context.as_str()),
             Some("__herdr_projects__ · 1")

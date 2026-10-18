@@ -1963,6 +1963,9 @@ pub struct AppState {
     pub update_dismissed: bool,
     pub config_diagnostic: Option<String>,
     pub toast: Option<ToastNotification>,
+    pub(crate) pending_agent_notifications:
+        std::collections::HashMap<PaneId, super::notifications::PendingAgentNotification>,
+    pub(crate) ready_agent_notifications: Vec<super::notifications::AgentNotificationDelivery>,
     pub copy_feedback: Option<CopyFeedback>,
     /// Last reported focus state for the outer terminal hosting herdr.
     /// None means unsupported or not yet reported, which preserves active-pane suppression.
@@ -2431,6 +2434,8 @@ impl AppState {
             update_dismissed: false,
             config_diagnostic: None,
             toast: None,
+            pending_agent_notifications: Default::default(),
+            ready_agent_notifications: Vec::new(),
             copy_feedback: None,
             outer_terminal_focus: None,
             prefix_code: KeyCode::Char('b'),

@@ -338,6 +338,7 @@ impl App {
             changed = true;
         }
 
+        changed |= self.flush_agent_notifications(now);
         if geometry_dirty || resized {
             self.pending_agent_resume_deadline = None;
         } else {
@@ -929,6 +930,7 @@ impl App {
                 .flatten(),
             self.next_auto_update_check,
             self.agent_metadata_deadline,
+            self.state.next_pending_agent_notification_deadline(),
             self.pending_agent_resume_deadline,
             self.session_save_deadline,
             self.selection_autoscroll_deadline,

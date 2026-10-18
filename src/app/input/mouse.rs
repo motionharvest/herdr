@@ -3200,6 +3200,8 @@ mod tests {
     #[test]
     fn clicking_agent_toast_focuses_target_pane() {
         let mut app = app_for_mouse_test();
+        // This test exercises clicking an already-delivered toast.
+        app.state.toast_config.delay_seconds = 0;
         let active = Workspace::test_new("active");
         let mut background = Workspace::test_new("background");
         let first_pane = background.tabs[0].root_pane;

@@ -105,6 +105,7 @@ fn parse_right_click_passthrough_modifier(value: &str) -> Option<Option<KeyModif
 #[derive(Debug, Clone)]
 pub struct ToastConfig {
     pub delivery: ToastDelivery,
+    pub delay_seconds: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -884,6 +885,7 @@ impl Default for ToastConfig {
     fn default() -> Self {
         Self {
             delivery: ToastDelivery::Off,
+            delay_seconds: 1,
         }
     }
 }
@@ -896,6 +898,7 @@ impl<'de> Deserialize<'de> for ToastConfig {
         #[derive(Deserialize, Default)]
         #[serde(default)]
         struct RawToastConfig {
+            delay_seconds: Option<u64>,
             delivery: Option<ToastDelivery>,
             enabled: Option<bool>,
         }
@@ -906,7 +909,17 @@ impl<'de> Deserialize<'de> for ToastConfig {
             Some(false) | None => ToastDelivery::Off,
         };
         let delivery = raw.delivery.unwrap_or(legacy_delivery);
-        Ok(Self { delivery })
+        let delay_seconds = raw.delay_seconds.unwrap_or(1);
+        if delay_seconds > crate::config::MAX_TOAST_DELAY_SECONDS {
+            return Err(serde::de::Error::custom(format!(
+                "ui.toast.delay_seconds must be between 0 and {}",
+                crate::config::MAX_TOAST_DELAY_SECONDS
+            )));
+        }
+        Ok(Self {
+            delivery,
+            delay_seconds,
+        })
     }
 }
 
@@ -921,6 +934,24 @@ impl Default for AdvancedConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_delay_defaults_to_one_second_and_keeps_legacy_toast_config() {
+        assert_eq!(ToastConfig::default().delay_seconds, 1);
+        for config in ["", "enabled = true", "delivery = \"terminal\""] {
+            let parsed: ToastConfig = toml::from_str(config).unwrap();
+            assert_eq!(parsed.delay_seconds, 1);
+        }
+        let legacy: ToastConfig = toml::from_str("enabled = true").unwrap();
+        assert_eq!(legacy.delivery, ToastDelivery::Herdr);
+        for delay in [0, 1, crate::config::MAX_TOAST_DELAY_SECONDS] {
+            let parsed: ToastConfig = toml::from_str(&format!("delay_seconds = {delay}")).unwrap();
+            assert_eq!(parsed.delay_seconds, delay);
+        }
+        for delay in ["-1", "3601", "18446744073709551615", "1.5"] {
+            assert!(toml::from_str::<ToastConfig>(&format!("delay_seconds = {delay}")).is_err());
+        }
+    }
 
     #[test]
     fn update_channel_defaults_stable_and_parses() {

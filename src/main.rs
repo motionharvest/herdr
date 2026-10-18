@@ -312,6 +312,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # terminal = ask the outer terminal to show a desktop notification
 # system = ask the OS notification service directly
 # delivery = "off"
+# Delay agent sounds and popups; cancel if the agent resumes before delivery.
+# delay_seconds = 1
 
 # Play sounds when agents change state in background workspaces
 [ui.sound]

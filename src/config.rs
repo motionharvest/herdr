@@ -30,6 +30,8 @@ pub(crate) use self::io::upsert_top_level_bool;
 pub(crate) use self::keybinds::is_unmodified_printable;
 pub(crate) use self::model::{PaneHeaderField, UsageSwitch};
 
+pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
+
 pub const CONFIG_PATH_ENV_VAR: &str = "HERDR_CONFIG_PATH";
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
