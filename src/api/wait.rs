@@ -1,4 +1,4 @@
-use std::os::unix::net::UnixStream;
+use crate::net::UnixStream;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 

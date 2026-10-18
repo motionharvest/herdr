@@ -896,6 +896,7 @@ mod tests {
         assert_eq!(mobile_agent_detail(&entry), "  idle · pi");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn mobile_header_uses_live_root_runtime_cwd_for_workspace_label() {
         let unique = format!(
@@ -936,7 +937,10 @@ mod tests {
             live_cwd.clone(),
             0,
             crate::terminal_theme::TerminalTheme::default(),
-            crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
+            crate::pane::PaneShellConfig::new(
+                crate::pane::test_shell_program(),
+                crate::config::ShellModeConfig::NonLogin,
+            ),
             events,
             std::sync::Arc::new(tokio::sync::Notify::new()),
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

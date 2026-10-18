@@ -1,9 +1,9 @@
 //! Remote thin-client launcher over SSH command stdio.
 
+use crate::net::{UnixListener, UnixStream};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Write as _};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -1459,15 +1459,25 @@ impl Drop for SshStdioBridge {
 /// from pre-planting a symlink or world-writable file that herdr would write
 /// and `ssh -F` would then read.
 fn private_ssh_config_dir() -> io::Result<PathBuf> {
-    use std::os::unix::fs::DirBuilderExt;
-
     let base = std::env::temp_dir();
     for attempt in 0..100 {
         let dir = base.join(format!("herdr-ssh-{}-{attempt}", std::process::id()));
-        match fs::DirBuilder::new().mode(0o700).create(&dir) {
-            Ok(()) => return Ok(dir),
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(err),
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            match fs::DirBuilder::new().mode(0o700).create(&dir) {
+                Ok(()) => return Ok(dir),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match fs::DirBuilder::new().create(&dir) {
+                Ok(()) => return Ok(dir),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            }
         }
     }
 
@@ -1493,6 +1503,7 @@ fn ssh_config_quote(path: &str) -> String {
 /// an explicit `0` to disable it); herdr's values apply only when the user has
 /// none.
 fn write_keepalive_ssh_config() -> io::Result<PathBuf> {
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
 
     let path = private_ssh_config_dir()?.join("config");
@@ -1514,11 +1525,13 @@ fn write_keepalive_ssh_config() -> io::Result<PathBuf> {
     contents.push_str("  ServerAliveInterval 15\n");
     contents.push_str("  ServerAliveCountMax 4\n");
 
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(BRIDGE_SOCKET_PERMISSION_MODE)
-        .open(&path)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        options.mode(BRIDGE_SOCKET_PERMISSION_MODE);
+    }
+    let mut file = options.open(&path)?;
     file.write_all(contents.as_bytes())?;
     Ok(path)
 }
@@ -1659,11 +1672,21 @@ fn local_forward_socket_path(target: &str, session_name: &str) -> PathBuf {
 }
 
 fn fits_unix_socket_path(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
     // sun_path is byte-limited: 104 bytes on macOS, 108 on Linux. Reserve
     // 1 byte for the trailing NUL and use the smaller cap for portability.
-    const MAX: usize = 103;
-    path.as_os_str().as_bytes().len() <= MAX
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        const MAX: usize = 103;
+        path.as_os_str().as_bytes().len() <= MAX
+    }
+    #[cfg(not(unix))]
+    {
+        // AF_UNIX on Windows applies the same 108-byte sun_path budget;
+        // UTF-8 bytes are the closest portable proxy for the OS encoding.
+        const MAX: usize = 103;
+        path.as_os_str().to_string_lossy().len() <= MAX
+    }
 }
 
 fn short_socket_hash(target: &str, session: &str) -> String {
@@ -1695,6 +1718,7 @@ fn sanitize_path_component(input: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn bridge_socket_is_user_only() {
         use std::os::unix::fs::PermissionsExt;
@@ -1723,6 +1747,7 @@ mod tests {
         let _ = std::fs::remove_file(socket);
     }
 
+    #[cfg(unix)]
     #[test]
     fn keepalive_ssh_config_includes_user_config_then_fallback() {
         use std::os::unix::fs::PermissionsExt;
@@ -2394,16 +2419,19 @@ mod tests {
         assert!(source.temporary_dir.is_none());
     }
 
+    #[cfg(unix)]
     fn remote_env_lock() -> &'static std::sync::Mutex<()> {
         static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
         LOCK.get_or_init(|| std::sync::Mutex::new(()))
     }
 
+    #[cfg(unix)]
     fn socket_path_byte_len(path: &Path) -> usize {
         use std::os::unix::ffi::OsStrExt;
         path.as_os_str().as_bytes().len()
     }
 
+    #[cfg(unix)]
     #[test]
     fn local_forward_socket_path_uses_readable_name_when_it_fits() {
         let _guard = remote_env_lock().lock().unwrap();
@@ -2428,6 +2456,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn local_forward_socket_path_fits_in_sun_path() {
         let _guard = remote_env_lock().lock().unwrap();
@@ -2445,6 +2474,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn local_forward_socket_path_falls_back_to_tmp_when_dir_is_long() {
         let _guard = remote_env_lock().lock().unwrap();

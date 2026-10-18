@@ -1,5 +1,5 @@
+use crate::net::UnixListener;
 use std::io;
-use std::os::unix::net::UnixListener;
 use std::sync::{atomic::AtomicBool, Arc};
 
 use tokio::sync::mpsc;

@@ -322,6 +322,17 @@ impl App {
         self.state.mode = Mode::OpenExistingWorktree;
     }
 
+    /// Inserts committed IME text into the worktree-create branch input,
+    /// mirroring handle_worktree_create_key typing behavior.
+    pub(crate) fn insert_worktree_create_text(&mut self, text: &str) {
+        if self.state.name_input_replace_on_type {
+            self.state.name_input.clear();
+            self.state.name_input_replace_on_type = false;
+        }
+        self.state.name_input.push_str(text);
+        self.sync_worktree_branch_from_input();
+    }
+
     pub(crate) fn handle_worktree_create_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
@@ -355,6 +366,19 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Inserts committed IME text into the focused open-worktree search
+    /// query. No-op unless the search field is focused.
+    pub(crate) fn insert_worktree_open_search_text(&mut self, text: &str) {
+        let Some(open) = &mut self.state.worktree_open else {
+            return;
+        };
+        if !open.search_focused {
+            return;
+        }
+        open.query.push_str(text);
+        open.normalize_selection();
     }
 
     pub(crate) fn handle_worktree_open_key(&mut self, key: KeyEvent) {

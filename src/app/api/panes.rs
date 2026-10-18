@@ -592,7 +592,7 @@ mod tests {
         let detached_pane_id = app
             .start_hidden_agent(
                 std::env::current_dir().unwrap(),
-                &["sleep".to_string(), "30".to_string()],
+                &crate::pane::test_true_argv(),
                 Some(crate::detect::Agent::Claude),
             )
             .unwrap_or_else(|_| panic!("hidden agent should start"));

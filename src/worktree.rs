@@ -88,7 +88,12 @@ pub(crate) fn canonical_or_original(path: &Path) -> PathBuf {
 }
 
 fn is_absolute_or_home_directory(directory: &str) -> bool {
-    directory == "~" || directory.starts_with("~/") || Path::new(directory).is_absolute()
+    directory == "~"
+        || directory.starts_with("~/")
+        || Path::new(directory).is_absolute()
+        // POSIX-style paths can cross the Windows boundary through WSL or a
+        // shared config, even though Rust does not call them absolute there.
+        || cfg!(windows) && directory.starts_with('/')
 }
 
 pub(crate) fn default_checkout_path(
@@ -970,7 +975,9 @@ prunable stale
             outcome.commit
         );
         assert_eq!(
-            std::fs::read_to_string(repo.join("agent.txt")).unwrap(),
+            std::fs::read_to_string(repo.join("agent.txt"))
+                .unwrap()
+                .replace("\r\n", "\n"),
             "commit then land\n"
         );
         remove_worktree_and_branch(&repo, &checkout, false).unwrap();

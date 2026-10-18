@@ -18,6 +18,7 @@ pub(crate) fn toast_notify_kind(delivery: config::ToastDelivery) -> Option<proto
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::app::state::{ToastKind, ToastNotification, ToastTarget};
@@ -33,6 +34,7 @@ mod tests {
         assert!(status.success(), "git init failed for {}", path.display());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn toast_message_uses_live_root_runtime_cwd_label() {
         let mut state = AppState::test_new();

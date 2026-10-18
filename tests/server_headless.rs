@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Integration tests for headless server mode.
 
 mod support;

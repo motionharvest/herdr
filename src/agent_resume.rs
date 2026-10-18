@@ -182,7 +182,11 @@ fn valid_session_path(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_SESSION_PATH_LEN
         && !value.chars().any(char::is_control)
-        && Path::new(value).is_absolute()
+        // Windows can receive a POSIX path from a WSL-hosted agent. Keep the
+        // native absolute-path check on Unix, and accept only rooted `/...`
+        // paths as the Windows compatibility form.
+        && (Path::new(value).is_absolute()
+            || (cfg!(windows) && value.starts_with('/')))
 }
 
 #[cfg(test)]

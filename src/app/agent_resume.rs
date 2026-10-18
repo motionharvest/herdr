@@ -440,9 +440,16 @@ mod tests {
         )
     }
 
+    fn test_resume_argv() -> Vec<String> {
+        crate::pane::test_true_argv()
+    }
+
     #[tokio::test]
     async fn pending_agent_resume_waits_for_host_theme_before_launch() {
         let mut app = test_app();
+        if cfg!(windows) {
+            app.state.default_shell = "powershell.exe".into();
+        }
         let workspace = crate::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tabs[0].root_pane;
         let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
@@ -454,6 +461,16 @@ mod tests {
         app.state.ensure_test_terminals();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.view.pane_infos = pane_infos;
+        let marker = "restored agent: shell quoted | marker";
+        let resume_argv = if cfg!(windows) {
+            vec!["Write-Output".into(), marker.into()]
+        } else {
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!("printf '%s' '{marker}'; sleep 5"),
+            ]
+        };
         let terminal = app
             .state
             .terminals
@@ -461,11 +478,7 @@ mod tests {
             .expect("test terminal should exist");
         terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
             agent: "codex".into(),
-            argv: vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                "printf '%s' 'restored agent: shell quoted | marker'; sleep 5".into(),
-            ],
+            argv: resume_argv,
             dedupe_key: "herdr:codex\0codex\0Id\0codex-session".into(),
         });
 
@@ -499,8 +512,7 @@ mod tests {
             .terminal_runtimes
             .get(&terminal_id)
             .expect("pending resume should leave a shell runtime");
-        let marker = "restored agent: shell quoted | marker";
-        for _ in 0..20 {
+        for _ in 0..400 {
             if runtime
                 .snapshot_history()
                 .is_some_and(|text| text.contains(marker))
@@ -541,7 +553,7 @@ mod tests {
             .expect("test terminal should exist")
             .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
             agent: "codex".into(),
-            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            argv: test_resume_argv(),
             dedupe_key: "herdr:codex\0codex\0Id\0codex-session".into(),
         });
 
@@ -590,7 +602,7 @@ mod tests {
                 .expect("test terminal should exist")
                 .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
                 agent: "codex".into(),
-                argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+                argv: test_resume_argv(),
                 dedupe_key: format!("herdr:codex\0codex\0Id\0{terminal_id}"),
             });
         }
@@ -652,7 +664,7 @@ mod tests {
             .expect("inactive tab terminal should exist")
             .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
             agent: "codex".into(),
-            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            argv: test_resume_argv(),
             dedupe_key: "herdr:codex\0codex\0Id\0inactive-tab-session".into(),
         });
 
@@ -711,7 +723,7 @@ mod tests {
             .expect("hidden zoom pane terminal should exist")
             .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
             agent: "codex".into(),
-            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            argv: test_resume_argv(),
             dedupe_key: "herdr:codex\0codex\0Id\0zoom-hidden-session".into(),
         });
 
@@ -767,7 +779,7 @@ mod tests {
             .expect("test terminal should exist")
             .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
             agent: "codex".into(),
-            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            argv: test_resume_argv(),
             dedupe_key: "herdr:codex\0codex\0Id\0codex-session".into(),
         });
 
@@ -826,7 +838,7 @@ mod tests {
             .expect("test terminal should exist")
             .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
             agent: "codex".into(),
-            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            argv: test_resume_argv(),
             dedupe_key: "herdr:codex\0codex\0Id\0codex-session".into(),
         });
 

@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Integration tests for multi-client server behavior.
 
 mod support;

@@ -8,7 +8,7 @@ use std::sync::{
 
 use bytes::Bytes;
 use portable_pty::CommandBuilder;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use portable_pty::{native_pty_system, PtySize};
 use ratatui::{layout::Rect, Frame};
 #[cfg(test)]
@@ -21,6 +21,8 @@ use crate::events::AppEvent;
 use crate::layout::PaneId;
 #[cfg(unix)]
 use crate::pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult};
+#[cfg(windows)]
+use crate::pty::actor_windows::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult};
 
 mod input;
 mod kitty_keyboard;
@@ -98,10 +100,11 @@ struct PendingAgentRelease {
     until: std::time::Instant,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 struct SpawnInitialState<'a> {
     detected_agent: Option<Agent>,
     history_ansi: Option<&'a str>,
+    initial_cwd: Option<std::path::PathBuf>,
 }
 
 fn active_pending_release(
@@ -256,10 +259,12 @@ fn ssh_destination_host(argv: &[String]) -> Option<String> {
     (!host.is_empty()).then(|| host.to_string())
 }
 
+#[cfg(unix)]
 fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
     crate::platform::process_cwd(pid).filter(|cwd| cwd.is_absolute() && cwd.is_dir())
 }
 
+#[cfg(unix)]
 fn foreground_member_cwd_different_from_shell(
     shell_pid: u32,
     shell_cwd: Option<&std::path::PathBuf>,
@@ -527,6 +532,7 @@ fn detection_update_for_publish(
     (!detection.skip_state_update).then_some(detection)
 }
 
+#[cfg(unix)]
 fn spawn_basic_detection_task(
     pane_id: PaneId,
     child_pid: Arc<AtomicU32>,
@@ -794,12 +800,16 @@ pub struct PaneRuntime {
     detect_reset_notify: Arc<Notify>,
     pending_release: Arc<Mutex<Option<PendingAgentRelease>>>,
     preserve_processes_on_drop: bool,
+    /// The cwd the pane started in, the fallback when Windows cannot read a
+    /// process's cwd. Other platforms always can, so only Windows reads it.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    initial_cwd: Option<std::path::PathBuf>,
     // Task handles for deterministic shutdown
     detect_handle: tokio::task::AbortHandle,
 }
 
 enum PaneRuntimeIo {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Actor(PtyIoActorHandle),
     #[cfg(test)]
     TestChannel {
@@ -811,7 +821,7 @@ enum PaneRuntimeIo {
 impl PaneRuntimeIo {
     fn shutdown(&self) {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             PaneRuntimeIo::Actor(actor) => actor.shutdown(),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => {}
@@ -880,7 +890,7 @@ impl PaneRuntimeIo {
         terminal_responses: Vec<Bytes>,
     ) {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             PaneRuntimeIo::Actor(actor) => {
                 actor.resize(
                     rows,
@@ -905,7 +915,7 @@ impl PaneRuntimeIo {
         cell_height_px: u32,
     ) {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             PaneRuntimeIo::Actor(actor) => {
                 actor.nudge_child_redraw_after_handoff(rows, cols, cell_width_px, cell_height_px);
             }
@@ -916,7 +926,7 @@ impl PaneRuntimeIo {
 
     async fn send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::SendError<Bytes>> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             PaneRuntimeIo::Actor(actor) => actor.write_user_input(bytes).await,
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { sender, .. } => sender.send(bytes).await,
@@ -925,7 +935,7 @@ impl PaneRuntimeIo {
 
     fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             PaneRuntimeIo::Actor(actor) => actor.try_write_user_input(bytes),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { sender, .. } => sender.try_send(bytes),
@@ -1100,6 +1110,40 @@ fn pane_shell(configured_shell: &str) -> String {
     pane_shell_from(configured_shell, std::env::var("SHELL").ok())
 }
 
+/// Executable used by tests as a shell that needs no interaction.
+#[cfg(test)]
+pub(crate) fn test_shell_program() -> &'static str {
+    #[cfg(windows)]
+    {
+        static SHELL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        SHELL
+            .get_or_init(|| std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into()))
+            .as_str()
+    }
+    #[cfg(not(windows))]
+    {
+        "/bin/sh"
+    }
+}
+
+/// argv used by tests for a command pane that exits immediately.
+#[cfg(test)]
+pub(crate) fn test_true_argv() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        vec![
+            test_shell_program().into(),
+            "/C".into(),
+            "exit".into(),
+            "0".into(),
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        vec!["/usr/bin/true".into()]
+    }
+}
+
 fn pane_shell_from(configured_shell: &str, env_shell: Option<String>) -> String {
     let configured_shell = configured_shell.trim();
     if !configured_shell.is_empty() {
@@ -1109,7 +1153,35 @@ fn pane_shell_from(configured_shell: &str, env_shell: Option<String>) -> String 
     env_shell
         .map(|shell| shell.trim().to_string())
         .filter(|shell| !shell.is_empty())
-        .unwrap_or_else(|| "/bin/sh".into())
+        .unwrap_or_else(default_shell_fallback)
+}
+
+#[cfg(windows)]
+fn default_shell_fallback() -> String {
+    static FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FALLBACK
+        .get_or_init(|| {
+            // PowerShell 7 when installed, otherwise the inbox Windows
+            // PowerShell. cmd.exe stays available through configuration.
+            for candidate in ["pwsh.exe", "powershell.exe"] {
+                if let Some(path) = std::env::var_os("PATH").and_then(|path| {
+                    std::env::split_paths(&path)
+                        .map(|dir| dir.join(candidate))
+                        .find(|candidate| candidate.is_file())
+                }) {
+                    if let Some(found) = path.to_str() {
+                        return found.to_string();
+                    }
+                }
+            }
+            "powershell.exe".to_string()
+        })
+        .clone()
+}
+
+#[cfg(not(windows))]
+fn default_shell_fallback() -> String {
+    "/bin/sh".into()
 }
 
 #[derive(Clone, Copy)]
@@ -1166,7 +1238,9 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 fn resolve_shell_for_login_mode(shell: &str) -> io::Result<String> {
-    if shell.contains(std::path::MAIN_SEPARATOR) {
+    let has_path_separator =
+        shell.contains(std::path::MAIN_SEPARATOR) || (cfg!(windows) && shell.contains('/'));
+    if has_path_separator {
         let path = Path::new(shell);
         return is_executable_file(path)
             .then(|| shell.to_string())
@@ -1352,7 +1426,7 @@ impl PaneRuntime {
         render_dirty: Arc<AtomicBool>,
     ) -> std::io::Result<Self> {
         let mut cmd = pane_shell_command_builder(shell_config)?;
-        cmd.cwd(cwd);
+        cmd.cwd(cwd.clone());
         cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
         apply_pane_terminal_env(&mut cmd);
         crate::integration::apply_pane_env(&mut cmd, pane_id);
@@ -1370,6 +1444,7 @@ impl PaneRuntime {
             SpawnInitialState {
                 detected_agent: None,
                 history_ansi: initial_history_ansi,
+                initial_cwd: Some(cwd),
             },
         )
     }
@@ -1387,29 +1462,64 @@ impl PaneRuntime {
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
     ) -> std::io::Result<Self> {
-        let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.arg("-c");
-        cmd.arg(command);
-        cmd.cwd(cwd);
-        cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
-        apply_pane_terminal_env(&mut cmd);
-        crate::integration::apply_pane_env(&mut cmd, pane_id);
-        for (key, value) in extra_env {
-            cmd.env(key, value);
+        #[cfg(windows)]
+        {
+            let mut cmd = CommandBuilder::new("cmd.exe");
+            cmd.arg("/C");
+            cmd.arg(command);
+            cmd.cwd(cwd.clone());
+            cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
+            apply_pane_terminal_env(&mut cmd);
+            crate::integration::apply_pane_env(&mut cmd, pane_id);
+            for (key, value) in extra_env {
+                cmd.env(key, value);
+            }
+            Self::spawn_command_builder(
+                pane_id,
+                rows,
+                cols,
+                scrollback_limit_bytes,
+                host_terminal_theme,
+                events,
+                render_notify,
+                render_dirty,
+                cmd,
+                "failed to spawn command pane",
+                SpawnInitialState {
+                    initial_cwd: Some(cwd),
+                    ..Default::default()
+                },
+            )
         }
-        Self::spawn_command_builder(
-            pane_id,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            events,
-            render_notify,
-            render_dirty,
-            cmd,
-            "failed to spawn command pane",
-            SpawnInitialState::default(),
-        )
+        #[cfg(unix)]
+        {
+            let mut cmd = CommandBuilder::new("/bin/sh");
+            cmd.arg("-c");
+            cmd.arg(command);
+            cmd.cwd(cwd.clone());
+            cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
+            apply_pane_terminal_env(&mut cmd);
+            crate::integration::apply_pane_env(&mut cmd, pane_id);
+            for (key, value) in extra_env {
+                cmd.env(key, value);
+            }
+            Self::spawn_command_builder(
+                pane_id,
+                rows,
+                cols,
+                scrollback_limit_bytes,
+                host_terminal_theme,
+                events,
+                render_notify,
+                render_dirty,
+                cmd,
+                "failed to spawn command pane",
+                SpawnInitialState {
+                    initial_cwd: Some(cwd),
+                    ..Default::default()
+                },
+            )
+        }
     }
 
     pub fn spawn_argv_command(
@@ -1434,7 +1544,7 @@ impl PaneRuntime {
         for arg in args {
             cmd.arg(arg);
         }
-        cmd.cwd(cwd);
+        cmd.cwd(cwd.clone());
         cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
         apply_pane_terminal_env(&mut cmd);
         crate::integration::apply_pane_env(&mut cmd, pane_id);
@@ -1449,7 +1559,10 @@ impl PaneRuntime {
             render_dirty,
             cmd,
             "failed to spawn argv command pane",
-            SpawnInitialState::default(),
+            SpawnInitialState {
+                initial_cwd: Some(cwd),
+                ..Default::default()
+            },
         )
     }
 
@@ -1564,6 +1677,8 @@ impl PaneRuntime {
             detect_reset_notify,
             pending_release,
             preserve_processes_on_drop: true,
+            // A handed-off pane keeps the cwd its process already has.
+            initial_cwd: None,
             detect_handle,
         })
     }
@@ -1663,7 +1778,14 @@ impl PaneRuntime {
             });
             PaneRuntimeIo::Actor(PtyIoActor::spawn(PtyIoActorConfig {
                 pane_id: pane_id.raw(),
+                #[cfg(unix)]
                 master_fd: spawned.master_fd,
+                #[cfg(windows)]
+                master: spawned.master,
+                #[cfg(windows)]
+                reader: spawned.reader,
+                #[cfg(windows)]
+                writer: spawned.writer,
                 initially_quiesced: false,
                 on_read,
                 on_reader_exit: None,
@@ -1671,6 +1793,7 @@ impl PaneRuntime {
         };
 
         // --- Detection task ---
+        let initial_cwd = initial_state.initial_cwd.clone();
         let (detect_handle, detect_reset_notify, pending_release) = {
             use crate::detect;
             use std::time::{Duration, Instant};
@@ -1994,6 +2117,7 @@ impl PaneRuntime {
             detect_reset_notify,
             pending_release,
             preserve_processes_on_drop: false,
+            initial_cwd,
             detect_handle,
         })
     }
@@ -2276,22 +2400,34 @@ impl PaneRuntime {
             return Some(reported);
         }
         let pid = self.child_pid.load(Ordering::Relaxed);
-        crate::platform::process_cwd(pid)
+        let cwd = crate::platform::process_cwd(pid);
+        #[cfg(windows)]
+        let cwd = cwd.or_else(|| self.initial_cwd.clone());
+        cwd
     }
 
-    /// The directory the pane reported with OSC 7, if the process group that
-    /// reported it still holds the foreground.
+    /// The directory the pane reported with OSC 7.
     ///
-    /// This is what makes a Windows shell running through WSL interop track:
-    /// its Linux-side relay stub keeps the launch directory in `/proc` forever,
-    /// so the report is the only truth available.
+    /// Unix checks that the reporting process group still owns the pane. Windows
+    /// has no equivalent foreground-group query, so it uses the latest valid
+    /// report instead.
     fn reported_cwd(&self) -> Option<std::path::PathBuf> {
         let (reported, owner_pgid) = self.terminal.reported_cwd()?;
-        let pid = self.child_pid.load(Ordering::Acquire);
-        let current_pgid = self.foreground_pgid(pid)?;
-        if current_pgid != owner_pgid {
-            return None;
+
+        #[cfg(unix)]
+        {
+            let pid = self.child_pid.load(Ordering::Acquire);
+            let current_pgid = self.foreground_pgid(pid)?;
+            if current_pgid != owner_pgid {
+                return None;
+            }
         }
+
+        // Windows has no foreground process-group API. OSC 7 is the best
+        // available source there, so accept the shell's latest valid report.
+        #[cfg(windows)]
+        let _ = owner_pgid;
+
         let path = if crate::wsl::is_wsl() {
             crate::wsl::translate_reported_path(&reported)?
         } else {
@@ -2300,6 +2436,7 @@ impl PaneRuntime {
         (path.is_absolute() && path.is_dir()).then_some(path)
     }
 
+    #[cfg(unix)]
     fn foreground_pgid(&self, shell_pid: u32) -> Option<u32> {
         #[cfg(unix)]
         {
@@ -2439,13 +2576,13 @@ impl PaneRuntime {
         let mut terminal =
             crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes).unwrap();
         terminal.write(bytes);
+        let pane_terminal = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        pane_terminal.observe_terminal_bytes(bytes);
 
         (
             Self {
                 pane_id: PaneId::from_raw(0),
-                terminal: Arc::new(PaneTerminal::new(
-                    GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap(),
-                )),
+                terminal: Arc::new(PaneTerminal::new(pane_terminal)),
                 io: PaneRuntimeIo::TestChannel {
                     sender: tx,
                     resize_tx,
@@ -2457,6 +2594,7 @@ impl PaneRuntime {
                 detect_reset_notify: Arc::new(Notify::new()),
                 pending_release: Arc::new(Mutex::new(None)),
                 preserve_processes_on_drop: true,
+                initial_cwd: None,
                 detect_handle: tokio::spawn(async {}).abort_handle(),
             },
             rx,
@@ -2488,7 +2626,9 @@ mod tests {
         assert!(!process_alive_for_shutdown(43, 42, false, |_| false));
     }
 
+    #[cfg(unix)]
     fn capture_shell_output(command: &str, extra_env: &[(&str, &str)]) -> String {
+        let _lock = crate::integration::integration_env_lock();
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 24,
@@ -2525,6 +2665,45 @@ mod tests {
         output
     }
 
+    #[cfg(windows)]
+    fn capture_shell_output(_command: &str, extra_env: &[(&str, &str)]) -> String {
+        let _lock = crate::integration::integration_env_lock();
+        let shell = test_login_shell();
+        let mut pty_command = CommandBuilder::new(&shell);
+        pty_command.env("TERM", "xterm-ghostty");
+        pty_command.env("COLORTERM", "falsecolor");
+        apply_pane_terminal_env(&mut pty_command);
+        for (key, value) in extra_env {
+            pty_command.env(key, value);
+        }
+
+        let mut command = std::process::Command::new(&shell);
+        command.args(["/C", "(echo %TERM%& echo %COLORTERM%)"]);
+        command.current_dir(std::env::current_dir().unwrap());
+        for key in ["TERM", "COLORTERM"] {
+            if let Some(value) = pty_command.get_env(key) {
+                command.env(key, value);
+            }
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "shell command failed: {:?}",
+            output.status
+        );
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .replace("\r\n", "\n")
+    }
+
+    fn test_login_shell() -> String {
+        if cfg!(windows) {
+            test_shell_program().into()
+        } else {
+            "/bin/sh".into()
+        }
+    }
+
     #[test]
     fn pane_shell_prefers_configured_shell() {
         assert_eq!(
@@ -2543,8 +2722,9 @@ mod tests {
 
     #[test]
     fn pane_shell_ignores_empty_values() {
-        assert_eq!(pane_shell_from("   ", Some("  ".to_string())), "/bin/sh");
-        assert_eq!(pane_shell_from("", None), "/bin/sh");
+        let fallback = pane_shell_from("", None);
+        assert_eq!(pane_shell_from("   ", Some("  ".to_string())), fallback);
+        assert_eq!(pane_shell_from("", None), fallback);
     }
 
     #[test]
@@ -2569,41 +2749,46 @@ mod tests {
 
     #[test]
     fn login_shell_builder_uses_default_prog_with_resolved_shell_env() {
+        let shell = test_login_shell();
+        let expected = resolve_shell_for_login_mode(&shell).unwrap();
         let cmd = pane_shell_command_builder_for_target(
-            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::Login),
+            PaneShellConfig::new(&shell, crate::config::ShellModeConfig::Login),
             false,
         )
         .unwrap();
         assert!(cmd.is_default_prog());
         assert_eq!(
             cmd.get_env("SHELL").and_then(std::ffi::OsStr::to_str),
-            Some("/bin/sh")
+            Some(expected.as_str())
         );
     }
 
     #[test]
     fn auto_shell_builder_uses_login_shell_on_macos_target() {
+        let shell = test_login_shell();
+        let expected = resolve_shell_for_login_mode(&shell).unwrap();
         let cmd = pane_shell_command_builder_for_target(
-            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::Auto),
+            PaneShellConfig::new(&shell, crate::config::ShellModeConfig::Auto),
             true,
         )
         .unwrap();
         assert!(cmd.is_default_prog());
         assert_eq!(
             cmd.get_env("SHELL").and_then(std::ffi::OsStr::to_str),
-            Some("/bin/sh")
+            Some(expected.as_str())
         );
     }
 
     #[test]
     fn auto_shell_builder_keeps_direct_shell_on_non_macos_target() {
+        let shell = test_login_shell();
         let cmd = pane_shell_command_builder_for_target(
-            PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::Auto),
+            PaneShellConfig::new(&shell, crate::config::ShellModeConfig::Auto),
             false,
         )
         .unwrap();
         assert!(!cmd.is_default_prog());
-        assert_eq!(cmd.get_argv(), &[std::ffi::OsString::from("/bin/sh")]);
+        assert_eq!(cmd.get_argv(), &[std::ffi::OsString::from(shell)]);
     }
 
     #[test]
@@ -2662,18 +2847,20 @@ mod tests {
 
     #[test]
     fn login_shell_resolution_preserves_shell_paths() {
-        assert_eq!(resolve_shell_for_login_mode("/bin/sh").unwrap(), "/bin/sh");
+        let shell = test_login_shell();
+        assert_eq!(resolve_shell_for_login_mode(&shell).unwrap(), shell);
     }
 
     #[test]
     fn non_login_shell_builder_execs_resolved_shell_directly() {
+        let shell = test_login_shell();
         let cmd = pane_shell_command_builder(PaneShellConfig::new(
-            "/bin/sh",
+            &shell,
             crate::config::ShellModeConfig::NonLogin,
         ))
         .unwrap();
         assert!(!cmd.is_default_prog());
-        assert_eq!(cmd.get_argv(), &[std::ffi::OsString::from("/bin/sh")]);
+        assert_eq!(cmd.get_argv(), &[std::ffi::OsString::from(shell)]);
     }
 
     #[test]
@@ -2691,6 +2878,7 @@ mod tests {
         assert_eq!(output, "vt100\n24bit\n");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn handoff_history_ansi_captures_primary_screen() {
         let runtime =
@@ -2701,6 +2889,7 @@ mod tests {
         assert!(history.contains("handoff-primary-history"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn handoff_history_ansi_skips_alternate_screen() {
         let runtime = PaneRuntime::test_with_scrollback_bytes(
@@ -2713,6 +2902,7 @@ mod tests {
         assert!(runtime.handoff_history_ansi().is_none());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn handoff_runtime_state_captures_terminal_input_state() {
         let runtime = PaneRuntime::test_with_screen_bytes(
@@ -2739,6 +2929,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn truncate_handoff_history_keeps_recent_utf8_boundary() {
         let history = format!("old\n{}\nrecent\n", "é".repeat(8));
@@ -2749,6 +2940,7 @@ mod tests {
         assert!(truncated.is_char_boundary(0));
     }
 
+    #[cfg(unix)]
     #[test]
     fn truncate_handoff_history_drops_partial_long_line() {
         let history = format!("old\n{}", "x".repeat(64));
@@ -2782,6 +2974,7 @@ mod tests {
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
             preserve_processes_on_drop: true,
+            initial_cwd: None,
             detect_handle: tokio::spawn(async {}).abort_handle(),
         };
 
@@ -2810,6 +3003,7 @@ mod tests {
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
             preserve_processes_on_drop: true,
+            initial_cwd: None,
             detect_handle: tokio::spawn(async {}).abort_handle(),
         };
 

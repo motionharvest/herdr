@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Cross-area integration tests for end-to-end persistence flows.
 
 mod support;

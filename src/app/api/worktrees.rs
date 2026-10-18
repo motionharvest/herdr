@@ -1148,6 +1148,9 @@ mod tests {
         );
         assert!(workspace.worktree.unwrap().is_linked_worktree);
 
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
         let remove =
             crate::worktree::build_worktree_remove_command(&repo, Path::new(&worktree.path), false);
         crate::worktree::run_worktree_command(&remove).unwrap();
@@ -1194,6 +1197,9 @@ mod tests {
             "auto-created parent workspace event should include parent worktree membership"
         );
 
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
         let remove =
             crate::worktree::build_worktree_remove_command(&repo, Path::new(&worktree.path), false);
         crate::worktree::run_worktree_command(&remove).unwrap();
@@ -1424,7 +1430,7 @@ mod tests {
         let repo = create_committed_repo("api-worktree-open-source-repo");
         let event_hub = crate::api::EventHub::default();
         let mut app = test_app_with_event_hub(event_hub.clone());
-        app.state.default_shell = "/usr/bin/true".into();
+        app.state.default_shell = crate::pane::test_shell_program().into();
 
         let response = app.handle_api_request(Request {
             id: "req".into(),

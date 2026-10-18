@@ -1,5 +1,5 @@
+use crate::net::UnixStream;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -490,7 +490,7 @@ mod tests {
         let socket_path = api_socket_path_for(Some(session_name));
         std::fs::create_dir_all(socket_path.parent().unwrap()).unwrap();
         let _ = std::fs::remove_file(&socket_path);
-        let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        let listener = crate::net::UnixListener::bind(&socket_path).unwrap();
         listener.set_nonblocking(true).unwrap();
         let keep_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let keep_running_for_thread = keep_running.clone();
@@ -883,7 +883,7 @@ mod tests {
         let socket_path = api_socket_path_for(Some(session_name));
         std::fs::create_dir_all(socket_path.parent().unwrap()).unwrap();
         let _ = std::fs::remove_file(&socket_path);
-        let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        let listener = crate::net::UnixListener::bind(&socket_path).unwrap();
         listener.set_nonblocking(true).unwrap();
         let keep_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let keep_running_for_thread = keep_running.clone();

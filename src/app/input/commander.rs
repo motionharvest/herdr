@@ -45,7 +45,7 @@ pub(crate) fn handle_commander_key(
     if key.kind == KeyEventKind::Release {
         return CommanderKeyOutcome::Edited;
     }
-    if key.code == KeyCode::Esc || state.keybinds.commander.matches_direct_key(raw_key) {
+    if key.code == KeyCode::Esc || state.keybinds.commander.matches_direct_key(&raw_key) {
         // Closing the box abandons a paragraph part way through; the commands
         // already carried out stay done.
         state.commander.asking = None;

@@ -315,18 +315,19 @@ path = "sounds/all.mp3"
 
     #[test]
     fn done_path_still_outranks_a_picked_done_sound() {
-        let config: Config = toml::from_str(
+        let custom_path = std::env::temp_dir().join("herdr-custom.mp3");
+        let mut config: Config = toml::from_str(
             r#"
 [ui.sound]
 done = "ping"
-done_path = "/tmp/herdr-custom.mp3"
 "#,
         )
         .unwrap();
+        config.ui.sound.done_path = Some(custom_path.clone());
 
         assert_eq!(
             config.ui.sound.path_for(crate::sound::Sound::Done),
-            Some(PathBuf::from("/tmp/herdr-custom.mp3"))
+            Some(custom_path)
         );
         assert!(config.ui.sound.done_sound_overridden_by_path());
     }

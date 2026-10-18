@@ -290,10 +290,13 @@ pub fn named(name: &str) -> Option<&'static Harness> {
 /// Tests that start an agent or list what is installed would otherwise depend
 /// on whether Claude Code is installed on the machine running them, and CI
 /// does not have it. The stand-in only waits, which is all a test asks of an
-/// agent. It is put on the path once per test process.
-#[cfg(all(test, unix))]
+/// agent. It is put on the path once per test process. Windows gets no
+/// stand-in, since a shell script is not a program there.
+#[cfg(test)]
 pub fn stand_in_claude_code() -> &'static Harness {
+    #[cfg(unix)]
     static STAND_IN: std::sync::Once = std::sync::Once::new();
+    #[cfg(unix)]
     STAND_IN.call_once(|| {
         use std::os::unix::fs::PermissionsExt;
         let bin = std::env::temp_dir().join(format!("herdr-test-claude-{}", std::process::id()));
