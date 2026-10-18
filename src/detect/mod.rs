@@ -1567,14 +1567,14 @@ mod tests {
     }
 
     #[test]
-    fn codex_working_header_without_interrupt_is_not_visible_working() {
+    fn codex_working_header_without_interrupt_is_visible_working() {
         let detection = detect_agent(
             Some(Agent::Codex),
             "• Working (17s)\n\n› Implement {feature}",
         );
 
         assert_eq!(detection.state, AgentState::Working);
-        assert!(!detection.visible_working);
+        assert!(detection.visible_working);
     }
 
     #[test]

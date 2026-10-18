@@ -27,7 +27,9 @@ pub(super) fn detect(content: &str) -> AgentState {
 
     // Fallback working signals for narrow captures where the footer scrolled
     // out or the working row is the only Codex chrome visible.
-    if has_interrupt_pattern(&lower) || has_codex_working_header(content) {
+    if (has_interrupt_pattern(&lower) && !content.lines().any(codex_block_marker_line))
+        || has_codex_visible_working_without_prompt(content)
+    {
         return AgentState::Working;
     }
 
@@ -77,9 +79,8 @@ fn has_codex_visible_working_without_prompt(content: &str) -> bool {
         return true;
     }
 
-    codex_status_detail_line(last_line)
+    (codex_status_detail_line(last_line) || !codex_block_marker_line(last_line))
         && recent_lines
-            .take(4)
             .find(|line| codex_block_marker_line(line))
             .is_some_and(codex_live_working_line)
 }
@@ -111,12 +112,8 @@ fn codex_last_block_marker_before_current_prompt(content: &str) -> Option<&str> 
     lines[..prompt_index]
         .iter()
         .rev()
-        .find(|line| codex_block_marker_line(line))
+        .find(|line| codex_block_marker_line(line) && !codex_queued_input_header_line(line))
         .copied()
-}
-
-fn has_codex_working_header(content: &str) -> bool {
-    content.lines().any(codex_working_status_line)
 }
 
 fn codex_live_working_line(line: &str) -> bool {
@@ -126,6 +123,9 @@ fn codex_live_working_line(line: &str) -> bool {
 
     let trimmed = line.trim_start();
     let lower = trimmed.to_lowercase();
+    if codex_timed_activity_line(line) {
+        return true;
+    }
     codex_working_status_line(line)
         && (trimmed.contains("Waiting for background terminal")
             || lower.contains("esc to interrupt")
@@ -140,6 +140,9 @@ fn codex_working_status_line(line: &str) -> bool {
         return true;
     }
 
+    if codex_timed_activity_line(line) {
+        return true;
+    }
     let trimmed = line.trim_start();
     let lower = trimmed.to_lowercase();
     trimmed.starts_with('•')
@@ -148,6 +151,21 @@ fn codex_working_status_line(line: &str) -> bool {
             || lower.contains("reviewing approval request (")
             || (lower.contains("reviewing ") && lower.contains(" approval requests ("))
             || trimmed.contains("Booting MCP server:"))
+}
+
+// Codex's activity control is a dynamic label followed by an elapsed timer.
+// The bullet animates away (or is disabled), and interrupt bindings can be
+// customized or unbound. Match that structure, not a fixed label or key.
+fn codex_timed_activity_line(line: &str) -> bool {
+    static ACTIVITY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(?:[•◦][ \t]+)?[^\s›•◦■✗✓─][^\r\n]* \((?:[0-9]+[hm] )*[0-9]+s(?: • [^\r\n]+? to interrupt)?\)(?: · [^\r\n]*)?$")
+            .expect("static Codex activity regex is valid")
+    });
+    let trimmed = line.trim_end();
+    !trimmed
+        .trim_start_matches(['•', '◦', ' '])
+        .starts_with("Reconnect failed —")
+        && ACTIVITY.is_match(trimmed)
 }
 
 fn has_codex_current_prompt(content: &str) -> bool {
@@ -169,11 +187,22 @@ fn codex_current_prompt_region(content: &str) -> Option<(Vec<&str>, usize)> {
 }
 
 fn codex_prompt_line(line: &str) -> bool {
-    line == "›" || line.starts_with("› ")
+    line == "›"
+        || line.starts_with("› ")
+        || line
+            .strip_prefix('›')
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(|c| matches!(c, '⠁' | '⠂' | '⠄' | '⠈' | '⠐' | '⠠' | '⡀' | '⢀'))
 }
 
 fn codex_block_marker_line(line: &str) -> bool {
-    line.starts_with('•') || line.starts_with('■') || line.starts_with('✗') || line.starts_with('✓')
+    line.starts_with('•')
+        || line.starts_with('◦')
+        || line.starts_with('■')
+        || line.starts_with('✗')
+        || line.starts_with('✓')
+        || line.starts_with('─')
+        || codex_timed_activity_line(line)
 }
 
 fn codex_status_detail_line(line: &str) -> bool {
@@ -189,6 +218,7 @@ fn codex_queued_input_header_line(line: &str) -> bool {
     let lower = trimmed.to_lowercase();
     lower.starts_with("• queued follow-up inputs")
         || lower.starts_with("• messages to be submitted after next tool call")
+        || lower.starts_with("• messages to be submitted at end of turn")
 }
 
 fn bottom_non_empty_lines(content: &str, max_lines: usize) -> Vec<&str> {
@@ -217,4 +247,52 @@ fn transcript_control_tail(line: &str) -> bool {
         || lower.contains("esc to edit")
         || lower.contains("esc/← to edit")
         || lower.contains("edit message")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_activity_controls_survive_animation_keymaps_and_queued_messages() {
+        // Live bottom-buffer capture: a timed control, an optional detail row,
+        // then the composer. Labels and key names are variable (upstream #4099/#4196).
+        for activity in [
+            "• Working (3m 27s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close",
+            "Working (2s • f12 to interrupt)",
+            "◦ Planning next steps (4s)",
+            "Exploring (1h 2m 3s • shift + ) to interrupt)",
+            "Working (4s)",
+        ] {
+            for queue in ["", "\n• Queued follow-up inputs\n  ↳ next task", "\n• Messages to be submitted after next tool call (press f12\n  to interrupt and send immediately)", "\n• Messages to be submitted at end of turn\n  ↳ next task"] {
+                let screen = format!("{activity}\n  └ Tip: Use /keymap to configure keyboard shortcuts.\n{queue}\n\n›⠁ Ask Codex to do anything\n  ? for shortcuts");
+                assert_eq!(detect(&screen), AgentState::Working, "{screen}");
+                assert!(has_visible_working(&screen), "{screen}");
+            }
+        }
+    }
+
+    #[test]
+    fn later_response_or_interruption_rejects_stale_activity() {
+        for end in [
+            "• Done. Here is the result.",
+            "■ Conversation interrupted",
+            "─ Worked for 2s ─",
+            "✓ Complete",
+        ] {
+            let screen =
+                format!("Working (4s • f12 to interrupt)\n{end}\n\n› Ask Codex to do anything");
+            assert_eq!(detect(&screen), AgentState::Idle, "{screen}");
+            assert!(!has_visible_working(&screen), "{screen}");
+        }
+    }
+
+    #[test]
+    fn reconnect_failure_is_not_a_live_activity_timer() {
+        for prefix in ["", "• "] {
+            let screen = format!("{prefix}Reconnect failed — check the endpoint, then relaunch (4s)\n\n› Ask Codex to do anything");
+            assert_eq!(detect(&screen), AgentState::Idle);
+            assert!(!has_visible_working(&screen));
+        }
+    }
 }

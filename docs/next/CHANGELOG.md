@@ -6,6 +6,8 @@
 - A finished agent's dot in its pane header blinks until its completion is acknowledged, using the same rhythm as an inactive tab's attention indicator. It used to stay solid even while waiting for acknowledgement. Pending completions keep the animation clock running without another agent working.
 
 ### Fixed
+- Agent sounds and popups wait one second before delivery and are canceled if work resumes, reducing premature completion alerts. Configure the delay with `ui.toast.delay_seconds` (`0` restores immediate delivery).
+- Codex activity detection recognizes animated or hidden bullets, dynamic activity labels, custom or unbound interrupt keys, and queued-input controls in current Codex versions.
 - Ctrl+clicking a URL in a pane opens it once from herdr. The release of that click used to reach the pane, so a program in the pane that opens links on click, such as Claude Code, opened the same URL a second time.
 - In Black Box, a Ctrl+clicked URL also stopped opening a third time from Black Box itself. herdr sets Black Box's `vte.ext.blackbox.app-opens-links` terminal property while it runs and clears it on exit, and Black Box leaves Ctrl+clicked links to herdr while it is set.
 

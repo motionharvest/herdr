@@ -1,9 +1,8 @@
-use crate::app;
+#[cfg(test)]
 use crate::app::state::AppState;
 use crate::config;
-use crate::detect::AgentState;
-use crate::layout::PaneId;
 use crate::protocol;
+#[cfg(test)]
 use crate::terminal::TerminalRuntimeRegistry;
 
 pub(crate) fn should_forward_toast_to_clients(delivery: config::ToastDelivery) -> bool {
@@ -18,54 +17,11 @@ pub(crate) fn toast_notify_kind(delivery: config::ToastDelivery) -> Option<proto
     }
 }
 
-pub(crate) fn toast_message_from_state_change(
-    state: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
-    pane_id: PaneId,
-    suppress_active_tab_notifications: bool,
-    prev_state: AgentState,
-    new_state: AgentState,
-) -> Option<String> {
-    let kind = app::actions::notification_toast_for_state_change(
-        suppress_active_tab_notifications,
-        prev_state,
-        new_state,
-    )?;
-
-    state
-        .workspaces
-        .iter()
-        .enumerate()
-        .find_map(|(ws_idx, ws)| {
-            ws.tabs.iter().find_map(|tab| {
-                let pane = tab.panes.get(&pane_id)?;
-                let agent_label = state
-                    .terminals
-                    .get(&pane.attached_terminal_id)
-                    .and_then(|terminal| terminal.effective_agent_label())?;
-                let workspace_label = ws.display_name_from(&state.terminals, terminal_runtimes);
-                Some(format!(
-                    "{} {}: {}",
-                    agent_label,
-                    toast_event_text(kind),
-                    app::actions::notification_context(ws, &workspace_label, ws_idx, pane_id)
-                ))
-            })
-        })
-}
-
-fn toast_event_text(kind: app::state::ToastKind) -> &'static str {
-    match kind {
-        app::state::ToastKind::NeedsAttention => "needs attention",
-        app::state::ToastKind::Finished => "finished",
-        app::state::ToastKind::UpdateInstalled => "updated",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detect::Agent;
+    use crate::app::state::{ToastKind, ToastNotification, ToastTarget};
+    use crate::detect::{Agent, AgentState};
     use crate::terminal::TerminalState;
 
     fn init_repo(path: &std::path::Path) {
@@ -126,19 +82,21 @@ mod tests {
         let mut terminal_runtimes = TerminalRuntimeRegistry::new();
         terminal_runtimes.insert(terminal_id, runtime);
 
-        let message = toast_message_from_state_change(
+        let mut toast = ToastNotification {
+            kind: ToastKind::Finished,
+            title: "codex finished".to_owned(),
+            context: "stale".to_owned(),
+            target: Some(ToastTarget {
+                workspace_id: state.workspaces[0].id.clone(),
+                pane_id: root,
+            }),
+        };
+        crate::app::notifications::refresh_notification_context(
             &state,
             &terminal_runtimes,
-            root,
-            false,
-            AgentState::Working,
-            AgentState::Idle,
+            &mut toast,
         );
-
-        assert_eq!(
-            message.as_deref(),
-            Some("codex finished: __herdr_projects__ · 1")
-        );
+        assert_eq!(toast.context, "__herdr_projects__ · 1");
 
         for (_, runtime) in terminal_runtimes.drain() {
             runtime.shutdown();
