@@ -1402,7 +1402,7 @@ impl AppState {
         render_notify: std::sync::Arc<tokio::sync::Notify>,
         render_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) {
-        let workspace = crate::workspace::Workspace::from_existing_pane(
+        let mut workspace = crate::workspace::Workspace::from_existing_pane(
             pane_id,
             pane_state,
             identity_cwd,
@@ -1410,6 +1410,7 @@ impl AppState {
             render_notify,
             render_dirty,
         );
+        workspace.tabs[0].layout_preview_hidden = self.minimap_collapsed_by_default;
         let workspace_id = workspace.id.clone();
         self.workspaces.push(workspace);
         let new_idx = self.workspaces.len() - 1;
@@ -3426,6 +3427,16 @@ mod tests {
             state.mode = Mode::Terminal;
         }
         state
+    }
+
+    #[test]
+    fn moving_a_pane_to_a_new_space_uses_minimap_default() {
+        let mut state = app_with_workspaces(&["source"]);
+        let pane = state.workspaces[0].test_split(Direction::Horizontal);
+        state.minimap_collapsed_by_default = true;
+        assert!(state.promote_pane_to_new_workspace(pane));
+        assert!(state.workspaces[1].tabs[0].layout_preview_hidden);
+        assert!(!state.workspaces[0].tabs[0].layout_preview_hidden);
     }
 
     fn mark_linked_worktree(state: &mut AppState, ws_idx: usize) {

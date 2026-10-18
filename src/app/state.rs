@@ -1979,6 +1979,8 @@ pub struct AppState {
     pub mouse_scroll_lines: usize,
     pub confirm_close: bool,
     pub prompt_new_tab_name: bool,
+    /// Initial sidebar preview state for new tabs; restored tabs keep their saved state.
+    pub minimap_collapsed_by_default: bool,
     pub nerd_font: bool,
     pub show_agent_labels_on_pane_borders: bool,
     pub pane_header: PaneHeaderConfig,
@@ -2437,6 +2439,7 @@ impl AppState {
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             confirm_close: true,
             prompt_new_tab_name: true,
+            minimap_collapsed_by_default: false,
             nerd_font: false,
             show_agent_labels_on_pane_borders: true,
             pane_header: PaneHeaderConfig::default(),

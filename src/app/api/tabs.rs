@@ -91,6 +91,8 @@ impl App {
             });
         match result {
             Ok((tab_idx, terminal, runtime)) => {
+                self.state.workspaces[ws_idx].tabs[tab_idx].layout_preview_hidden =
+                    self.state.minimap_collapsed_by_default;
                 self.terminal_runtimes.insert(terminal.id.clone(), runtime);
                 self.state.terminals.insert(terminal.id.clone(), terminal);
                 self.state.remove_alias_shadowed_by_new_pane(

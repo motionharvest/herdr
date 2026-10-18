@@ -391,6 +391,8 @@ pub struct UiConfig {
     pub confirm_close: bool,
     /// Ask for a tab name before creating a new tab. Default: true.
     pub prompt_new_tab_name: bool,
+    /// Start new tabs with their sidebar layout preview folded. Default: false.
+    pub minimap_collapsed_by_default: bool,
     /// Use Nerd Font glyphs in optional UI chrome. Default: false.
     pub nerd_font: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
@@ -641,6 +643,7 @@ impl Default for UiConfig {
             mouse_scroll_lines: None,
             confirm_close: true,
             prompt_new_tab_name: true,
+            minimap_collapsed_by_default: false,
             nerd_font: false,
             show_agent_labels_on_pane_borders: true,
             pane_header: PaneHeaderConfig::default(),
@@ -1107,6 +1110,19 @@ directory = "~/Projects/herdr-worktrees"
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.worktrees.directory, "~/Projects/herdr-worktrees");
     }
+
+    #[test]
+    fn minimap_collapsed_by_default_is_opt_in() {
+        assert!(!Config::default().ui.minimap_collapsed_by_default);
+        for collapsed in [false, true] {
+            let config: Config = toml::from_str(&format!(
+                "[ui]\nminimap_collapsed_by_default = {collapsed}\n"
+            ))
+            .unwrap();
+            assert_eq!(config.ui.minimap_collapsed_by_default, collapsed);
+        }
+    }
+
     #[test]
     fn prompt_new_tab_name_defaults_on_and_parses() {
         let default_config = Config::default();

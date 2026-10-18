@@ -313,6 +313,7 @@ hide_cursor_when_unfocused = true
 mouse_scroll_lines = 3
 confirm_close = true
 prompt_new_tab_name = true
+minimap_collapsed_by_default = false
 show_agent_labels_on_pane_borders = false
 agent_panel_scope = "all"
 accent = "cyan"
@@ -329,6 +330,8 @@ refresh_summary_prompt = "In 5-8 words, name the most recent thing the user aske
 `agent_panel_scope` can be `all` or `current`. Use `current` if you only want the agent panel to show agents in the active workspace.
 
 `confirm_close` controls whether closing a workspace asks for confirmation. `prompt_new_tab_name` controls whether new tabs ask for a label first.
+
+Set `[ui] minimap_collapsed_by_default = true` to start new tabs with the layout previews under their sidebar names folded away. This also applies to the first tab of a new space, tabs created through the CLI or API, and new spaces made from existing panes. The default is `false`. Each tab can still be expanded or collapsed with its arrow; restored sessions keep that saved choice. Reloading the config changes the default for future tabs without changing existing ones.
 
 Set `mouse_capture = false` if you want your terminal to handle normal clicks, such as command-clicking URLs. With mouse capture enabled, Ctrl-click opens pane links when your terminal sends that modified click to Herdr; use Shift-Ctrl-click on Linux or Shift-Cmd-click on macOS for the terminal-native bypass path.
 

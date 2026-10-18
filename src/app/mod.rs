@@ -562,6 +562,7 @@ impl App {
             mouse_scroll_lines: config.ui.mouse_scroll_lines(),
             confirm_close: config.ui.confirm_close,
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
+            minimap_collapsed_by_default: config.ui.minimap_collapsed_by_default,
             nerd_font: config.ui.nerd_font,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             pane_header: config.ui.pane_header,
@@ -1317,6 +1318,7 @@ impl App {
                 config.ui.right_click_passthrough_modifiers();
             self.state.confirm_close = config.ui.confirm_close;
             self.state.prompt_new_tab_name = config.ui.prompt_new_tab_name;
+            self.state.minimap_collapsed_by_default = config.ui.minimap_collapsed_by_default;
             self.state.nerd_font = config.ui.nerd_font;
             self.state.show_agent_labels_on_pane_borders =
                 config.ui.show_agent_labels_on_pane_borders;
@@ -2898,6 +2900,75 @@ mod tests {
             ));
             assert!(app.state.commander.paragraph.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn minimap_default_applies_to_new_spaces_and_ui_and_api_tabs() {
+        let mut config = Config::default();
+        config.ui.minimap_collapsed_by_default = true;
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
+        app.state.default_shell = "/bin/sh".into();
+        app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+        let cwd = std::env::current_dir().unwrap();
+        let ws = app
+            .create_workspace_with_options(cwd.clone(), true)
+            .unwrap();
+        assert!(app.state.workspaces[ws].tabs[0].layout_preview_hidden);
+        // A manual expansion must survive creating subsequent tabs.
+        app.state.workspaces[ws].tabs[0].layout_preview_hidden = false;
+        let tab = app.create_tab_with_options(cwd.clone(), false).unwrap();
+        assert!(app.state.workspaces[ws].tabs[tab].layout_preview_hidden);
+        assert!(!app.state.workspaces[ws].tabs[0].layout_preview_hidden);
+        let workspace_id = app.state.workspaces[ws].id.clone();
+        app.create_workspace_with_options(cwd.clone(), true)
+            .unwrap();
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "test".into(),
+            method: crate::api::schema::Method::TabCreate(crate::api::schema::TabCreateParams {
+                workspace_id: Some(workspace_id),
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+                focus: false,
+                label: None,
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(app.state.workspaces[ws].tabs.len(), 3);
+        assert!(app.state.workspaces[ws].tabs[2].layout_preview_hidden);
+        app.state.minimap_collapsed_by_default = false;
+        let tab = app.create_tab_with_options(cwd, false).unwrap();
+        let active = app.state.active.unwrap();
+        assert!(!app.state.workspaces[active].tabs[tab].layout_preview_hidden);
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[test]
+    fn reload_minimap_default_preserves_existing_tab_choices() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("reload-minimap-default");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+        let mut app = test_app();
+        let mut ws = Workspace::test_new("test");
+        ws.test_add_tab(None);
+        ws.tabs[1].layout_preview_hidden = true;
+        app.state.workspaces = vec![ws];
+        for collapsed in [true, false] {
+            std::fs::write(
+                &path,
+                format!("[ui]\nminimap_collapsed_by_default = {collapsed}\n"),
+            )
+            .unwrap();
+            app.reload_config();
+            assert_eq!(app.state.minimap_collapsed_by_default, collapsed);
+            assert!(!app.state.workspaces[0].tabs[0].layout_preview_hidden);
+            assert!(app.state.workspaces[0].tabs[1].layout_preview_hidden);
+        }
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
