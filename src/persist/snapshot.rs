@@ -1345,6 +1345,21 @@ mod tests {
     }
 
     #[test]
+    fn minimap_choices_round_trip_independently_of_new_tab_default() {
+        let mut state = crate::app::state::AppState::test_new();
+        let mut ws = crate::workspace::Workspace::test_new("test");
+        ws.test_add_tab(None);
+        ws.tabs[1].layout_preview_hidden = true;
+        state.workspaces = vec![ws];
+        state.ensure_test_terminals();
+        state.minimap_collapsed_by_default = true;
+        let json = serde_json::to_string(&capture_from_state(&state)).unwrap();
+        let saved = parse_snapshot(&json).unwrap();
+        assert!(!saved.workspaces[0].tabs[0].layout_preview_hidden);
+        assert!(saved.workspaces[0].tabs[1].layout_preview_hidden);
+    }
+
+    #[test]
     fn agent_table_collapsed_round_trips_through_json() {
         let snap = SessionSnapshot {
             agent_table_collapsed: true,

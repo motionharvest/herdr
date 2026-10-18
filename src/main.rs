@@ -248,6 +248,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Also available in Settings → experiments.
 # acknowledge_on_pane_focus = false
 
+# Start new tabs with their sidebar layout previews folded away.
+# Restored tabs keep their saved choice; reloading affects future tabs only.
+# minimap_collapsed_by_default = false
+
 # Use Nerd Font glyphs in optional UI chrome.
 # nerd_font = false
 

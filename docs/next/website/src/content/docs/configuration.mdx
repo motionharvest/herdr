@@ -314,6 +314,7 @@ mouse_scroll_lines = 3
 confirm_close = true
 prompt_new_tab_name = true
 acknowledge_on_pane_focus = false
+minimap_collapsed_by_default = false
 show_agent_labels_on_pane_borders = false
 agent_panel_scope = "all"
 accent = "cyan"
@@ -332,6 +333,8 @@ refresh_summary_prompt = "In 5-8 words, name the most recent thing the user aske
 `confirm_close` controls whether closing a workspace asks for confirmation. `prompt_new_tab_name` controls whether new tabs ask for a label first.
 
 Set `[ui] acknowledge_on_pane_focus = true` to confirm a finished agent when you click or focus its pane, including keyboard navigation, switching tabs or spaces, and opening an agent peek. The default is `false`, which keeps confirmation manual. Settings → experiments exposes the same preference as `acknowledge completion on pane focus`; changing it saves the config and applies it immediately. Only the focused agent is confirmed, not other panes in the same tab. Clicking an already focused pane also confirms it. The action is idempotent and leaves working or blocked agents alone. Finishing while already focused does not automatically confirm a new response: focus or click the pane again. Reloading the config changes future focus actions without clearing existing markers.
+
+Set `[ui] minimap_collapsed_by_default = true` to start new tabs with the layout previews under their sidebar names folded away. This also applies to the first tab of a new space, tabs created through the CLI or API, and new spaces made from existing panes. The default is `false`. Each tab can still be expanded or collapsed with its arrow; restored sessions keep that saved choice. Reloading the config changes the default for future tabs without changing existing ones.
 
 Set `mouse_capture = false` if you want your terminal to handle normal clicks, such as command-clicking URLs. With mouse capture enabled, Ctrl-click opens pane links when your terminal sends that modified click to Herdr; use Shift-Ctrl-click on Linux or Shift-Cmd-click on macOS for the terminal-native bypass path.
 

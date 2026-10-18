@@ -153,6 +153,7 @@ impl App {
             self.state.host_terminal_theme,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
         )?;
+        ws.tabs[idx].layout_preview_hidden = self.state.minimap_collapsed_by_default;
         let root_pane = ws.tabs[idx].root_pane;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
         self.state.terminals.insert(terminal.id.clone(), terminal);
@@ -177,7 +178,7 @@ impl App {
         focus: bool,
     ) -> std::io::Result<usize> {
         let (rows, cols) = self.state.estimate_pane_size();
-        let (ws, terminal, runtime) = Workspace::new(
+        let (mut ws, terminal, runtime) = Workspace::new(
             initial_cwd,
             rows,
             cols,
@@ -190,6 +191,7 @@ impl App {
         )?;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
         self.state.terminals.insert(terminal.id.clone(), terminal);
+        ws.tabs[0].layout_preview_hidden = self.state.minimap_collapsed_by_default;
         self.state.workspaces.push(ws);
         let idx = self.state.workspaces.len() - 1;
         self.state

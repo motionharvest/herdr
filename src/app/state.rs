@@ -1984,6 +1984,8 @@ pub struct AppState {
     pub confirm_close: bool,
     pub prompt_new_tab_name: bool,
     pub acknowledge_on_pane_focus: bool,
+    /// Initial sidebar preview state for new tabs; restored tabs keep their saved state.
+    pub minimap_collapsed_by_default: bool,
     pub nerd_font: bool,
     pub show_agent_labels_on_pane_borders: bool,
     pub pane_header: PaneHeaderConfig,
@@ -2443,6 +2445,7 @@ impl AppState {
             confirm_close: true,
             prompt_new_tab_name: true,
             acknowledge_on_pane_focus: false,
+            minimap_collapsed_by_default: false,
             nerd_font: false,
             show_agent_labels_on_pane_borders: true,
             pane_header: PaneHeaderConfig::default(),

@@ -636,7 +636,7 @@ impl App {
         argv: &[String],
         focus: bool,
     ) -> Result<(usize, usize, crate::layout::PaneId), AgentStartError> {
-        let (ws, terminal, runtime) = crate::workspace::Workspace::new_argv_command(
+        let (mut ws, terminal, runtime) = crate::workspace::Workspace::new_argv_command(
             cwd,
             rows,
             cols,
@@ -650,6 +650,7 @@ impl App {
         .map_err(|err| AgentStartError::SpawnFailed(err.to_string()))?;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
         self.state.terminals.insert(terminal.id.clone(), terminal);
+        ws.tabs[0].layout_preview_hidden = self.state.minimap_collapsed_by_default;
         self.state.workspaces.push(ws);
         let ws_idx = self.state.workspaces.len() - 1;
         self.state
@@ -813,6 +814,18 @@ mod tests {
         app.state.active = Some(0);
         app.state.ensure_test_terminals();
         app
+    }
+
+    #[tokio::test]
+    async fn agent_workspace_uses_minimap_default() {
+        let mut app = test_app();
+        app.state.minimap_collapsed_by_default = true;
+        let argv = vec!["/bin/sh".into(), "-c".into(), "exec sleep 30".into()];
+        let (ws, tab, _) = app
+            .spawn_agent_workspace(std::env::current_dir().unwrap(), 24, 80, &argv, false)
+            .unwrap_or_else(|_| panic!("test agent workspace should start"));
+        assert!(app.state.workspaces[ws].tabs[tab].layout_preview_hidden);
+        shutdown_started_runtimes(&mut app);
     }
 
     #[tokio::test]
