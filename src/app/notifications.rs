@@ -35,7 +35,14 @@ impl AppState {
         pane_id: PaneId,
         change: &EffectiveStateChange,
     ) {
-        // Every effective transition invalidates the previous pending alert.
+        // Presentation-only reports (including metadata expiry) are not new
+        // activity. Keep the pending alert and its original deadline intact.
+        if change.previous_state == change.state
+            && change.previous_agent_label == change.agent_label
+            && change.previous_known_agent == change.known_agent
+        {
+            return;
+        }
         self.pending_agent_notifications.remove(&pane_id);
         let is_active = self.pane_is_in_active_tab(ws_idx, pane_id);
         let suppress = active_tab_suppresses_notifications(
@@ -397,6 +404,48 @@ mod tests {
             state.drain_due_agent_notifications(deadline);
             assert!(state.toast.is_none());
             assert!(state.ready_agent_notifications.is_empty());
+        }
+    }
+
+    #[test]
+    fn presentation_changes_and_expiry_preserve_pending_alerts() {
+        for next in [AgentState::Idle, AgentState::Blocked] {
+            let (mut state, pane) = background_agent();
+            report(&mut state, pane, next);
+            let deadline = state.next_pending_agent_notification_deadline().unwrap();
+            let updates = state.handle_app_event(AppEvent::HookMetadataReported {
+                pane_id: pane,
+                source: "user:pi-display".into(),
+                agent_label: Some("pi".into()),
+                applies_to_source: None,
+                title: Some("Updated task title".into()),
+                display_agent: None,
+                custom_status: Some("Result ready".into()),
+                state_labels: Default::default(),
+                clear_title: false,
+                clear_display_agent: false,
+                clear_custom_status: false,
+                clear_state_labels: false,
+                seq: None,
+                ttl: Some(Duration::from_millis(10)),
+            });
+            assert_eq!(updates.len(), 1);
+            assert_eq!(updates[0].previous_state, next);
+            assert_eq!(updates[0].state, next);
+            assert_ne!(updates[0].previous_presentation, updates[0].presentation);
+            assert_eq!(
+                state.next_pending_agent_notification_deadline(),
+                Some(deadline)
+            );
+            let expiry = state.next_agent_metadata_expiry().unwrap();
+            assert!(!state.expire_agent_metadata_at(expiry, expiry).is_empty());
+            assert_eq!(
+                state.next_pending_agent_notification_deadline(),
+                Some(deadline)
+            );
+            assert!(state.drain_due_agent_notifications(deadline));
+            assert_eq!(state.ready_agent_notifications.len(), 1);
+            assert!(state.ready_agent_notifications[0].sound.is_some());
         }
     }
 
