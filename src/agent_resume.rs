@@ -143,6 +143,9 @@ pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<
         ("herdr:grok", "grok", AgentSessionRefKind::Id) => {
             vec!["grok".into(), "--resume".into(), session_ref.value.clone()]
         }
+        ("herdr:vibe", "vibe", AgentSessionRefKind::Id) => {
+            vec!["vibe".into(), "--resume".into(), session_ref.value.clone()]
+        }
         _ => return None,
     };
 
@@ -171,6 +174,7 @@ fn is_official_agent_source(source: &str, agent: &str) -> bool {
             | ("herdr:hermes", "hermes")
             | ("herdr:opencode", "opencode")
             | ("herdr:grok", "grok")
+            | ("herdr:vibe", "vibe")
     )
 }
 
@@ -270,6 +274,34 @@ mod tests {
             .unwrap()
             .argv,
             vec!["grok", "--resume", "grok-session"]
+        );
+        assert_eq!(
+            plan(
+                "herdr:vibe",
+                "vibe",
+                &AgentSessionRef::id("vibe-session").unwrap()
+            )
+            .unwrap()
+            .argv,
+            vec!["vibe", "--resume", "vibe-session"]
+        );
+    }
+
+    #[test]
+    fn report_vibe_session_ref_is_accepted() {
+        let session_ref =
+            session_ref_from_report("herdr:vibe", "vibe", Some("vibe-session".into()), None)
+                .unwrap();
+        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value, "vibe-session");
+
+        // A source outside the official whitelist (e.g. a custom hook's own label) still gets none.
+        assert!(
+            session_ref_from_report("vibe-hooks", "vibe", Some("vibe-session".into()), None)
+                .is_none()
+        );
+        assert!(
+            session_ref_from_report("herdr:vibe", "vibe", Some("bad\nid".into()), None).is_none()
         );
     }
 
